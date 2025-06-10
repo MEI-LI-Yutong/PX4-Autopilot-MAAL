@@ -105,6 +105,28 @@ Navigate to [Parameters](../advanced_config/parameters.md) in QGroundControl and
 For this mode to work properly [Manual mode](#acro-mode) must've already been configured!
 :::
 
+Yaw rate can be directly mapped to a steering input based on the forward speed of the rover:
+
+<!-- prettier-ignore -->
+$$ \delta = \arctan(\frac{w_b \cdot \dot{\psi}}{v}) $$
+
+with
+
+- $w_b:$ Wheel base,
+- $\delta:$ Steering angle,
+- $\dot{\psi}:$ Yaw rate
+- $v:$ Forward speed.
+
+For driving this means that the same right hand stick input will cause a different steering angle based on how fast you are driving.
+By limiting the maximum yaw rate, we can restrict the steering angle based on the speed, which can prevent the rover from rolling over.
+This mode will feel more like "driving a car" than [Manual mode](#manual-mode).
+
+::: info
+The yaw rate is only close loop controlled when driving forwards.
+When driving backwards the yaw rate setpoint is directly mapped to a steering angle using the equation above.
+This is due to the fact that rear wheel steering (driving a car with front-wheel steering backwards) is non-minimum-phase w.r.t to the yaw rate which leads to instabilities when doing closed loop control.
+:::
+
 To set up [Acro mode](../flight_modes_rover/ackermann.md#acro-mode) configure the following [parameters](../advanced_config/parameters.md) in QGroundControl:
 
 1. [RO_YAW_RATE_LIM](#RO_YAW_RATE_LIM): Maximum yaw rate you want to allow for your rover.

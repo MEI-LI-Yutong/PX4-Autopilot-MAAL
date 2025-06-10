@@ -270,9 +270,24 @@ The required parameters are separated into the following sections:
 
 ### Speed
 
-These parameters are used to calculate the speed setpoint in auto modes:
+The rover slows down when approaching a waypoint based on the angle between the line segment between the previous/current waypoint and current/next waypoint ($\theta_{WP}$).
 
-1. [RO_DECEL_LIM](#RO_DECEL_LIM) ($m/s^2$) and [RO_JERK_LIM](#RO_JERK_LIM) ($m/s^3$) are used to calculate a velocity trajectory such that the rover comes to a smooth stop as it reaches a waypoint.
+![Illustration of the activation threshold of the slow down effect](../../assets/airframes/rover/rover_differential/differential_slow_down_effect.png)
+
+This can be tuned with the following parameters:
+
+1. [RD_TRANS_DRV_TRN](#RD_TRANS_DRV_TRN) ($\degree$): If the angle is smaller than 180° - [RD_TRANS_DRV_TRN](#RD_TRANS_DRV_TRN) the rover will come to a full stop at the waypoint to then turn on the spot. For more information on the [RD_TRANS_DRV_TRN](#RD_TRANS_DRV_TRN) parameter see [State Machine](#state-machine).
+
+2. [RD_MISS_SPD_GAIN](#RD_MISS_SPD_GAIN) ($m/s$): If the angle is larger than 180° - [RD_TRANS_DRV_TRN](#RD_TRANS_DRV_TRN) the rover will slow down to the following speed:
+   <!-- prettier-ignore -->
+   $$ v_{trans} = v_{max} \cdot (1 - \theta_{WP, norm} \cdot v_{gain})$$
+   with
+
+   - $v_{max}:$ [RO_SPEED_LIM](#RO_SPEED_LIM),
+   - $\theta_{WP, norm}:$ $\theta_{WP}$ interpolated from [0, 180] -> [0, 1],
+   - $v_{gain}:$ [RD_MISS_SPD_GAIN](#RD_MISS_SPD_GAIN)
+
+3. [RO_DECEL_LIM](#RO_DECEL_LIM) ($m/s^2$) and [RO_JERK_LIM](#RO_JERK_LIM) ($m/s^3$) are used to calculate a velocity trajectory such that the rover comes to a smooth stop as it reaches a waypoint.
 
    ::: tip
    Plan a mission for the rover to drive a square and observe how it slows down when approaching a waypoint:
@@ -283,15 +298,8 @@ These parameters are used to calculate the speed setpoint in auto modes:
    These two parameters have to be tuned as a pair, repeat until you are satisfied with the behaviour.
    :::
 
-2. Plot the `adjusted_speed_body_x_setpoint` and `measured_speed_body_x` from the [RoverVelocityStatus](../msg_docs/RoverVelocityStatus.md) message over each other.
+4. Plot the `adjusted_speed_body_x_setpoint` and `measured_speed_body_x` from the [RoverVelocityStatus](../msg_docs/RoverVelocityStatus.md) message over each other.
    If the tracking of these setpoints is not satisfactory adjust the values for [RO_SPEED_P](#RO_SPEED_P) and [RO_SPEED_I](#RO_SPEED_I).
-
-The rover only slows down when approaching the waypoint if the angle between the line segment between the previous/current waypoint and current/next waypoint is smaller than 180° - [RD_TRANS_DRV_TRN](#RD_TRANS_DRV_TRN).
-In other words: The rover slows down only if the expected heading error towards the next waypoint when arriving at the current waypoint is below [RD_TRANS_DRV_TRN](#RD_TRANS_DRV_TRN).
-
-![Illustration of the activation threshold of the slow down effect](../../assets/airframes/rover/rover_differential/differential_slow_down_effect.png)
-
-For more information on the [RD_TRANS_DRV_TRN](#RD_TRANS_DRV_TRN) parameter see [State Machine](#state-machine).
 
 ### State Machine
 
