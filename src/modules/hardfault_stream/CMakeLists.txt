@@ -1,6 +1,6 @@
 ############################################################################
 #
-#   Copyright (c) 2021 PX4 Development Team. All rights reserved.
+#   Copyright (c) 2016-2025 PX4 Development Team. All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions
@@ -30,30 +30,13 @@
 # POSSIBILITY OF SUCH DAMAGE.
 #
 ############################################################################
-
-add_library(afbrs50_m4_fpu STATIC IMPORTED GLOBAL)
-set_property(TARGET afbrs50_m4_fpu PROPERTY IMPORTED_LOCATION ${CMAKE_CURRENT_SOURCE_DIR}/Lib/libafbrs50_m4_fpu.a)
-
 px4_add_module(
-	MODULE drivers__distance_sensor__afbrs50
-	MAIN afbrs50
+	MODULE modules__hardfault_stream
+	MAIN hardfault_stream
 	COMPILE_FLAGS
-	STACK_MAIN
-		4096
-	INCLUDES
-		API/Inc
-		Inc
 	SRCS
-		AFBRS50.cpp
-		AFBRS50.hpp
-		API/Src/irq.c
-		API/Src/s2pi.cpp
-		API/Src/timer.c
-		argus_hal_test.c
+		HardfaultStream.cpp
+		HardfaultStream.hpp
 	DEPENDS
 		px4_work_queue
-		drivers_rangefinder
-		afbrs50_m4_fpu
-	)
-
-target_link_libraries(afbrs50_m4_fpu INTERFACE drivers__distance_sensor__afbrs50)
+)

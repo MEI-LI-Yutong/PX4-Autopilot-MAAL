@@ -1,6 +1,6 @@
 /****************************************************************************
  *
- *   Copyright (c) 2025 PX4 Development Team. All rights reserved.
+ *   Copyright (c) 2012-2022 PX4 Development Team. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -33,72 +33,70 @@
 
 #pragma once
 
-#include "argus.h"
+#include <dirent.h>
+#include <string.h>
+#include <sys/stat.h>
 
-#include <drivers/drv_hrt.h>
-#include <lib/drivers/rangefinder/PX4Rangefinder.hpp>
-#include <lib/perf/perf_counter.h>
 #include <px4_platform_common/defines.h>
+#include <px4_platform_common/module.h>
 #include <px4_platform_common/module_params.h>
-#include <px4_platform_common/px4_config.h>
 #include <px4_platform_common/px4_work_queue/ScheduledWorkItem.hpp>
-#include <uORB/Subscription.hpp>
-#include <uORB/topics/parameter_update.h>
 
-class AFBRS50 : public ModuleParams, public px4::ScheduledWorkItem
+#include <uORB/Subscription.hpp>
+#include <uORB/SubscriptionMultiArray.hpp>
+#include <uORB/topics/mavlink_log.h>
+#include <uORB/topics/telemetry_status.h>
+
+#include <systemlib/mavlink_log.h>
+
+namespace hardfault_stream
+{
+
+class HardfaultStream : public ModuleBase<HardfaultStream>, public ModuleParams, public px4::ScheduledWorkItem
 {
 public:
-	AFBRS50(const uint8_t device_orientation = distance_sensor_s::ROTATION_DOWNWARD_FACING);
-	~AFBRS50() override;
+	HardfaultStream();
+	~HardfaultStream() override;
 
-	int init();
-	void printInfo();
+	static int task_spawn(int argc, char *argv[]);
+
+	/** @see ModuleBase */
+	static int custom_command(int argc, char *argv[])
+	{
+		return print_usage("unknown command");
+	}
+
+	/** @see ModuleBase */
+	static int print_usage(const char *reason = nullptr);
+
+	void start();
 
 private:
+	enum class State {
+		SearchFile,
+		WaitMavlink,
+		StreamFile,
+		RequestStop,
+		WaitStop,
+	};
+
+	/** Do a compute and schedule the next cycle. */
 	void Run() override;
 
-	void recordCommsError();
-	void scheduleCollect();
-	void processMeasurement();
-	void updateMeasurementRateFromRange();
+	bool mavlink_gcs_up();
+	void search_hardfault_file();
+	void stream_hardfault();
 
-	static status_t measurementReadyCallback(status_t status, argus_hnd_t *hnd);
+	State _state {State::SearchFile};
 
-	status_t setRateAndDfm(uint32_t rate_hz, argus_dfm_mode_t dfm_mode);
-	argus_mode_t argusModeFromParameter();
+	bool _stream_finished {false};
+	bool _hardfault_file_present {false};
 
-private:
-	argus_hnd_t *_hnd {nullptr};
+	char _hardfault_file_path[CONFIG_PATH_MAX + 1];
+	FILE *_hardfault_file {nullptr};
 
-	enum class STATE : uint8_t {
-		CONFIGURE,
-		TRIGGER,
-		COLLECT,
-		WATCHDOG
-	} _state{STATE::CONFIGURE};
-
-	PX4Rangefinder _px4_rangefinder;
-
-	hrt_abstime _last_rate_switch{0};
-
-	perf_counter_t _sample_perf{perf_alloc(PC_COUNT, MODULE_NAME": sample count")};
-	perf_counter_t _comms_errors{perf_alloc(PC_COUNT, MODULE_NAME": comms error")};
-	perf_counter_t _not_ready_perf{perf_alloc(PC_COUNT, MODULE_NAME": not ready")};
-
-	float _current_distance{0};
-	int8_t _current_quality{0};
-	float _max_distance{30.f};
-	uint32_t _current_rate{0};
-
-	uORB::Subscription _parameter_update_sub{ORB_ID(parameter_update)};
-
-	uint32_t _measurement_inverval {1000000 / 50}; // 50Hz
-
-	DEFINE_PARAMETERS(
-		(ParamInt<px4::params::SENS_AFBR_MODE>)   _p_sens_afbr_mode,
-		(ParamInt<px4::params::SENS_AFBR_S_RATE>) _p_sens_afbr_s_rate,
-		(ParamInt<px4::params::SENS_AFBR_L_RATE>) _p_sens_afbr_l_rate,
-		(ParamInt<px4::params::SENS_AFBR_THRESH>) _p_sens_afbr_thresh,
-		(ParamInt<px4::params::SENS_AFBR_HYSTER>) _p_sens_afbr_hyster
-	);
+	orb_advert_t _mavlink_log_pub {nullptr};
+	uORB::SubscriptionMultiArray<telemetry_status_s> _telemetry_status_subs{ORB_ID::telemetry_status};
 };
+
+} // namespace hardfault_stream
