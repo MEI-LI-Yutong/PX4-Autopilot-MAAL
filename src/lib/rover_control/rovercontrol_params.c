@@ -132,6 +132,20 @@ PARAM_DEFINE_FLOAT(RO_YAW_ACCEL_LIM, -1.f);
 PARAM_DEFINE_FLOAT(RO_YAW_DECEL_LIM, -1.f);
 
 /**
+ * Yaw rate correction factor
+ *
+ * Multiplicative correction factor for the feedforward mapping of the yaw rate controller.
+ * Increase this value if the measured yaw rate is lower than the setpoint, decrease otherwise.
+ *
+ * @min 0.01
+ * @max 10000
+ * @increment 0.01
+ * @decimal 2
+ * @group Rover Rate Control
+ */
+PARAM_DEFINE_FLOAT(RO_YAW_RATE_CORR, 1.f);
+
+/**
  * Proportional gain for closed loop yaw controller
  *
  * @min 0
