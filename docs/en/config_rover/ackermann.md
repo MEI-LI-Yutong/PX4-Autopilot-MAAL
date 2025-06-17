@@ -158,7 +158,6 @@ To set up [Acro mode](../flight_modes_rover/manual.md#acro-mode) configure the f
    Disarm the rover and from the flight log plot the `adjusted_yaw_rate_setpoint` from [RoverRateStatus](../msg_docs/RoverRateStatus.md) and the `measured_yaw_rate` from [RoverRateStatus](../msg_docs/RoverRateStatus.md) over each other.
    If the actual yaw rate of the rover is higher than the yaw rate setpoint, decrease [RO_YAW_RATE_CORR](#RO_YAW_RATE_CORR) (between (0, 1]).
    If it is the other way around increase the parameter [1, inf) and repeat until you are satisfied with the setpoint tracking.
-
    :::
 
 1. [RO_YAW_RATE_P](#RO_YAW_RATE_P) [-]: Proportional gain of the closed loop yaw rate controller.
@@ -295,7 +294,7 @@ To configure set the following parameters:
    Put the rover in [Position mode](../flight_modes_rover/manual.md#position-mode) and drive at very high speeds, if the rover does not drive in a straight line even though the tuning of [PP_LOOKAHD_GAIN](#PP_LOOKAHD_GAIN) was good for medium speeds, then decrease the value of [PP_LOOKAHD_MAX](#PP_LOOKAHD_MAX).
    :::
 
-1. [RO_SPEED_TH](#RO_SPEED_TH) [m/s]: The minimum threshold for the speed measurement not to be interpreted as zero.
+1. (Advanced) [RO_SPEED_TH](#RO_SPEED_TH) [m/s]: The minimum threshold for the speed measurement not to be interpreted as zero.
    This can be used to cut off measurement noise when the rover is standing still.
 
 
