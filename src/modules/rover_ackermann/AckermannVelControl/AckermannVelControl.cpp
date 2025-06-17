@@ -79,8 +79,8 @@ void AckermannVelControl::updateVelControl()
 		_rover_attitude_setpoint_pub.publish(rover_attitude_setpoint);
 
 		if (_param_ro_speed_red.get() > FLT_EPSILON) {
-			const float bearing_error = fabsf(matrix::wrap_pi(_bearing_setpoint - _vehicle_yaw));
-			const float speed_reduction = math::constrain(_param_ro_speed_red.get() * math::interpolate(bearing_error,
+			const float course_error = fabsf(matrix::wrap_pi(_bearing_setpoint - _vehicle_yaw));
+			const float speed_reduction = math::constrain(_param_ro_speed_red.get() * math::interpolate(course_error,
 						      0.f, M_PI_F, 0.f, 1.f), 0.f, 1.f);
 			max_speed = math::constrain(_param_ro_max_thr_speed.get() * (1.f - speed_reduction), _min_speed, max_speed);
 		}
