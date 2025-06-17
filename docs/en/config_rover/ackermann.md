@@ -319,10 +319,10 @@ The degree to which corner cutting is allowed can be tuned, or disabled, with th
 The corner cutting effect is a tradeoff between how close you get to the waypoint and the smoothness of the trajectory.
 :::
 
-1. [NAV_ACC_RAD](#NAV_ACC_RAD) [m]: Default acceptance radius
+1. [NAV_ACC_RAD](../advanced_config/parameter_reference.md#NAV_ACC_RAD) [m]: Default acceptance radius
    This is also used as a lower bound for the acceptance radius scaling.
 2. [RA_ACC_RAD_MAX](#RA_ACC_RAD_MAX) [m]: The maximum the acceptance radius can be scaled to.
-   Set equal to [NAV_ACC_RAD](#NAV_ACC_RAD) to disable the corner cutting effect.
+   Set equal to [NAV_ACC_RAD](../advanced_config/parameter_reference.md#NAV_ACC_RAD) to disable the corner cutting effect.
 3. [RA_ACC_RAD_GAIN](#RA_ACC_RAD_GAIN) [-]: This tuning parameter is a multiplicand on the [calculated ideal acceptance radius](#corner-cutting-logic) to account for dynamic effects.
 
    :::tip
@@ -427,29 +427,59 @@ with $w_b:$ Wheel base ([RA_WHEEL_BASE](#RA_WHEEL_BASE)), $\dot{\psi}_{max}:$ Ma
 
 List of all parameters of the ackermann rover module:
 
-| Parameter                                                                                                   | Description                                                           | Unit    |
-| ----------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- | ------- |
-| <a id="RA_WHEEL_BASE"></a>[RA_WHEEL_BASE](../advanced_config/parameter_reference.md#RA_WHEEL_BASE)          | Wheel base                                                            | m       |
-| <a id="RA_MAX_STR_ANG"></a>[RA_MAX_STR_ANG](../advanced_config/parameter_reference.md#RA_MAX_STR_ANG)       | Maximum steering angle                                                | deg     |
-| <a id="RO_MAX_THR_SPEED"></a>[RO_MAX_THR_SPEED](../advanced_config/parameter_reference.md#RO_MAX_THR_SPEED) | Speed the rover drives at maximum throttle                            | m/s     |
-| <a id="RO_YAW_RATE_LIM"></a>[RO_YAW_RATE_LIM](../advanced_config/parameter_reference.md#RO_YAW_RATE_LIM)    | Maximum allowed yaw rate                                              | m/s^2   |
-| <a id="RO_YAW_RATE_P"></a>[RO_YAW_RATE_P](../advanced_config/parameter_reference.md#RO_YAW_RATE_P)          | Proportional gain for yaw rate controller                             | -       |
-| <a id="RO_YAW_RATE_I"></a>[RO_YAW_RATE_I](../advanced_config/parameter_reference.md#RO_YAW_RATE_I)          | Integral gain for yaw rate controller                                 | -       |
-| <a id="RO_YAW_P"></a>[RO_YAW_P](../advanced_config/parameter_reference.md#RO_YAW_P)                         | Proportional gain for yaw controller                                  | -       |
-| <a id="RO_SPEED_LIM"></a>[RO_SPEED_LIM](../advanced_config/parameter_reference.md#RO_SPEED_LIM)             | Maximum allowed speed                                                 | m/s     |
-| <a id="RO_SPEED_P"></a>[RO_SPEED_P](../advanced_config/parameter_reference.md#RO_SPEED_P)                   | Proportional gain for speed controller                                | -       |
-| <a id="RO_SPEED_I"></a>[RO_SPEED_I](../advanced_config/parameter_reference.md#RO_SPEED_I)                   | Integral gain for speed controller                                    | -       |
-| <a id="PP_LOOKAHD_GAIN"></a>[PP_LOOKAHD_GAIN](../advanced_config/parameter_reference.md#PP_LOOKAHD_GAIN)    | Main tuning parameter for pure pursuit                                | -       |
-| <a id="PP_LOOKAHD_MAX"></a>[PP_LOOKAHD_MAX](../advanced_config/parameter_reference.md#PP_LOOKAHD_MAX)       | Maximum value for the look ahead radius of the pure pursuit algorithm | m       |
-| <a id="PP_LOOKAHD_MIN"></a>[PP_LOOKAHD_MIN](../advanced_config/parameter_reference.md#PP_LOOKAHD_MIN)       | Minimum value for the look ahead radius of the pure pursuit algorithm | m       |
-| <a id="NAV_ACC_RAD"></a>[NAV_ACC_RAD](../advanced_config/parameter_reference.md#NAV_ACC_RAD)                | Default acceptance radius                                             | m       |
-| <a id="RA_STR_RATE_LIM"></a>[RA_STR_RATE_LIM](../advanced_config/parameter_reference.md#RA_STR_RATE_LIM)    | (Optional) Maximum allowed steering rate                              | deg/s   |
-| <a id="RO_ACCEL_LIM"></a>[RO_ACCEL_LIM](../advanced_config/parameter_reference.md#RO_ACCEL_LIM)             | (Optional) Maximum allowed acceleration                               | m/s^2   |
-| <a id="RO_DECEL_LIM"></a>[RO_DECEL_LIM](../advanced_config/parameter_reference.md#RO_DECEL_LIM)             | (Optional) Maximum allowed deceleration                               | m/s^2   |
-| <a id="RO_JERK_LIM"></a>[RO_JERK_LIM](../advanced_config/parameter_reference.md#RO_JERK_LIM)                | (Optional) Maximum allowed jerk                                       | $m/s^3$ |
-| <a id="RA_ACC_RAD_MAX"></a>[RA_ACC_RAD_MAX](../advanced_config/parameter_reference.md#RA_ACC_RAD_MAX)       | (Optional) Maximum radius the acceptance radius can be scaled to      | m       |
-| <a id="RA_ACC_RAD_GAIN"></a>[RA_ACC_RAD_GAIN](../advanced_config/parameter_reference.md#RA_ACC_RAD_GAIN)    | (Optional) Tuning parameter for the acceptance radius scaling         | -       |
+### Ackermann Specific
+
+| Parameter                                                                                                | Description                                                      | Unit    |
+| -------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- | ------- |
+| <a id="RA_WHEEL_BASE"></a>[RA_WHEEL_BASE](../advanced_config/parameter_reference.md#RA_WHEEL_BASE)       | Wheel base                                                       | $m$     |
+| <a id="RA_MAX_STR_ANG"></a>[RA_MAX_STR_ANG](../advanced_config/parameter_reference.md#RA_MAX_STR_ANG)    | Maximum steering angle                                           | $deg$   |
+| <a id="RA_STR_RATE_LIM"></a>[RA_STR_RATE_LIM](../advanced_config/parameter_reference.md#RA_STR_RATE_LIM) | (Optional) Maximum allowed steering rate                         | $deg/s$ |
+| <a id="RA_ACC_RAD_MAX"></a>[RA_ACC_RAD_MAX](../advanced_config/parameter_reference.md#RA_ACC_RAD_MAX)    | (Optional) Maximum radius the acceptance radius can be scaled to | $m$     |
+| <a id="RA_ACC_RAD_GAIN"></a>[RA_ACC_RAD_GAIN](../advanced_config/parameter_reference.md#RA_ACC_RAD_GAIN) | (Optional) Tuning parameter for the acceptance radius scaling    | -       |
+
+### Rate Control
+
+| Parameter                                                                                                   | Description                               | Unit      |
+| ----------------------------------------------------------------------------------------------------------- | ----------------------------------------- | --------- |
+| <a id="RO_YAW_RATE_LIM"></a>[RO_YAW_RATE_LIM](../advanced_config/parameter_reference.md#RO_YAW_RATE_LIM)    | Maximum allowed yaw rate                  | $m/s^2$   |
+| <a id="RO_YAW_RATE_P"></a>[RO_YAW_RATE_P](../advanced_config/parameter_reference.md#RO_YAW_RATE_P)          | Proportional gain for yaw rate controller | -         |
+| <a id="RO_YAW_RATE_I"></a>[RO_YAW_RATE_I](../advanced_config/parameter_reference.md#RO_YAW_RATE_I)          | Integral gain for yaw rate controller     | -         |
+| <a id="RO_YAW_STICK_DZ"></a>[RO_YAW_STICK_DZ](../advanced_config/parameter_reference.md#RO_YAW_STICK_DZ)    | Yaw stick deadzone                        | -         |
+| <a id="RO_YAW_ACCEL_LIM"></a>[RO_YAW_ACCEL_LIM](../advanced_config/parameter_reference.md#RO_YAW_ACCEL_LIM) | (Optional) Yaw acceleration limit         | $deg/s^2$ |
+| <a id="RO_YAW_DECEL_LIM"></a>[RO_YAW_DECEL_LIM](../advanced_config/parameter_reference.md#RO_YAW_DECEL_LIM) | (Optional) Yaw deceleration limit         | $deg/s^2$ |
+| <a id="RO_YAW_RATE_CORR"></a>[RO_YAW_RATE_CORR](../advanced_config/parameter_reference.md#RO_YAW_RATE_CORR) | (Optional) Yaw rate correction factor     | -         |
+| <a id="RO_YAW_RATE_TH"></a>[RO_YAW_RATE_TH](../advanced_config/parameter_reference.md#RO_YAW_RATE_TH)       | (Advanced) Yaw rate measurement threshold | $deg/s$   |
+
+
+### Attitude Control
+
+| Parameter                                                                           | Description                          | Unit |
+| ----------------------------------------------------------------------------------- | ------------------------------------ | ---- |
+| <a id="RO_YAW_P"></a>[RO_YAW_P](../advanced_config/parameter_reference.md#RO_YAW_P) | Proportional gain for yaw controller | -    |
+
+### Velocity Control
+
+| Parameter                                                                                                   | Description                                                                    | Unit    |
+| ----------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ | ------- |
+| <a id="RO_MAX_THR_SPEED"></a>[RO_MAX_THR_SPEED](../advanced_config/parameter_reference.md#RO_MAX_THR_SPEED) | Speed the rover drives at maximum throttle                                     | $m/s$   |
+| <a id="RO_SPEED_LIM"></a>[RO_SPEED_LIM](../advanced_config/parameter_reference.md#RO_SPEED_LIM)             | Maximum allowed speed                                                          | $m/s$   |
+| <a id="RO_SPEED_P"></a>[RO_SPEED_P](../advanced_config/parameter_reference.md#RO_SPEED_P)                   | Proportional gain for speed controller                                         | -       |
+| <a id="RO_SPEED_I"></a>[RO_SPEED_I](../advanced_config/parameter_reference.md#RO_SPEED_I)                   | Integral gain for speed controller                                             | -       |
+| <a id="RO_SPEED_RED"></a>[RO_SPEED_RED](../advanced_config/parameter_reference.md#RO_SPEED_RED)             | (Optional) Tuning parameter for the speed reduction based on the bearing error | -       |
+| <a id="RO_ACCEL_LIM"></a>[RO_ACCEL_LIM](../advanced_config/parameter_reference.md#RO_ACCEL_LIM)             | (Optional) Maximum allowed acceleration                                        | $m/s^2$ |
+| <a id="RO_DECEL_LIM"></a>[RO_DECEL_LIM](../advanced_config/parameter_reference.md#RO_DECEL_LIM)             | (Optional) Maximum allowed deceleration                                        | $m/s^2$ |
+| <a id="RO_JERK_LIM"></a>[RO_JERK_LIM](../advanced_config/parameter_reference.md#RO_JERK_LIM)                | (Optional) Maximum allowed jerk                                                | $m/s^3$ |
+| <a id="RO_SPEED_TH"></a>[RO_SPEED_TH](../advanced_config/parameter_reference.md#RO_SPEED_TH)                | (Advanced) Speed measurement threshold                                         | $m/s$   |
+
+
+### Auto Control
+
+| Parameter                                                                                                | Description                                                           | Unit |
+| -------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- | ---- |
+| <a id="PP_LOOKAHD_GAIN"></a>[PP_LOOKAHD_GAIN](../advanced_config/parameter_reference.md#PP_LOOKAHD_GAIN) | Main tuning parameter for pure pursuit                                | -    |
+| <a id="PP_LOOKAHD_MAX"></a>[PP_LOOKAHD_MAX](../advanced_config/parameter_reference.md#PP_LOOKAHD_MAX)    | Maximum value for the look ahead radius of the pure pursuit algorithm | $m$  |
+| <a id="PP_LOOKAHD_MIN"></a>[PP_LOOKAHD_MIN](../advanced_config/parameter_reference.md#PP_LOOKAHD_MIN)    | Minimum value for the look ahead radius of the pure pursuit algorithm | $m$  |
 
 ## See Also
 
-- [Drive Modes (Ackermann Rover)](../flight_modes_rover/ackermann.md).
+- [Drive Modes](../flight_modes_rover/index.md).
