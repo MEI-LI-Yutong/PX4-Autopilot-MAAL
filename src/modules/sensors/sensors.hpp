@@ -115,6 +115,24 @@ public:
 	bool init();
 
 private:
+	// 空速移动平均滤波器参数
+	static constexpr uint8_t AIRSPEED_MA_WINDOW_SIZE = 10;  // 移动平均窗口大小
+	float _indicated_airspeed_buffer[AIRSPEED_MA_WINDOW_SIZE] {0.0f};  // IAS缓冲区
+	float _true_airspeed_buffer[AIRSPEED_MA_WINDOW_SIZE] {0.0f};       // TAS缓冲区
+	uint8_t _airspeed_buffer_index{0};                      // 当前缓冲区索引位置
+	bool _airspeed_buffer_full{false};                      // 缓冲区是否已填满
+
+	// 用于添加值到移动平均缓冲区并计算平均值的辅助函数
+	float update_airspeed_ma_buffer(float new_value, float buffer[], bool &buffer_full, uint8_t &buffer_index);
+
+	// 差压移动平均滤波相关变量
+	static constexpr uint8_t DIFF_PRES_MA_WINDOW_SIZE = 10;  // 移动平均窗口大小
+	float _diff_pres_ma_buffer[DIFF_PRES_MA_WINDOW_SIZE] {};
+	uint8_t _diff_pres_ma_index{0};
+	bool _diff_pres_ma_buffer_full{false};
+
+	// 添加移动平均滤波器函数
+	float update_diff_pres_ma_buffer(float new_value, float buffer[], bool &buffer_full, uint8_t &buffer_index);
 
 	int		parameters_update();
 

@@ -263,6 +263,7 @@ set(msg_files
 	versioned/VehicleStatus.msg
 	versioned/VtolVehicleStatus.msg
 	theta_trim.msg
+	utrim.msg
 )
 list(SORT msg_files)
 

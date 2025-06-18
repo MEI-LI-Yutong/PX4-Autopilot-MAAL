@@ -52,6 +52,10 @@ Sensors::Sensors(bool hil_enabled) :
 {
 	_sensor_pub.advertise();
 
+	// 初始化空速移动平均滤波器
+	_airspeed_buffer_index = 0;
+	_airspeed_buffer_full = false;
+
 #if defined(CONFIG_SENSORS_VEHICLE_ACCELERATION)
 	_vehicle_acceleration.Start();
 #endif // CONFIG_SENSORS_VEHICLE_ACCELERATION
@@ -294,7 +298,16 @@ void Sensors::diff_pres_poll()
 
 			// average data and apply calibration offset (SENS_DPRES_OFF)
 			const uint64_t timestamp_sample = _diff_pres_timestamp_sum / _diff_pres_count;
-			const float differential_pressure_pa = _diff_pres_pressure_sum / _diff_pres_count - _parameters.diff_pres_offset_pa;
+			const float raw_diff_pressure = _diff_pres_pressure_sum / _diff_pres_count;
+
+			// 对原始差压进行移动平均滤波
+			const float filtered_diff_pressure = update_diff_pres_ma_buffer(raw_diff_pressure,
+										_diff_pres_ma_buffer,
+										_diff_pres_ma_buffer_full,
+										_diff_pres_ma_index);
+
+			// 应用校准偏移
+			const float differential_pressure_pa = filtered_diff_pressure - _parameters.diff_pres_offset_pa;
 			const float baro_pressure_pa = _baro_pressure_sum / _diff_pres_count;
 
 			// reset
@@ -330,11 +343,21 @@ void Sensors::diff_pres_poll()
 			float true_airspeed_m_s = calc_TAS_from_CAS(indicated_airspeed_m_s, baro_pressure_pa, temperature);
 
 			if (PX4_ISFINITE(indicated_airspeed_m_s) && PX4_ISFINITE(true_airspeed_m_s)) {
+				// 应用移动平均滤波
+				float indicated_airspeed_filtered = update_airspeed_ma_buffer(indicated_airspeed_m_s,
+						_indicated_airspeed_buffer,
+						_airspeed_buffer_full,
+						_airspeed_buffer_index);
+
+				float true_airspeed_filtered = update_airspeed_ma_buffer(true_airspeed_m_s,
+						_true_airspeed_buffer,
+						_airspeed_buffer_full,
+						_airspeed_buffer_index);
 
 				airspeed_s airspeed;
 				airspeed.timestamp_sample = timestamp_sample;
-				airspeed.indicated_airspeed_m_s = indicated_airspeed_m_s;
-				airspeed.true_airspeed_m_s = true_airspeed_m_s;
+				airspeed.indicated_airspeed_m_s = indicated_airspeed_filtered;  // 使用滤波后的值
+				airspeed.true_airspeed_m_s = true_airspeed_filtered;           // 使用滤波后的值
 				airspeed.confidence = _airspeed_validator.confidence(hrt_absolute_time());
 				airspeed.timestamp = hrt_absolute_time();
 				_airspeed_pub.publish(airspeed);
@@ -776,4 +799,52 @@ It runs in its own thread and polls on the currently selected gyro topic.
 extern "C" __EXPORT int sensors_main(int argc, char *argv[])
 {
 	return Sensors::main(argc, argv);
+}
+
+float Sensors::update_airspeed_ma_buffer(float new_value, float buffer[], bool &buffer_full, uint8_t &buffer_index)
+{
+	// 将新值添加到缓冲区
+	buffer[buffer_index] = new_value;
+
+	// 更新索引
+	buffer_index = (buffer_index + 1) % AIRSPEED_MA_WINDOW_SIZE;
+
+	// 检查缓冲区是否已填满
+	if (buffer_index == 0) {
+		buffer_full = true;
+	}
+
+	// 计算平均值
+	float sum = 0.0f;
+	uint8_t count = buffer_full ? AIRSPEED_MA_WINDOW_SIZE : buffer_index;
+
+	for (uint8_t i = 0; i < count; i++) {
+		sum += buffer[i];
+	}
+
+	return (count > 0) ? sum / count : 0.0f;
+}
+
+float Sensors::update_diff_pres_ma_buffer(float new_value, float buffer[], bool &buffer_full, uint8_t &buffer_index)
+{
+	// 将新值添加到缓冲区
+	buffer[buffer_index] = new_value;
+
+	// 更新索引
+	buffer_index = (buffer_index + 1) % DIFF_PRES_MA_WINDOW_SIZE;
+
+	// 检查缓冲区是否已填满
+	if (buffer_index == 0) {
+		buffer_full = true;
+	}
+
+	// 计算平均值
+	float sum = 0.0f;
+	uint8_t count = buffer_full ? DIFF_PRES_MA_WINDOW_SIZE : buffer_index;
+
+	for (uint8_t i = 0; i < count; i++) {
+		sum += buffer[i];
+	}
+
+	return (count > 0) ? sum / count : 0.0f;
 }
