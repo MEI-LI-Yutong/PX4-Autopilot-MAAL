@@ -336,6 +336,8 @@ then
 	payload_deliverer start
 fi
 
+trim_selector start
+
 #user defined mavlink streams for instances can be in PATH
 . px4-rc.mavlink
 
