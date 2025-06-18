@@ -44,6 +44,9 @@
 #include <uORB/topics/trajectory_setpoint.h>
 #include <uORB/topics/vehicle_attitude_setpoint.h>
 #include <uORB/topics/vehicle_local_position_setpoint.h>
+#include <uORB/topics/vehicle_constraints.h>
+#include <uORB/topics/theta_trim.h>
+#include <uORB/Subscription.hpp>
 
 struct PositionControlStates {
 	matrix::Vector3f position;
@@ -233,4 +236,9 @@ private:
 	matrix::Vector3f _thr_sp; /**< desired thrust */
 	float _yaw_sp{}; /**< desired heading */
 	float _yawspeed_sp{}; /** desired yaw-speed */
+
+	/* 订阅 theta_trim */
+	uORB::Subscription _theta_trim_sub{ORB_ID(theta_trim)};
+	theta_trim_s _last_theta_trim{}; ///< 存储最新的 theta_trim 消息
+	bool _theta_trim_valid{false};   ///< 标记是否有有效的 theta_trim 消息
 };
