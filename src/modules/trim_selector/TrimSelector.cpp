@@ -222,9 +222,6 @@ void TrimSelector::Run()
 			Quatf q_sp = Quatf(euler_setpoint);
 			q_sp.copyTo(theta_trim.q_d);
 
-			theta_trim.thrust_body[0] = 0.0f;
-			theta_trim.thrust_body[1] = 0.0f;
-			theta_trim.thrust_body[2] = -0.5f;
 
 			_theta_trim_pub.publish(theta_trim);
 		}
