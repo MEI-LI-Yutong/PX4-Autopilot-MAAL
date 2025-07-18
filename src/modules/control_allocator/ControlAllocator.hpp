@@ -78,6 +78,7 @@
 #include <uORB/topics/vehicle_thrust_setpoint.h>
 #include <uORB/topics/vehicle_status.h>
 #include <uORB/topics/failure_detector_status.h>
+#include <uORB/topics/utrim.h>
 
 class ControlAllocator : public ModuleBase<ControlAllocator>, public ModuleParams, public px4::ScheduledWorkItem
 {
@@ -138,6 +139,11 @@ private:
 
 	void publish_actuator_controls();
 
+	/**
+	 * Custom control allocation calculation based on matrix formula
+	 */
+	void calculate_custom_allocation();
+
 	AllocationMethod _allocation_method_id{AllocationMethod::NONE};
 	ControlAllocation *_control_allocation[ActuatorEffectiveness::MAX_NUM_MATRICES] {}; 	///< class for control allocation calculations
 	int _num_control_allocation{0};
@@ -179,6 +185,8 @@ private:
 
 	uORB::Subscription _vehicle_torque_setpoint1_sub{ORB_ID(vehicle_torque_setpoint), 1};  /**< vehicle torque setpoint subscription (2. instance) */
 	uORB::Subscription _vehicle_thrust_setpoint1_sub{ORB_ID(vehicle_thrust_setpoint), 1};	 /**< vehicle thrust setpoint subscription (2. instance) */
+
+	uORB::Subscription _utrim_sub{ORB_ID(utrim)};  /**< utrim subscription for custom allocation */
 
 	// Outputs
 	uORB::PublicationMulti<control_allocator_status_s> _control_allocator_status_pub[2] {ORB_ID(control_allocator_status), ORB_ID(control_allocator_status)};
