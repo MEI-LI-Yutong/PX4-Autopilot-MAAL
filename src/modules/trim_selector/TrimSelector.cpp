@@ -129,6 +129,8 @@ void TrimSelector::Run()
 	trajectory_setpoint_s trajectory_setpoint{};
 	_trajectory_setpoint_sub.copy(&trajectory_setpoint);
 
+	// PX4_INFO("trajectory_setpoint.velocity[x y z]: %.2f %.2f %.2f", (double)trajectory_setpoint.velocity[0], (double)trajectory_setpoint.velocity[1], (double)trajectory_setpoint.velocity[2]);
+
 	// 计算风速
 	if (PX4_ISFINITE(airspeed.true_airspeed_m_s) && local_pos.v_xy_valid) {
 		// 计算地速
@@ -210,7 +212,8 @@ void TrimSelector::Run()
 		float horizontal_velocity_magnitude = sqrtf(matrix::Vector2f(trajectory_setpoint.velocity).norm_squared());
 
 		if (horizontal_velocity_magnitude > 2.0f) {
-			float pitch_setpoint = _param_ts_pitch_gain.get() * horizontal_velocity_magnitude;
+			// float pitch_setpoint = _param_ts_pitch_gain.get() * horizontal_velocity_magnitude;
+			float pitch_setpoint = 10.0f; // 设置为常数10度
 
 			theta_trim_s theta_trim{};
 			theta_trim.timestamp = hrt_absolute_time();

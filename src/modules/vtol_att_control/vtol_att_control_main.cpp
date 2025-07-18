@@ -437,6 +437,7 @@ VtolAttitudeControl::Run()
 		_vehicle_torque_setpoint1_pub.publish(_torque_setpoint_1);
 		_vehicle_thrust_setpoint0_pub.publish(_thrust_setpoint_0);
 		_vehicle_thrust_setpoint1_pub.publish(_thrust_setpoint_1);
+		// PX4_INFO("thrust_setpoint_0: %.2f, %.2f, %.2f", (double)_thrust_setpoint_0.xyz[0], (double)_thrust_setpoint_0.xyz[1], (double)_thrust_setpoint_0.xyz[2]);
 
 		// Advertise/publish vtol vehicle status -- immediately if changed, otherwise at 1 Hz
 		const bool vtol_vehicle_status_changed =

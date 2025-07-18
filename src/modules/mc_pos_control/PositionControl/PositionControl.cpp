@@ -119,7 +119,7 @@ bool PositionControl::update(const float dt)
 
 		// 每秒打印一次状态
 		if (hrt_absolute_time() - last_print_time > 1000000) {
-			PX4_INFO("theta_trim_valid: %d", _theta_trim_valid);
+			// PX4_INFO("theta_trim_valid: %d", _theta_trim_valid);
 			last_print_time = hrt_absolute_time();
 		}
 
@@ -149,6 +149,7 @@ void PositionControl::_positionControl()
 	_vel_sp.xy() = ControlMath::constrainXY(vel_sp_position.xy(), (_vel_sp - vel_sp_position).xy(), _lim_vel_horizontal);
 	// Constrain velocity in z-direction.
 	_vel_sp(2) = math::constrain(_vel_sp(2), -_lim_vel_up, _lim_vel_down);
+	// 这个 _vel_sp(2) 是垂直方向速度，_vel_sp.xy() 是水平方向速度，包含 x y
 }
 
 void PositionControl::_velocityControl(const float dt)
@@ -233,6 +234,7 @@ void PositionControl::_accelerationControl()
 	const float cos_ned_body = (Vector3f(0, 0, 1).dot(body_z));
 	const float collective_thrust = math::min(thrust_ned_z / cos_ned_body, -_lim_thr_min);
 	_thr_sp = body_z * collective_thrust;
+	// PX4_INFO("thr_sp: %.2f, %.2f, %.2f", (double)_thr_sp(0), (double)_thr_sp(1), (double)_thr_sp(2));
 }
 
 bool PositionControl::_inputValid()
@@ -290,29 +292,29 @@ void PositionControl::getAttitudeSetpoint(vehicle_attitude_setpoint_s &attitude_
 		// 从当前计算的姿态中获取 roll 和 yaw
 		Quatf q_current(attitude_setpoint.q_d);
 		Eulerf euler_current(q_current);
-		PX4_INFO("originnal pitch: %.2f, trimed pitch: %.2f",
-			(double)euler_current(1) * 180.0 / M_PI,
-			(double)euler_trim(1) * 180.0 / M_PI);
+		// PX4_INFO("originnal pitch: %.2f, trimed pitch: %.2f",
+		// 	(double)euler_current(1) * 180.0 / M_PI,
+		// 	(double)euler_trim(1) * 180.0 / M_PI);
 
 		// 组合：使用当前的 roll 和 yaw，但使用 theta_trim 的 pitch
 		Eulerf euler_combined(euler_current(0), euler_trim(1), euler_current(2));
 		Quatf q_combined(euler_combined);
 
 		// 将结果复制回 attitude_setpoint
-		q_combined.copyTo(attitude_setpoint.q_d);
+		// q_combined.copyTo(attitude_setpoint.q_d);
 
-		PX4_INFO("Combined attitude - roll: %.2f, pitch: %.2f(trim), yaw: %.2f",
-			(double)euler_combined(0) * 180.0 / M_PI,
-			(double)euler_combined(1) * 180.0 / M_PI,
-			(double)euler_combined(2) * 180.0 / M_PI);
+		// PX4_INFO("Combined attitude - roll: %.2f, pitch: %.2f(trim), yaw: %.2f",
+		// 	(double)euler_combined(0) * 180.0 / M_PI,
+		// 	(double)euler_combined(1) * 180.0 / M_PI,
+		// 	(double)euler_combined(2) * 180.0 / M_PI);
 	} else {
 		// 如果没有有效的消息，已经使用了原来的计算方法
 		Quatf q_current(attitude_setpoint.q_d);
 		Eulerf euler_current(q_current);
-		PX4_INFO("Using thrustToAttitude - roll: %.2f, pitch: %.2f, yaw: %.2f",
-			(double)euler_current(0) * 180.0 / M_PI,
-			(double)euler_current(1) * 180.0 / M_PI,
-			(double)euler_current(2) * 180.0 / M_PI);
+		// PX4_INFO("Using thrustToAttitude - roll: %.2f, pitch: %.2f, yaw: %.2f",
+		// 	(double)euler_current(0) * 180.0 / M_PI,
+		// 	(double)euler_current(1) * 180.0 / M_PI,
+		// 	(double)euler_current(2) * 180.0 / M_PI);
 	}
 
 	attitude_setpoint.yaw_sp_move_rate = _yawspeed_sp;
