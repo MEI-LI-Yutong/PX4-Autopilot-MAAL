@@ -470,6 +470,9 @@ ControlAllocator::Run()
 		_last_status_pub = now;
 	}
 
+	// Call custom allocation calculation
+	calculate_custom_allocation();
+
 	perf_end(_loop_perf);
 }
 
@@ -603,6 +606,114 @@ ControlAllocator::update_effectiveness_matrix_if_needed(EffectivenessUpdateReaso
 
 		trims.timestamp = hrt_absolute_time();
 		_actuator_servos_trim_pub.publish(trims);
+	}
+}
+
+void
+ControlAllocator::calculate_custom_allocation()
+{
+	// 检查是否有有效的推力设定点
+	if (!PX4_ISFINITE(_thrust_sp(0)) || !PX4_ISFINITE(_thrust_sp(2))) {
+		return;
+	}
+
+	// 订阅utrim消息
+	utrim_s utrim{};
+	if (!_utrim_sub.update(&utrim) || !utrim.valid) {
+		return;
+	}
+
+	// 从utrim获取三个多项式值作为theta (使用前3个多项式值)
+	float theta1 = utrim.polynomial_values[0];
+	float theta2 = utrim.polynomial_values[1];
+	float theta3 = utrim.polynomial_values[2];
+
+	// 常量定义
+	const float L1 = 1.0f;  // 常量 L1
+	const float L2 = 1.0f;  // 常量 L2
+	const float L3 = 1.0f;  // 常量 L3
+
+	// 从推力设定点获取fx和fz
+	float fx = _thrust_sp(0);
+	float fz = _thrust_sp(2);
+
+	// 计算三角函数值
+	float sin_theta1 = sinf(theta1);
+	float cos_theta1 = cosf(theta1);
+	float sin_theta2 = sinf(theta2);
+	float cos_theta2 = cosf(theta2);
+	float sin_theta3 = sinf(theta3);
+	float cos_theta3 = cosf(theta3);
+
+	// 构建效率矩阵 A (5x6)
+	matrix::Matrix<float, 5, 6> A;
+
+	// 第一行 (fx)
+	A(0, 0) = sin_theta1;
+	A(0, 1) = sin_theta2;
+	A(0, 2) = sin_theta3;
+	A(0, 3) = cos_theta1;
+	A(0, 4) = cos_theta2;
+	A(0, 5) = cos_theta3;
+
+	// 第二行 (fz)
+	A(1, 0) = -cos_theta1;
+	A(1, 1) = -cos_theta2;
+	A(1, 2) = -cos_theta3;
+	A(1, 3) = sin_theta1;
+	A(1, 4) = sin_theta2;
+	A(1, 5) = sin_theta3;
+
+	// 第三行 (d*tau_x/L3)
+	A(2, 0) = -cos_theta1;
+	A(2, 1) = cos_theta2;
+	A(2, 2) = 0.0f;
+	A(2, 3) = sin_theta1;
+	A(2, 4) = -sin_theta2;
+	A(2, 5) = 0.0f;
+
+	// 第四行 (d*tau_y/L1)
+	A(3, 0) = cos_theta1;
+	A(3, 1) = cos_theta2;
+	A(3, 2) = -(L2 / L1) * cos_theta3;
+	A(3, 3) = -sin_theta1;
+	A(3, 4) = -sin_theta2;
+	A(3, 5) = (L2 / L1) * sin_theta3;
+
+	// 第五行 (d*tau_z/L3)
+	A(4, 0) = -sin_theta1;
+	A(4, 1) = sin_theta2;
+	A(4, 2) = 0.0f;
+	A(4, 3) = -cos_theta1;
+	A(4, 4) = cos_theta2;
+	A(4, 5) = 0.0f;
+
+	// 左侧向量 b (5x1)
+	matrix::Vector<float, 5> b;
+	b(0) = fx;
+	b(1) = fz;
+	b(2) = 0.0f; // dtau_x/L3
+	b(3) = 0.0f; // dtau_y/L1
+	b(4) = 0.0f; // dtau_z/L3
+
+	// 计算右侧向量 x = A^T * (A * A^T)^{-1} * b (伪逆解)
+	matrix::Matrix<float, 6, 5> At = A.transpose();
+	matrix::Matrix<float, 5, 5> AAt = A * At;
+	matrix::Matrix<float, 5, 5> AAt_inv;
+
+	// 计算逆矩阵
+	if (matrix::inv(AAt, AAt_inv)) {
+		matrix::Vector<float, 6> x = At * AAt_inv * b;
+
+		// 记录结果
+		PX4_INFO("CustomAllocation: 输入 fx=%.3f, fz=%.3f, theta1=%.3f, theta2=%.3f, theta3=%.3f",
+		         (double)fx, (double)fz, (double)theta1, (double)theta2, (double)theta3);
+
+		PX4_INFO("CustomAllocation: 结果向量 df1=%.3f, df2=%.3f, df3=%.3f, df1_dtheta1=%.3f, df2_dtheta2=%.3f, df3_dtheta3=%.3f",
+		         (double)x(0), (double)x(1), (double)x(2), (double)x(3), (double)x(4), (double)x(5));
+
+	} else {
+		PX4_WARN("CustomAllocation: 无法计算矩阵逆");
 	}
 }
 
