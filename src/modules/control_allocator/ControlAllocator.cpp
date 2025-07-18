@@ -413,6 +413,9 @@ ControlAllocator::Run()
 
 		update_effectiveness_matrix_if_needed(EffectivenessUpdateReason::NO_EXTERNAL_UPDATE);
 
+		// 首先尝试自定义分配
+		calculate_custom_allocation();
+
 		// Set control setpoint vector(s)
 		matrix::Vector<float, NUM_AXES> c[ActuatorEffectiveness::MAX_NUM_MATRICES];
 		c[0](0) = _torque_sp(0);
@@ -440,11 +443,31 @@ ControlAllocator::Run()
 
 			_control_allocation[i]->setControlSetpoint(c[i]);
 
-			// Do allocation
+			// 尝试使用自定义分配
+			if (_custom_allocation_valid) {
+				// 使用自定义分配结果
+				matrix::Vector<float, NUM_ACTUATORS> custom_actuator_sp;
+				if (apply_custom_allocation(custom_actuator_sp)) {
+					_control_allocation[i]->setActuatorSetpoint(custom_actuator_sp);
+					PX4_INFO("使用自定义控制分配");
+				} else {
+					// 回退到标准分配
 			_control_allocation[i]->allocate();
-			_actuator_effectiveness->allocateAuxilaryControls(dt, i, _control_allocation[i]->_actuator_sp); //flaps and spoilers
-			_actuator_effectiveness->updateSetpoint(c[i], i, _control_allocation[i]->_actuator_sp,
+				}
+			} else {
+				// 回退到标准分配
+				_control_allocation[i]->allocate();
+			}
+			
+			// 获取当前的执行器设定点用于后续处理
+			matrix::Vector<float, NUM_ACTUATORS> actuator_sp = _control_allocation[i]->getActuatorSetpoint();
+			
+			_actuator_effectiveness->allocateAuxilaryControls(dt, i, actuator_sp); //flaps and spoilers
+			_actuator_effectiveness->updateSetpoint(c[i], i, actuator_sp,
 								_control_allocation[i]->getActuatorMin(), _control_allocation[i]->getActuatorMax());
+
+			// 更新执行器设定点
+			_control_allocation[i]->setActuatorSetpoint(actuator_sp);
 
 			if (_has_slew_rate) {
 				_control_allocation[i]->applySlewRateLimit(dt);
@@ -468,9 +491,6 @@ ControlAllocator::Run()
 
 		_last_status_pub = now;
 	}
-
-	// Call custom allocation calculation
-	calculate_custom_allocation();
 
 	perf_end(_loop_perf);
 }
@@ -611,6 +631,9 @@ ControlAllocator::update_effectiveness_matrix_if_needed(EffectivenessUpdateReaso
 void
 ControlAllocator::calculate_custom_allocation()
 {
+	// 重置有效性标志
+	_custom_allocation_valid = false;
+	
 	// 检查是否有有效的推力设定点
 	if (!PX4_ISFINITE(_thrust_sp(0)) || !PX4_ISFINITE(_thrust_sp(2))) {
 		return;
@@ -720,6 +743,13 @@ ControlAllocator::calculate_custom_allocation()
 		du(3) /= f1;
 		du(4) /= f2;
 		du(5) /= f3;
+<<<<<<< HEAD
+=======
+
+		// 存储结果
+		_custom_allocation_result = du;
+		_custom_allocation_valid = true;
+>>>>>>> fa4da71becddcd024190210d6f8d740c938a21ec
 
 		// 记录结果
 		PX4_INFO("CustomAllocation: 输入 fx=%.3f, fz=%.3f, theta1=%.3f, theta2=%.3f, theta3=%.3f",
@@ -727,12 +757,38 @@ ControlAllocator::calculate_custom_allocation()
 
 		PX4_INFO("CustomAllocation: 结果向量 du1=%.3f, du2=%.3f, du3=%.3f, du1_dtheta1=%.3f, du2_dtheta2=%.3f, du3_dtheta3=%.3f",
 		         (double)du(0), (double)du(1), (double)du(2), (double)du(3), (double)du(4), (double)du(5));
+<<<<<<< HEAD
 
 
+=======
+>>>>>>> fa4da71becddcd024190210d6f8d740c938a21ec
 
 	} else {
 		PX4_WARN("CustomAllocation: 无法计算矩阵逆");
 	}
+}
+
+bool
+ControlAllocator::apply_custom_allocation(matrix::Vector<float, NUM_ACTUATORS> &actuator_sp)
+{
+	if (!_custom_allocation_valid) {
+		return false;
+	}
+
+	// 清零执行器设定点
+	actuator_sp.setZero();
+
+	// 映射电机输出 (du[0:3] -> actuator_sp[0:3])
+	for (int i = 0; i < 3; i++) {
+		actuator_sp(i) = _custom_allocation_result(i);
+	}
+
+	// 映射舵机输出 (du[3:6] -> actuator_sp[3:6])
+	for (int i = 0; i < 3; i++) {
+		actuator_sp(i + 3) = _custom_allocation_result(i + 3);
+	}
+
+	return true;
 }
 
 void
