@@ -452,7 +452,7 @@ ControlAllocator::Run()
 					PX4_INFO("使用自定义控制分配");
 				} else {
 					// 回退到标准分配
-			_control_allocation[i]->allocate();
+					_control_allocation[i]->allocate();
 				}
 			} else {
 				// 回退到标准分配
@@ -465,7 +465,7 @@ ControlAllocator::Run()
 			_actuator_effectiveness->allocateAuxilaryControls(dt, i, actuator_sp); //flaps and spoilers
 			_actuator_effectiveness->updateSetpoint(c[i], i, actuator_sp,
 								_control_allocation[i]->getActuatorMin(), _control_allocation[i]->getActuatorMax());
-
+			
 			// 更新执行器设定点
 			_control_allocation[i]->setActuatorSetpoint(actuator_sp);
 
