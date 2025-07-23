@@ -17,30 +17,33 @@ param set-default MAV_TYPE 21
 
 param set-default CA_AIRFRAME 3
 
-param set-default CA_ROTOR_COUNT 4
-param set-default CA_ROTOR0_PX 0.1515
-param set-default CA_ROTOR0_PY 0.245
+param set-default CA_ROTOR_COUNT 3
+param set-default CA_ROTOR0_PX 0.23
+param set-default CA_ROTOR0_PY 0.2
 param set-default CA_ROTOR0_KM 0.05
-param set-default CA_ROTOR1_PX -0.1515
-param set-default CA_ROTOR1_PY -0.1875
+param set-default CA_ROTOR1_PX 0.23
+param set-default CA_ROTOR1_PY -0.2
 param set-default CA_ROTOR1_KM 0.05
-param set-default CA_ROTOR2_PX 0.1515
-param set-default CA_ROTOR2_PY -0.245
+param set-default CA_ROTOR2_PX -0.4
+param set-default CA_ROTOR2_PY 0
 param set-default CA_ROTOR2_KM -0.05
-param set-default CA_ROTOR3_PX -0.1515
-param set-default CA_ROTOR3_PY 0.1875
-param set-default CA_ROTOR3_KM -0.05
 
 param set-default CA_ROTOR0_TILT 1
-param set-default CA_ROTOR2_TILT 2
-param set-default CA_SV_TL0_MAXA 90
-param set-default CA_SV_TL0_MINA 0
+param set-default CA_ROTOR1_TILT 2
+param set-default CA_ROTOR2_TILT 3
+
+param set-default CA_SV_TL0_MAXA 30
+param set-default CA_SV_TL0_MINA -30
 param set-default CA_SV_TL0_TD 0
 param set-default CA_SV_TL0_CT 1
-param set-default CA_SV_TL1_MAXA 90
-param set-default CA_SV_TL1_MINA 0
+param set-default CA_SV_TL1_MAXA 30
+param set-default CA_SV_TL1_MINA -30
 param set-default CA_SV_TL1_TD 0
 param set-default CA_SV_TL1_CT 1
+param set-default CA_SV_TL2_MAXA 30
+param set-default CA_SV_TL2_MINA -30
+param set-default CA_SV_TL2_TD 0
+param set-default CA_SV_TL2_CT 1
 
 param set-default CA_SV_CS0_TRQ_R -0.5
 param set-default CA_SV_CS0_TYPE 1
@@ -105,3 +108,5 @@ param set-default VT_FWD_THRUST_EN 4
 param set-default VT_FWD_THRUST_SC 0.6
 param set-default VT_TILT_TRANS 0.6
 param set-default VT_TYPE 1
+
+param set-default VT_TILT_MC 0.5
