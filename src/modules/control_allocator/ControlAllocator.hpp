@@ -143,7 +143,7 @@ private:
 	 * Custom control allocation calculation based on matrix formula
 	 */
 	void calculate_custom_allocation();
-	
+
 	/**
 	 * Apply custom allocation results to actuator setpoints
 	 */
@@ -209,10 +209,13 @@ private:
 	matrix::Vector3f _torque_sp;
 	matrix::Vector3f _thrust_sp;
 	bool _publish_controls{true};
-	
+
 	// Custom allocation results
 	matrix::Vector<float, 6> _custom_allocation_result;
 	bool _custom_allocation_valid{false};
+
+	// 新增：自定义trim向量
+	matrix::Vector<float, NUM_ACTUATORS> _custom_trim_vec;
 
 	// Reflects motor failures that are currently handled, not motor failures that are reported.
 	// For example, the system might report two motor failures, but only the first one is handled by CA

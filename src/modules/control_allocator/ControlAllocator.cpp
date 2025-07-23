@@ -641,17 +641,53 @@ ControlAllocator::calculate_custom_allocation()
 
 	// 订阅utrim消息
 	utrim_s utrim{};
-	if (!_utrim_sub.update(&utrim) || !utrim.valid) {
-		return;
+	_custom_trim_vec.setZero();
+	if (_utrim_sub.update(&utrim) && utrim.valid) {
+		// 前三个量（f1,f2,f3 推力值）转换为[0,1]范围（电机相关）
+		// 使用公式 f = 34.024x - 767.4，其中 f 是推力，x 是电机信号[0-100]
+		// 反推公式：x = (f + 767.4) / 34.024
+		const float motor_coeff = 34.024f;
+		const float motor_offset = 767.4f;
+
+		for (int i = 0; i < 3 && i < NUM_ACTUATORS; ++i) {
+			float thrust_value = utrim.polynomial_values[i];  // f1,f2,f3 推力值
+
+			// 从推力计算电机信号 [0-100]
+			float motor_signal = (thrust_value/9.81f*1000.0f + motor_offset) / motor_coeff;
+
+			// 限制在 [0-100] 范围内
+			motor_signal = math::constrain(motor_signal, 0.0f, 100.0f);
+
+			// 归一化到 [0-1] 范围
+			_custom_trim_vec(i) = motor_signal / 100.0f;
+
+			PX4_DEBUG("Motor %d: thrust=%.1f -> signal=%.1f -> normalized=%.3f",
+			         i, (double)thrust_value, (double)motor_signal, (double)_custom_trim_vec(i));
+		}
+
+		// 后三个量（theta1,theta2,theta3 角度）转换为[-1,1]范围（舵机相关）
+		// 使用标准舵机角度范围 ±45°
+		for (int i = 3; i < 6 && i < NUM_ACTUATORS; ++i) {
+			float angle_deg = utrim.polynomial_values[i];  // theta1,theta2,theta3 角度值（度）
+
+			// 角度转换为[-1,1]范围: angle / 45°
+			_custom_trim_vec(i) = angle_deg / 45.0f;
+
+			// 限制在[-1,1]范围内
+			_custom_trim_vec(i) = math::constrain(_custom_trim_vec(i), -1.0f, 1.0f);
+
+			PX4_DEBUG("Servo %d: theta=%.1f° -> actuator=%.3f (±45° range)",
+			         i-3, (double)angle_deg, (double)_custom_trim_vec(i));
+		}
 	}
 
-	// 从utrim获取三个多项式值作为theta (使用前3个多项式值)
-	float theta1 = utrim.polynomial_values[0];
-	float theta2 = utrim.polynomial_values[1];
-	float theta3 = utrim.polynomial_values[2];
-	float f1 = utrim.polynomial_values[3];
-	float f2 = utrim.polynomial_values[4];
-	float f3 = utrim.polynomial_values[5];
+	// 从utrim获取值：f1,f2,f3=utrim[0,1,2]，theta1,theta2,theta3=utrim[3,4,5]
+	float f1 = utrim.polynomial_values[0];
+	float f2 = utrim.polynomial_values[1];
+	float f3 = utrim.polynomial_values[2];
+	float theta1 = utrim.polynomial_values[3];
+	float theta2 = utrim.polynomial_values[4];
+	float theta3 = utrim.polynomial_values[5];
 
 	// 角度转弧度，使用 PX4 自带的 M_PI_F
 	theta1 *= (M_PI_F / 180.0f);
@@ -767,17 +803,12 @@ ControlAllocator::apply_custom_allocation(matrix::Vector<float, NUM_ACTUATORS> &
 		return false;
 	}
 
-	// 清零执行器设定点
-	actuator_sp.setZero();
-
-	// 映射电机输出 (du[0:3] -> actuator_sp[0:3])
-	for (int i = 0; i < 3; i++) {
-		actuator_sp(i) = _custom_allocation_result(i);
+	// actuator_sp = du + trim
+	for (int i = 0; i < NUM_ACTUATORS && i < 6; ++i) {
+		actuator_sp(i) = _custom_allocation_result(i) + _custom_trim_vec(i);
 	}
-
-	// 映射舵机输出 (du[3:6] -> actuator_sp[3:6])
-	for (int i = 0; i < 3; i++) {
-		actuator_sp(i + 3) = _custom_allocation_result(i + 3);
+	for (int i = 6; i < NUM_ACTUATORS; ++i) {
+		actuator_sp(i) = 0.f;
 	}
 
 	return true;
