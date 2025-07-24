@@ -65,7 +65,7 @@ TrimSelector::~TrimSelector()
 bool TrimSelector::init()
 {
 	// 初始化定时器，定期执行Run()函数
-	ScheduleOnInterval(10_ms); // 100Hz 更新率，与 position control 相同
+	ScheduleOnInterval(50_ms); // 20Hz 更新率，与 position control 相同
 	return true;
 }
 
