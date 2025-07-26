@@ -75,52 +75,55 @@ void limitTilt(Vector3f &body_unit, const Vector3f &world_unit, const float max_
 
 void bodyzToAttitude(Vector3f body_z, const float yaw_sp, const float pitch_sp, vehicle_attitude_setpoint_s &att_sp)
 {
-	// 1. 从期望的yaw和pitch直接构造机体x轴方向
-	// pitch_sp是角度，需要转换为弧度
-	const float pitch_rad = pitch_sp * M_PI_F / 180.0f;
-	const float cos_pitch = cosf(pitch_rad);
-	const float sin_pitch = sinf(pitch_rad);
-	const float cos_yaw = cosf(yaw_sp);
-	const float sin_yaw = sinf(yaw_sp);
-
-	// 机体x轴在世界坐标系中的方向（考虑yaw和pitch）
-	Vector3f body_x{cos_pitch * cos_yaw, cos_pitch * sin_yaw, -sin_pitch};
-	body_x.normalize();
-
-	// 2. 归一化机体z轴
+	// 1. 归一化机体z轴
 	if (body_z.norm_squared() < FLT_EPSILON) {
 		body_z(2) = 1.f;
 	}
 	body_z.normalize();
 
-	// 3. Gram-Schmidt 正交化：调整x轴使其与z轴正交
-	Vector3f body_x_proj = body_x - (body_x.dot(body_z)) * body_z;
+	// 2. 计算期望yaw方向在XY平面的单位向量
+	const Vector3f y_C{-sinf(yaw_sp), cosf(yaw_sp), 0.f};
 
-	// 4. 特殊情况处理：如果投影后的x轴太小，说明x轴与z轴几乎平行
-	if (body_x_proj.norm_squared() < 0.000001f) {
-		// 选择一个与z轴垂直的方向作为x轴
-		if (fabsf(body_z(0)) < 0.9f) {
-			body_x_proj = Vector3f{1.f, 0.f, 0.f} - body_z(0) * body_z;
-		} else {
-			body_x_proj = Vector3f{0.f, 1.f, 0.f} - body_z(1) * body_z;
-		}
+	// 3. 计算机体x轴，使其与body_z正交
+	Vector3f body_x = y_C % body_z; // % 是叉乘
+
+	// 4. 如果z轴朝下，x轴取反，保证机头朝前
+	if (body_z(2) < 0.f) {
+		body_x = -body_x;
 	}
-	body_x_proj.normalize();
 
-	// 5. 计算机体y轴
-	const Vector3f body_y = body_z % body_x_proj;
+	// 5. 特殊情况处理：z轴几乎水平
+	if (fabsf(body_z(2)) < 0.000001f) {
+		body_x.zero();
+		body_x(2) = 1.f;
+	}
 
-	// 6. 构造旋转矩阵
+	body_x.normalize();
+
+	// 6. 计算机体y轴
+	const Vector3f body_y = body_z % body_x;
+
+	// 7. 构造旋转矩阵
 	Dcmf R_sp;
 	for (int i = 0; i < 3; i++) {
-		R_sp(i, 0) = body_x_proj(i);
+		R_sp(i, 0) = body_x(i);
 		R_sp(i, 1) = body_y(i);
 		R_sp(i, 2) = body_z(i);
 	}
 
-	// 7. 转成四元数，写入att_sp
+	// 8. 转成四元数
 	const Quatf q_sp{R_sp};
-	q_sp.copyTo(att_sp.q_d);
+
+	// 9. 从四元数提取欧拉角
+	Eulerf euler_sp(q_sp);
+
+	// 10. 替换pitch为utrim的pitch（pitch_sp是角度，需要转换为弧度）
+	const float pitch_rad = pitch_sp * M_PI_F / 180.0f;
+	euler_sp(1) = pitch_rad; // 替换pitch角度
+
+	// 11. 重新构造四元数
+	const Quatf q_sp_final(euler_sp);
+	q_sp_final.copyTo(att_sp.q_d);
 }
 
 Vector2f constrainXY(const Vector2f &v0, const Vector2f &v1, const float &max)
