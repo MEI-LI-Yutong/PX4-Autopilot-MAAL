@@ -44,10 +44,16 @@ using namespace matrix;
 
 namespace ControlMath
 {
-void thrustToAttitude(const Vector3f &thr_sp, const float yaw_sp, vehicle_attitude_setpoint_s &att_sp)
+void thrustToAttitude(const Vector3f &thr_sp, const float yaw_sp, const float pitch_sp, vehicle_attitude_setpoint_s &att_sp)
 {
+	bodyzToAttitude(-thr_sp, yaw_sp, pitch_sp, att_sp);
+	att_sp.thrust_body[2] = -thr_sp.length();
+
+	// 原来的实现（注释掉）
+	/*
 	bodyzToAttitude(-thr_sp, yaw_sp, att_sp);
 	att_sp.thrust_body[2] = -thr_sp.length();
+	*/
 }
 
 void limitTilt(Vector3f &body_unit, const Vector3f &world_unit, const float max_angle)
@@ -67,48 +73,52 @@ void limitTilt(Vector3f &body_unit, const Vector3f &world_unit, const float max_
 	body_unit = cosf(angle) * world_unit + sinf(angle) * rejection.unit();
 }
 
-void bodyzToAttitude(Vector3f body_z, const float yaw_sp, vehicle_attitude_setpoint_s &att_sp)
+void bodyzToAttitude(Vector3f body_z, const float yaw_sp, const float pitch_sp, vehicle_attitude_setpoint_s &att_sp)
 {
-	// zero vector, no direction, set safe level value
+	// 1. 从期望的yaw和pitch直接构造机体x轴方向
+	// pitch_sp是角度，需要转换为弧度
+	const float pitch_rad = pitch_sp * M_PI_F / 180.0f;
+	const float cos_pitch = cosf(pitch_rad);
+	const float sin_pitch = sinf(pitch_rad);
+	const float cos_yaw = cosf(yaw_sp);
+	const float sin_yaw = sinf(yaw_sp);
+
+	// 机体x轴在世界坐标系中的方向（考虑yaw和pitch）
+	Vector3f body_x{cos_pitch * cos_yaw, cos_pitch * sin_yaw, -sin_pitch};
+	body_x.normalize();
+
+	// 2. 归一化机体z轴
 	if (body_z.norm_squared() < FLT_EPSILON) {
 		body_z(2) = 1.f;
 	}
-
 	body_z.normalize();
 
-	// vector of desired yaw direction in XY plane, rotated by PI/2
-	const Vector3f y_C{-sinf(yaw_sp), cosf(yaw_sp), 0.f};
+	// 3. Gram-Schmidt 正交化：调整z轴使其与x轴正交
+	Vector3f body_z_proj = body_z - (body_z.dot(body_x)) * body_x;
 
-	// desired body_x axis, orthogonal to body_z
-	Vector3f body_x = y_C % body_z;
-
-	// keep nose to front while inverted upside down
-	if (body_z(2) < 0.f) {
-		body_x = -body_x;
+	// 4. 特殊情况处理：如果投影后的z轴太小，说明z轴与x轴几乎平行
+	if (body_z_proj.norm_squared() < 0.000001f) {
+		// 选择一个与x轴垂直的方向作为z轴
+		if (fabsf(body_x(0)) < 0.9f) {
+			body_z_proj = Vector3f{1.f, 0.f, 0.f} - body_x(0) * body_x;
+		} else {
+			body_z_proj = Vector3f{0.f, 1.f, 0.f} - body_x(1) * body_x;
+		}
 	}
+	body_z_proj.normalize();
 
-	if (fabsf(body_z(2)) < 0.000001f) {
-		// desired thrust is in XY plane, set X downside to construct correct matrix,
-		// but yaw component will not be used actually
-		body_x.zero();
-		body_x(2) = 1.f;
-	}
+	// 5. 计算机体y轴
+	const Vector3f body_y = body_z_proj % body_x;
 
-	body_x.normalize();
-
-	// desired body_y axis
-	const Vector3f body_y = body_z % body_x;
-
+	// 6. 构造旋转矩阵
 	Dcmf R_sp;
-
-	// fill rotation matrix
 	for (int i = 0; i < 3; i++) {
 		R_sp(i, 0) = body_x(i);
 		R_sp(i, 1) = body_y(i);
-		R_sp(i, 2) = body_z(i);
+		R_sp(i, 2) = body_z_proj(i);
 	}
 
-	// copy quaternion setpoint to attitude setpoint topic
+	// 7. 转成四元数，写入att_sp
 	const Quatf q_sp{R_sp};
 	q_sp.copyTo(att_sp.q_d);
 }

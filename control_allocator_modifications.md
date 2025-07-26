@@ -51,28 +51,30 @@ if (_custom_allocation_valid) {
 实现了 `calculate_custom_allocation()` 函数，包含以下逻辑：
 
 **控制分配模型**：
-$$\begin{bmatrix}
-f_x \\
-f_z \\
-\tau_x/L_3 \\
-\tau_y/L_1 \\
-\tau_z/L_3
-\end{bmatrix} =
-\begin{bmatrix}
-\sin\theta_1 & \sin\theta_2 & \sin\theta_3 & \cos\theta_1 & \cos\theta_2 & \cos\theta_3 \\
--\cos\theta_1 & -\cos\theta_2 & -\cos\theta_3 & \sin\theta_1 & \sin\theta_2 & \sin\theta_3 \\
--\cos\theta_1 & \cos\theta_2 & 0 & \sin\theta_1 & -\sin\theta_2 & 0 \\
-\cos\theta_1 & \cos\theta_2 & -\left(L_2/L_1\right)\cos\theta_3 & -\sin\theta_1 & -\sin\theta_2 & \left(L_2/L_1\right)\sin\theta_3 \\
--\sin\theta_1 & \sin\theta_2 & 0 & -\cos\theta_1 & \cos\theta_2 & 0
-\end{bmatrix}
-\begin{bmatrix}
-df_1 \\
-df_2 \\
-df_3 \\
-df_1d\theta_1 \\
-df_2d\theta_2 \\
-df_3d\theta_3
-\end{bmatrix}$$
+
+```
+控制方程：A × du = b
+
+其中：
+b = [f_x, f_z, τ_x/L_3, τ_y/L_1, τ_z/L_3]ᵀ  (5×1 期望力矩向量)
+
+A = 效率矩阵 (5×6):
+    [  sin(θ1)   sin(θ2)   sin(θ3)   cos(θ1)   cos(θ2)   cos(θ3)  ]
+    [ -cos(θ1)  -cos(θ2)  -cos(θ3)   sin(θ1)   sin(θ2)   sin(θ3)  ]
+    [ -cos(θ1)   cos(θ2)      0       sin(θ1)  -sin(θ2)      0     ]
+    [  cos(θ1)   cos(θ2)  -L2/L1×    -sin(θ1)  -sin(θ2)   L2/L1×  ]
+    [ -sin(θ1)   sin(θ2)   cos(θ3)   -cos(θ1)   cos(θ2)   sin(θ3) ]
+                              0                              0
+
+du = [df_1, df_2, df_3, df_1×dθ_1, df_2×dθ_2, df_3×dθ_3]ᵀ  (6×1 控制变量)
+
+求解方法：du = Aᵀ × (A×Aᵀ)⁻¹ × b  (伪逆法)
+```
+
+其中：
+- **左侧向量 (5×1)**：期望的力和力矩分量
+- **效率矩阵 (5×6)**：执行器效率系数矩阵
+- **右侧向量 (6×1)**：执行器控制变量
 
 **实现细节**：
 1. **输入获取**：
@@ -128,9 +130,23 @@ for (int i = 0; i < NUM_ACTUATORS && i < 6; ++i) {
 4. **输出**：`actuator_motors` 和 `actuator_servos` 消息
 
 ## PWM映射关系
-- **Control Allocator 输出**：`actuator_sp` 范围 [-1,1]
-- **MixingOutput 处理**：`PWM = PWM_min + (actuator_sp + 1)/2 * (PWM_max - PWM_min)`
-- **QGC 参数**：`PWM_MAIN_MIN` 和 `PWM_MAIN_MAX` 定义实际PWM范围
+
+```
+数据流转换链：
+actuator_sp [-1,1] → MixingOutput → PWM [PWM_min, PWM_max]
+
+转换公式：
+PWM = PWM_min + (actuator_sp + 1) / 2 × (PWM_max - PWM_min)
+
+示例计算：
+- 当 actuator_sp = -1 时，PWM = PWM_min  (最小输出)
+- 当 actuator_sp =  0 时，PWM = (PWM_min + PWM_max) / 2  (中性位置)
+- 当 actuator_sp =  1 时，PWM = PWM_max  (最大输出)
+
+参数配置：
+- PWM_MAIN_MIN1~8: QGC中设置的最小PWM值
+- PWM_MAIN_MAX1~8: QGC中设置的最大PWM值
+```
 
 ## 功能特点
 - ✅ 完整的自定义控制分配算法

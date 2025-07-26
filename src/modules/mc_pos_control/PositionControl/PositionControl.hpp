@@ -46,6 +46,7 @@
 #include <uORB/topics/vehicle_local_position_setpoint.h>
 #include <uORB/topics/vehicle_constraints.h>
 #include <uORB/topics/theta_trim.h>
+#include <uORB/topics/vehicle_attitude.h>
 #include <uORB/Subscription.hpp>
 
 struct PositionControlStates {
@@ -241,4 +242,9 @@ private:
 	uORB::Subscription _theta_trim_sub{ORB_ID(theta_trim)};
 	theta_trim_s _last_theta_trim{}; ///< 存储最新的 theta_trim 消息
 	bool _theta_trim_valid{false};   ///< 标记是否有有效的 theta_trim 消息
+
+	/* 订阅 vehicle_attitude */
+	uORB::Subscription _vehicle_attitude_sub{ORB_ID(vehicle_attitude)};
+	vehicle_attitude_s _last_vehicle_attitude{}; ///< 存储最新的 vehicle_attitude 消息
+	bool _vehicle_attitude_valid{false};   ///< 标记是否有有效的 vehicle_attitude 消息
 };
