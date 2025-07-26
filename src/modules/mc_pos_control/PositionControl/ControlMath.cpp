@@ -93,29 +93,29 @@ void bodyzToAttitude(Vector3f body_z, const float yaw_sp, const float pitch_sp, 
 	}
 	body_z.normalize();
 
-	// 3. Gram-Schmidt 正交化：调整z轴使其与x轴正交
-	Vector3f body_z_proj = body_z - (body_z.dot(body_x)) * body_x;
+	// 3. Gram-Schmidt 正交化：调整x轴使其与z轴正交
+	Vector3f body_x_proj = body_x - (body_x.dot(body_z)) * body_z;
 
-	// 4. 特殊情况处理：如果投影后的z轴太小，说明z轴与x轴几乎平行
-	if (body_z_proj.norm_squared() < 0.000001f) {
-		// 选择一个与x轴垂直的方向作为z轴
-		if (fabsf(body_x(0)) < 0.9f) {
-			body_z_proj = Vector3f{1.f, 0.f, 0.f} - body_x(0) * body_x;
+	// 4. 特殊情况处理：如果投影后的x轴太小，说明x轴与z轴几乎平行
+	if (body_x_proj.norm_squared() < 0.000001f) {
+		// 选择一个与z轴垂直的方向作为x轴
+		if (fabsf(body_z(0)) < 0.9f) {
+			body_x_proj = Vector3f{1.f, 0.f, 0.f} - body_z(0) * body_z;
 		} else {
-			body_z_proj = Vector3f{0.f, 1.f, 0.f} - body_x(1) * body_x;
+			body_x_proj = Vector3f{0.f, 1.f, 0.f} - body_z(1) * body_z;
 		}
 	}
-	body_z_proj.normalize();
+	body_x_proj.normalize();
 
 	// 5. 计算机体y轴
-	const Vector3f body_y = body_z_proj % body_x;
+	const Vector3f body_y = body_z % body_x_proj;
 
 	// 6. 构造旋转矩阵
 	Dcmf R_sp;
 	for (int i = 0; i < 3; i++) {
-		R_sp(i, 0) = body_x(i);
+		R_sp(i, 0) = body_x_proj(i);
 		R_sp(i, 1) = body_y(i);
-		R_sp(i, 2) = body_z_proj(i);
+		R_sp(i, 2) = body_z(i);
 	}
 
 	// 7. 转成四元数，写入att_sp

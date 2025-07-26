@@ -236,7 +236,10 @@ void PositionControl::_accelerationControl()
 
 	// Convert to thrust assuming hover thrust produces standard gravity
 	const float thrust_ned_z = _acc_sp(2) * (_hover_thrust / CONSTANTS_ONE_G) - _hover_thrust;
-	const float thrust_ned_x = _acc_sp(0) * (_hover_thrust / CONSTANTS_ONE_G);
+	//const float thrust_ned_x = _acc_sp(0) * (_hover_thrust / CONSTANTS_ONE_G);
+
+	// 打印推力值用于调试
+	PX4_INFO("thrust_ned_z: %.3f", (double)thrust_ned_z);
 
 	// Project thrust to planned body attitude
 	const float cos_ned_body = (Vector3f(0, 0, 1).dot(body_z));
@@ -251,6 +254,9 @@ void PositionControl::_accelerationControl()
 		// 构造NED坐标系下的推力向量
 		const float thrust_ned_z_custom = _acc_sp(2) * (_hover_thrust / CONSTANTS_ONE_G);
 		const float thrust_ned_x_custom = _acc_sp(0) * (_hover_thrust / CONSTANTS_ONE_G);
+
+		// 打印推力值用于调试
+		PX4_INFO("thrust_ned_z_custom: %.3f, thrust_ned_x_custom: %.3f", (double)thrust_ned_z_custom, (double)thrust_ned_x_custom);
 
 		Vector3f thrust_ned_custom(thrust_ned_x_custom, 0.0f, thrust_ned_z_custom);
 
