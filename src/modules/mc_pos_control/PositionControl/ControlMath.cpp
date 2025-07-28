@@ -47,7 +47,17 @@ namespace ControlMath
 void thrustToAttitude(const Vector3f &thr_sp, const float yaw_sp, const float pitch_sp, vehicle_attitude_setpoint_s &att_sp)
 {
 	bodyzToAttitude(-thr_sp, yaw_sp, pitch_sp, att_sp);
-	att_sp.thrust_body[2] = -thr_sp.length();
+	// att_sp.thrust_body[2] = -thr_sp.length();
+	// 直接复制三维推力向量，而不是压缩成标量长度
+	att_sp.thrust_body[0] = thr_sp(0);
+	att_sp.thrust_body[1] = thr_sp(1);
+	att_sp.thrust_body[2] = thr_sp(2);
+
+	// 打印三维推力向量
+	PX4_INFO("thrust_body[0,1,2]: [%.3f, %.3f, %.3f]",
+		(double)att_sp.thrust_body[0],
+		(double)att_sp.thrust_body[1],
+		(double)att_sp.thrust_body[2]);
 
 	// 原来的实现（注释掉）
 	/*
@@ -75,55 +85,69 @@ void limitTilt(Vector3f &body_unit, const Vector3f &world_unit, const float max_
 
 void bodyzToAttitude(Vector3f body_z, const float yaw_sp, const float pitch_sp, vehicle_attitude_setpoint_s &att_sp)
 {
-	// 1. 归一化机体z轴
+	// zero vector, no direction, set safe level value
 	if (body_z.norm_squared() < FLT_EPSILON) {
 		body_z(2) = 1.f;
 	}
+
 	body_z.normalize();
 
-	// 2. 计算期望yaw方向在XY平面的单位向量
+	// vector of desired yaw direction in XY plane, rotated by PI/2
 	const Vector3f y_C{-sinf(yaw_sp), cosf(yaw_sp), 0.f};
 
-	// 3. 计算机体x轴，使其与body_z正交
-	Vector3f body_x = y_C % body_z; // % 是叉乘
+	// desired body_x axis, orthogonal to body_z
+	Vector3f body_x = y_C % body_z;
 
-	// 4. 如果z轴朝下，x轴取反，保证机头朝前
+	// keep nose to front while inverted upside down
 	if (body_z(2) < 0.f) {
 		body_x = -body_x;
 	}
 
-	// 5. 特殊情况处理：z轴几乎水平
 	if (fabsf(body_z(2)) < 0.000001f) {
+		// desired thrust is in XY plane, set X downside to construct correct matrix,
+		// but yaw component will not be used actually
 		body_x.zero();
 		body_x(2) = 1.f;
 	}
 
 	body_x.normalize();
 
-	// 6. 计算机体y轴
+	// desired body_y axis
 	const Vector3f body_y = body_z % body_x;
 
 	// 7. 构造旋转矩阵
 	Dcmf R_sp;
+
+	// fill rotation matrix
 	for (int i = 0; i < 3; i++) {
 		R_sp(i, 0) = body_x(i);
 		R_sp(i, 1) = body_y(i);
 		R_sp(i, 2) = body_z(i);
 	}
 
-	// 8. 转成四元数
+	// copy quaternion setpoint to attitude setpoint topic
 	const Quatf q_sp{R_sp};
 
-	// 9. 从四元数提取欧拉角
-	Eulerf euler_sp(q_sp);
+	// calculate euler angles from the computed rotation matrix
+	const Eulerf euler{R_sp};
 
-	// 10. 替换pitch为utrim的pitch（pitch_sp是角度，需要转换为弧度）
-	const float pitch_rad = pitch_sp * M_PI_F / 180.0f;
-	euler_sp(1) = pitch_rad; // 替换pitch角度
+	// print initial euler angles for debugging
+	PX4_INFO("Initial euler angles - roll: %.2f, pitch: %.2f, yaw: %.2f",
+		(double)(euler.phi() * 180.0f / M_PI_F),
+		(double)(euler.theta() * 180.0f / M_PI_F),
+		(double)(euler.psi() * 180.0f / M_PI_F));
 
-	// 11. 重新构造四元数
-	const Quatf q_sp_final(euler_sp);
-	q_sp_final.copyTo(att_sp.q_d);
+	// create new euler angles using computed roll and yaw, but theta_trim pitch
+	Eulerf euler_modified(euler.phi(), pitch_sp, euler.psi());
+
+	// convert modified euler angles back to quaternion
+	const Quatf q_sp_modified{euler_modified};
+	q_sp_modified.copyTo(att_sp.q_d);
+
+	// set euler angles for logging (using the modified values)
+	att_sp.roll_body = euler_modified.phi();
+	att_sp.pitch_body = euler_modified.theta();
+	att_sp.yaw_body = euler_modified.psi();
 }
 
 Vector2f constrainXY(const Vector2f &v0, const Vector2f &v1, const float &max)

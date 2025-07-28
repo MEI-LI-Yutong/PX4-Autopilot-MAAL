@@ -211,19 +211,20 @@ void TrimSelector::Run()
 	if (PX4_ISFINITE(trajectory_setpoint.velocity[0]) && PX4_ISFINITE(trajectory_setpoint.velocity[1])) {
 		float horizontal_velocity_magnitude = sqrtf(matrix::Vector2f(trajectory_setpoint.velocity).norm_squared());
 
+		float pitch_setpoint = 0.0f;
 		if (horizontal_velocity_magnitude > 2.0f) {
 			// float pitch_setpoint = _param_ts_pitch_gain.get() * horizontal_velocity_magnitude;
-			float pitch_setpoint = 10.0f; // 设置为常数10度
+			pitch_setpoint = 10.0f; // 如果速度大于2.0m/s，设置为10度
+		} else {
+			pitch_setpoint = 0.0f; // 如果速度小于等于2.0m/s，设置为0度
+		}
 
-			theta_trim_s theta_trim{};
-			theta_trim.timestamp = hrt_absolute_time();
-
-			Eulerf euler_setpoint(0.0f, -pitch_setpoint, 0.0f);
-			Quatf q_sp = Quatf(euler_setpoint);
-			q_sp.copyTo(theta_trim.q_d);
+		theta_trim_s theta_trim{};
+		theta_trim.timestamp = hrt_absolute_time();
+		theta_trim.pitch_angle = pitch_setpoint; // 直接发布俯仰角度
 
 
-			_theta_trim_pub.publish(theta_trim);
+		_theta_trim_pub.publish(theta_trim);
 		}
 	}
 
@@ -240,7 +241,7 @@ int TrimSelector::print_usage(const char *reason)
 		R"DESCR_STR(
 ### 描述
 Trim Selector模块接收轨迹设定点，计算姿态设定点，并将其发布到uORB。
-特别是，它将计算俯仰角设定点，等于速度的2倍（theta = 2 * v_x）。
+特别是，它将根据水平速度计算俯仰角设定点：当速度大于2.0m/s时为10度，否则为0度。
 
 ### 实现
 该模块订阅轨迹设定点，计算所需的姿态，并发布姿态设定点。

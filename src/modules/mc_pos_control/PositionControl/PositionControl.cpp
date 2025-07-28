@@ -319,12 +319,11 @@ void PositionControl::getLocalPositionSetpoint(vehicle_local_position_setpoint_s
 
 void PositionControl::getAttitudeSetpoint(vehicle_attitude_setpoint_s &attitude_setpoint) const
 {
-	// 从 theta_trim 中提取 pitch 角度
+	// 从 theta_trim 中提取 pitch 角度，优先使用外部设置的值
 	float pitch_sp = 0.0f;  // 默认值
-	if (_theta_trim_valid) {
-		Quatf q_trim(_last_theta_trim.q_d);
-		Eulerf euler_trim(q_trim);
-		pitch_sp = euler_trim(1);  // 提取 pitch 角度
+	if (_external_theta_trim_valid) {
+		// 使用外部设置的 theta_trim (从 MulticopterPositionControl 传入)
+		pitch_sp = _theta_trim.pitch_angle * M_PI_F / 180.0f;  // 转换为弧度
 	}
 
 	// 使用修改后的 thrustToAttitude 函数，传入 pitch_sp
