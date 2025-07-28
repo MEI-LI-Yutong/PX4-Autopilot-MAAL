@@ -417,7 +417,7 @@ void MulticopterPositionControl::Run()
 		// Update theta_trim message
 		theta_trim_s theta_trim;
 		if (_theta_trim_sub.update(&theta_trim)) {
-			PX4_INFO("Received NEW theta_trim - pitch_angle: %.2f degrees, timestamp: %llu",
+			PX4_INFO("Received NEW theta_trim - pitch_angle: %.2f degrees, timestamp: %lu",
 				(double)theta_trim.pitch_angle, theta_trim.timestamp);
 		}
 

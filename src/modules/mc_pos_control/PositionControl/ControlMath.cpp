@@ -39,6 +39,7 @@
 #include <px4_platform_common/defines.h>
 #include <float.h>
 #include <mathlib/mathlib.h>
+#include <px4_platform_common/log.h>
 
 using namespace matrix;
 
@@ -145,9 +146,9 @@ void bodyzToAttitude(Vector3f body_z, const float yaw_sp, const float pitch_sp, 
 	q_sp_modified.copyTo(att_sp.q_d);
 
 	// set euler angles for logging (using the modified values)
-	att_sp.roll_body = euler_modified.phi();
-	att_sp.pitch_body = euler_modified.theta();
-	att_sp.yaw_body = euler_modified.psi();
+	// att_sp.roll_body = euler_modified.phi();
+	// att_sp.pitch_body = euler_modified.theta();
+	// att_sp.yaw_body = euler_modified.psi();
 }
 
 Vector2f constrainXY(const Vector2f &v0, const Vector2f &v1, const float &max)

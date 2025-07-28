@@ -226,7 +226,7 @@ void TrimSelector::Run()
 
 		_theta_trim_pub.publish(theta_trim);
 		}
-	}
+
 
 	perf_end(_loop_perf);
 }
