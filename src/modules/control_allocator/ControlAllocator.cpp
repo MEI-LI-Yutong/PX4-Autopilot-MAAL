@@ -784,8 +784,12 @@ ControlAllocator::calculate_custom_allocation()
 			_custom_allocation_valid = true;
 
 			// 记录结果
-			PX4_INFO("CustomAllocation: 输入 fx=%.3f, fz=%.3f, theta1=%.3f, theta2=%.3f, theta3=%.3f",
-			         (double)fx, (double)fz, (double)theta1, (double)theta2, (double)theta3);
+			PX4_INFO("CustomAllocation: 输入推力 f1=%.3f, f2=%.3f, f3=%.3f, fx=%.3f, fz=%.3f, Mx=%.3f, My=%.3f, Mz=%.3f",
+			         (double)f1, (double)f2, (double)f3, (double)fx, (double)fz,
+			         (double)tau_x, (double)tau_y, (double)tau_z);
+
+			PX4_INFO("CustomAllocation: 输入角度 theta1=%.3f, theta2=%.3f, theta3=%.3f",
+			         (double)theta1, (double)theta2, (double)theta3);
 
 			PX4_INFO("CustomAllocation: 结果向量 du1=%.3f, du2=%.3f, du3=%.3f, du1_dtheta1=%.3f, du2_dtheta2=%.3f, du3_dtheta3=%.3f",
 			         (double)du(0), (double)du(1), (double)du(2), (double)du(3), (double)du(4), (double)du(5));
