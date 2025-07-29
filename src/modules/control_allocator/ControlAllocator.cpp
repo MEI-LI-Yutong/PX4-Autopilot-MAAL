@@ -449,7 +449,7 @@ ControlAllocator::Run()
 				matrix::Vector<float, NUM_ACTUATORS> custom_actuator_sp;
 				if (apply_custom_allocation(custom_actuator_sp)) {
 					_control_allocation[i]->setActuatorSetpoint(custom_actuator_sp);
-					PX4_INFO("使用自定义控制分配");
+					// PX4_INFO("使用自定义控制分配");
 				} else {
 					// 回退到标准分配
 					_control_allocation[i]->allocate();
@@ -636,6 +636,7 @@ ControlAllocator::calculate_custom_allocation()
 
 	// 检查是否有有效的推力设定点
 	if (!PX4_ISFINITE(_thrust_sp(0)) || !PX4_ISFINITE(_thrust_sp(2))) {
+		PX4_INFO("CA: 推力设定点无效");
 		return;
 	}
 
@@ -694,9 +695,9 @@ ControlAllocator::calculate_custom_allocation()
 		theta3 *= (M_PI_F / 180.0f);
 
 		// 常量定义
-		const float L1 = 0.20f;  // 常量 L1
-		const float L2 = 1.0f;  // 常量 L2
-		const float L3 = 0.41f;  // 常量 L3
+		const float L1 = 0.23f;  // 常量 L1
+		const float L2 = 0.40f;  // 常量 L2
+		const float L3 = 0.20f;  // 常量 L3
 
 		// 从推力设定点获取fx和fz
 		float fx = _thrust_sp(0);
@@ -784,18 +785,18 @@ ControlAllocator::calculate_custom_allocation()
 			_custom_allocation_valid = true;
 
 			// 记录结果
-			PX4_INFO("CustomAllocation: 输入推力 f1=%.3f, f2=%.3f, f3=%.3f, fx=%.3f, fz=%.3f, Mx=%.3f, My=%.3f, Mz=%.3f",
-			         (double)f1, (double)f2, (double)f3, (double)fx, (double)fz,
+			PX4_INFO("CA: fx=%.3f, fz=%.3f, Mx=%.3f, My=%.3f, Mz=%.3f",
+			        (double)fx, (double)fz,
 			         (double)tau_x, (double)tau_y, (double)tau_z);
 
-			PX4_INFO("CustomAllocation: 输入角度 theta1=%.3f, theta2=%.3f, theta3=%.3f",
-			         (double)theta1, (double)theta2, (double)theta3);
+			PX4_INFO("CA: utrim=%.3f, %.3f, %.3f, %.3f, %.3f, %.3f",
+			        (double)f1, (double)f2, (double)f3, (double)theta1, (double)theta2, (double)theta3);
 
-			PX4_INFO("CustomAllocation: 结果向量 du1=%.3f, du2=%.3f, du3=%.3f, du1_dtheta1=%.3f, du2_dtheta2=%.3f, du3_dtheta3=%.3f",
+			PX4_INFO("CA: du=%.3f, %.3f, %.3f, %.3f, %.3f, %.3f",
 			         (double)du(0), (double)du(1), (double)du(2), (double)du(3), (double)du(4), (double)du(5));
 
 		} else {
-			PX4_WARN("CustomAllocation: 无法计算矩阵逆");
+			PX4_WARN("CA: 无法计算矩阵逆");
 		}
 	}
 }
@@ -814,6 +815,11 @@ ControlAllocator::apply_custom_allocation(matrix::Vector<float, NUM_ACTUATORS> &
 	for (int i = 6; i < NUM_ACTUATORS; ++i) {
 		actuator_sp(i) = 0.f;
 	}
+
+	PX4_INFO("CA: 结果向量 du+utrim=%.3f, %.3f, %.3f",
+			 (double)actuator_sp(0), (double)actuator_sp(1), (double)actuator_sp(2));
+	PX4_INFO("CA: 结果向量 du+utrim=%.3f, %.3f, %.3f",
+			 (double)actuator_sp(3), (double)actuator_sp(4), (double)actuator_sp(5));
 
 	return true;
 }
