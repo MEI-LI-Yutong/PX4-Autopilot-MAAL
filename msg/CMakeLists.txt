@@ -251,6 +251,7 @@ set(msg_files
 	Wind.msg
 	YawEstimatorStatus.msg
 	theta_trim.msg
+	utrim.msg
 )
 list(SORT msg_files)
 
