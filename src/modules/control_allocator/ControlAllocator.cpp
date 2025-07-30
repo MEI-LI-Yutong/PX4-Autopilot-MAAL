@@ -45,6 +45,7 @@
 #include <circuit_breaker/circuit_breaker.h>
 #include <mathlib/math/Limits.hpp>
 #include <mathlib/math/Functions.hpp>
+#include <lib/geo/geo.h>
 
 using namespace matrix;
 using namespace time_literals;
@@ -654,7 +655,7 @@ ControlAllocator::calculate_custom_allocation()
 			float thrust_value = utrim.polynomial_values[i];  // f1,f2,f3 推力值
 
 			// 从推力计算电机信号 [0-100]
-			float motor_signal = (thrust_value/9.81f*1000.0f + motor_offset) / motor_coeff;
+			float motor_signal = (thrust_value/CONSTANTS_ONE_G*1000.0f + motor_offset) / motor_coeff;
 
 			// 限制在 [0-100] 范围内
 			motor_signal = math::constrain(motor_signal, 0.0f, 100.0f);

@@ -126,9 +126,6 @@ void bodyzToAttitude(Vector3f body_z, const float yaw_sp, const float pitch_sp, 
 		R_sp(i, 2) = body_z(i);
 	}
 
-	// copy quaternion setpoint to attitude setpoint topic
-	const Quatf q_sp{R_sp};
-
 	// calculate euler angles from the computed rotation matrix
 	const Eulerf euler{R_sp};
 
@@ -138,12 +135,58 @@ void bodyzToAttitude(Vector3f body_z, const float yaw_sp, const float pitch_sp, 
 		(double)(euler.theta() * 180.0f / M_PI_F),
 		(double)(euler.psi() * 180.0f / M_PI_F));
 
-	// create new euler angles using computed roll and yaw, but theta_trim pitch
-	Eulerf euler_modified(euler.phi(), pitch_sp, euler.psi());
+	// calculate pitch difference
+	float pitch_current = euler.theta();
+	float pitch_diff = pitch_sp - pitch_current;
 
-	// convert modified euler angles back to quaternion
-	const Quatf q_sp_modified{euler_modified};
-	q_sp_modified.copyTo(att_sp.q_d);
+	// print pitch comparison for debugging
+	PX4_INFO("Current pitch: %.2f, Target pitch: %.2f, Difference: %.2f",
+		(double)(pitch_current * 180.0f / M_PI_F),
+		(double)(pitch_sp * 180.0f / M_PI_F),
+		(double)(pitch_diff * 180.0f / M_PI_F));
+
+	// define a small threshold to avoid unnecessary calculations (about 0.1 degrees)
+	const float pitch_diff_threshold = 0.002f; // ~0.1 degrees in radians
+
+	Dcmf R_final;
+
+	if (fabsf(pitch_diff) < pitch_diff_threshold) {
+		// pitch difference is very small, skip rotation matrix calculation
+		// to avoid unnecessary computational overhead
+		R_final = R_sp;
+		PX4_INFO("Pitch difference too small (%.4f deg), skipping adjustment",
+			(double)(pitch_diff * 180.0f / M_PI_F));
+	} else {
+		// construct rotation matrix for pitch adjustment (rotation around Y-axis)
+		Dcmf R_pitch_adj;
+		R_pitch_adj.identity();
+
+		// rotation matrix around Y-axis:
+		// [cos(θ)  0  sin(θ)]
+		// [0       1  0     ]
+		// [-sin(θ) 0  cos(θ)]
+		float cos_pitch_diff = cosf(pitch_diff);
+		float sin_pitch_diff = sinf(pitch_diff);
+
+		R_pitch_adj(0, 0) = cos_pitch_diff;
+		R_pitch_adj(0, 2) = sin_pitch_diff;
+		R_pitch_adj(2, 0) = -sin_pitch_diff;
+		R_pitch_adj(2, 2) = cos_pitch_diff;
+
+		// apply pitch adjustment: R_final = R_sp * R_pitch_adj
+		R_final = R_sp * R_pitch_adj;
+	}
+
+	// convert final rotation matrix to quaternion
+	const Quatf q_sp_final{R_final};
+	q_sp_final.copyTo(att_sp.q_d);
+
+	// verify final euler angles for debugging
+	const Eulerf euler_final{R_final};
+	PX4_INFO("Final euler angles - roll: %.2f, pitch: %.2f, yaw: %.2f",
+		(double)(euler_final.phi() * 180.0f / M_PI_F),
+		(double)(euler_final.theta() * 180.0f / M_PI_F),
+		(double)(euler_final.psi() * 180.0f / M_PI_F));
 
 	// set euler angles for logging (using the modified values)
 	// att_sp.roll_body = euler_modified.phi();
