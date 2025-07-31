@@ -370,6 +370,25 @@ void MulticopterPositionControl::Run()
 
 		_vehicle_land_detected_sub.update(&_vehicle_land_detected);
 
+		// 处理theta_trim消息：有新消息用新的，没新消息继续用旧的
+		theta_trim_s theta_trim;
+		bool theta_trim_received = false;
+
+		if (_theta_trim_sub.update(&theta_trim)) {
+			// 收到新的theta_trim消息
+					PX4_INFO("Received NEW theta_trim - pitch_angle: %.2f degrees, timestamp: %llu",
+			(double)theta_trim.pitch_angle, theta_trim.timestamp);
+			theta_trim_received = true;
+		} else if (_theta_trim_sub.copy(&theta_trim)) {
+			// 使用最后一次的theta_trim消息
+			theta_trim_received = true;
+		}
+
+		if (theta_trim_received) {
+			// 将 theta_trim 传递给 PositionControl（确保一直有效的数据）
+			_control.setThetaTrim(theta_trim);
+		}
+
 		if (_param_mpc_use_hte.get()) {
 			hover_thrust_estimate_s hte;
 

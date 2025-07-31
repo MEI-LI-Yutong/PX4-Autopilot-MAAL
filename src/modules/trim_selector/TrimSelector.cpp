@@ -174,58 +174,59 @@ void TrimSelector::Run()
 	}
 
 	// 计算水平速度和发布utrim
+	// 设置默认前馈速度为0
+	float horizontal_velocity_magnitude = 0.0f;
+
+	// 如果收到了有效的trajectory_setpoint，使用接收到的速度
 	if (PX4_ISFINITE(trajectory_setpoint.velocity[0]) && PX4_ISFINITE(trajectory_setpoint.velocity[1])) {
-		// 计算水平速度大小
-		float horizontal_velocity_magnitude = sqrtf(matrix::Vector2f(trajectory_setpoint.velocity).norm_squared());
+		horizontal_velocity_magnitude = sqrtf(matrix::Vector2f(trajectory_setpoint.velocity).norm_squared());
+	}
+	// 否则使用默认值0.0f（已在上面初始化）
 
-		// 创建并填充utrim消息
-		utrim_s utrim{};
-		utrim.timestamp = hrt_absolute_time();
-		utrim.horizontal_velocity = horizontal_velocity_magnitude;
-		utrim.valid = true;
+	// 创建并填充utrim消息
+	utrim_s utrim{};
+	utrim.timestamp = hrt_absolute_time();
+	utrim.horizontal_velocity = horizontal_velocity_magnitude;
+	utrim.valid = true;
 
-		// 计算6个多项式值
-		for (int i = 0; i < 6; i++) {
-			utrim.polynomial_values[i] = calculate_polynomial(horizontal_velocity_magnitude, i);
-		}
-
-		// 发布utrim消息
-		_utrim_pub.publish(utrim);
-
-		// 添加到日志
-		_log_message.timestamp = hrt_absolute_time();
-		_log_message.severity = 6; // info
-		snprintf(_log_message.text, sizeof(_log_message.text),
-			 "UTRIM: v=%.2f, p1=%.2f, p2=%.2f, p3=%.2f, p4=%.2f, p5=%.2f, p6=%.2f",
-			 (double)utrim.horizontal_velocity,
-			 (double)utrim.polynomial_values[0],
-			 (double)utrim.polynomial_values[1],
-			 (double)utrim.polynomial_values[2],
-			 (double)utrim.polynomial_values[3],
-			 (double)utrim.polynomial_values[4],
-			 (double)utrim.polynomial_values[5]);
-		_log_message_pub.publish(_log_message);
+	// 计算6个多项式值
+	for (int i = 0; i < 6; i++) {
+		utrim.polynomial_values[i] = calculate_polynomial(horizontal_velocity_magnitude, i);
 	}
 
+	// 发布utrim消息
+	_utrim_pub.publish(utrim);
+
+	// 添加到日志
+	_log_message.timestamp = hrt_absolute_time();
+	_log_message.severity = 6; // info
+	snprintf(_log_message.text, sizeof(_log_message.text),
+		 "UTRIM: v=%.2f%s, p1=%.2f, p2=%.2f, p3=%.2f, p4=%.2f, p5=%.2f, p6=%.2f",
+		 (double)utrim.horizontal_velocity,
+		 (PX4_ISFINITE(trajectory_setpoint.velocity[0]) && PX4_ISFINITE(trajectory_setpoint.velocity[1])) ? "" : "(default)",
+		 (double)utrim.polynomial_values[0],
+		 (double)utrim.polynomial_values[1],
+		 (double)utrim.polynomial_values[2],
+		 (double)utrim.polynomial_values[3],
+		 (double)utrim.polynomial_values[4],
+		 (double)utrim.polynomial_values[5]);
+	_log_message_pub.publish(_log_message);
+
 	// 计算俯仰角期望和发布theta_trim（原有逻辑）
-	if (PX4_ISFINITE(trajectory_setpoint.velocity[0]) && PX4_ISFINITE(trajectory_setpoint.velocity[1])) {
-		float horizontal_velocity_magnitude = sqrtf(matrix::Vector2f(trajectory_setpoint.velocity).norm_squared());
+	// 使用上面已经计算好的horizontal_velocity_magnitude（包含默认值逻辑）
+	float pitch_setpoint = 0.0f;
+	if (horizontal_velocity_magnitude > 2.0f) {
+		// float pitch_setpoint = _param_ts_pitch_gain.get() * horizontal_velocity_magnitude;
+		pitch_setpoint = 10.0f; // 如果速度大于2.0m/s，设置为10度
+	} else {
+		pitch_setpoint = 0.0f; // 如果速度小于等于2.0m/s，设置为0度
+	}
 
-		float pitch_setpoint = 0.0f;
-		if (horizontal_velocity_magnitude > 2.0f) {
-			// float pitch_setpoint = _param_ts_pitch_gain.get() * horizontal_velocity_magnitude;
-			pitch_setpoint = 10.0f; // 如果速度大于2.0m/s，设置为10度
-		} else {
-			pitch_setpoint = 0.0f; // 如果速度小于等于2.0m/s，设置为0度
-		}
+	theta_trim_s theta_trim{};
+	theta_trim.timestamp = hrt_absolute_time();
+	theta_trim.pitch_angle = pitch_setpoint; // 直接发布俯仰角度
 
-		theta_trim_s theta_trim{};
-		theta_trim.timestamp = hrt_absolute_time();
-		theta_trim.pitch_angle = pitch_setpoint; // 直接发布俯仰角度
-
-
-		_theta_trim_pub.publish(theta_trim);
-		}
+	_theta_trim_pub.publish(theta_trim);
 
 
 	perf_end(_loop_perf);

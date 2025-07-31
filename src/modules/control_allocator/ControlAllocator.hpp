@@ -78,6 +78,8 @@
 #include <uORB/topics/vehicle_thrust_setpoint.h>
 #include <uORB/topics/vehicle_status.h>
 #include <uORB/topics/failure_detector_status.h>
+#include <uORB/topics/utrim.h>
+#include <uORB/topics/log_message.h>
 
 class ControlAllocator : public ModuleBase<ControlAllocator>, public ModuleParams, public px4::ScheduledWorkItem
 {
@@ -138,6 +140,17 @@ private:
 
 	void publish_actuator_controls();
 
+	/**
+	 * Custom control allocation calculation based on matrix formula
+	 */
+	void calculate_custom_allocation();
+
+	/**
+	 * Apply custom allocation results to actuator setpoints
+	 */
+	bool apply_custom_allocation(matrix::Vector<float, NUM_ACTUATORS> &actuator_sp);
+	void publish_allocation_log(const utrim_s &utrim, hrt_abstime timestamp);
+
 	AllocationMethod _allocation_method_id{AllocationMethod::NONE};
 	ControlAllocation *_control_allocation[ActuatorEffectiveness::MAX_NUM_MATRICES] {}; 	///< class for control allocation calculations
 	int _num_control_allocation{0};
@@ -178,12 +191,15 @@ private:
 	uORB::Subscription _vehicle_torque_setpoint1_sub{ORB_ID(vehicle_torque_setpoint), 1};  /**< vehicle torque setpoint subscription (2. instance) */
 	uORB::Subscription _vehicle_thrust_setpoint1_sub{ORB_ID(vehicle_thrust_setpoint), 1};	 /**< vehicle thrust setpoint subscription (2. instance) */
 
+	uORB::Subscription _utrim_sub{ORB_ID(utrim)};  /**< utrim subscription for custom allocation */
+
 	// Outputs
 	uORB::PublicationMulti<control_allocator_status_s> _control_allocator_status_pub[2] {ORB_ID(control_allocator_status), ORB_ID(control_allocator_status)};
 
 	uORB::Publication<actuator_motors_s>	_actuator_motors_pub{ORB_ID(actuator_motors)};
 	uORB::Publication<actuator_servos_s>	_actuator_servos_pub{ORB_ID(actuator_servos)};
 	uORB::Publication<actuator_servos_trim_s>	_actuator_servos_trim_pub{ORB_ID(actuator_servos_trim)};
+	uORB::Publication<log_message_s>	_log_message_pub{ORB_ID(log_message)};
 
 	uORB::SubscriptionInterval _parameter_update_sub{ORB_ID(parameter_update), 1_s};
 
@@ -195,6 +211,13 @@ private:
 	matrix::Vector3f _thrust_sp;
 	bool _publish_controls{true};
 
+	// Custom allocation results
+	matrix::Vector<float, 6> _custom_allocation_result;
+	bool _custom_allocation_valid{false};
+
+	// 自定义trim向量
+	matrix::Vector<float, NUM_ACTUATORS> _custom_trim_vec;
+
 	// Reflects motor failures that are currently handled, not motor failures that are reported.
 	// For example, the system might report two motor failures, but only the first one is handled by CA
 	uint16_t _handled_motor_failure_bitmask{0};
@@ -205,6 +228,8 @@ private:
 	hrt_abstime _last_run{0};
 	hrt_abstime _timestamp_sample{0};
 	hrt_abstime _last_status_pub{0};
+	hrt_abstime _last_log_pub{0};		/**< last log publication time */
+	log_message_s _log_message{};		/**< log message structure */
 
 	ParamHandles _param_handles{};
 	Params _params{};

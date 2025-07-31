@@ -391,7 +391,7 @@ ControlAllocator::Run()
 	// Also run allocator on thrust setpoint changes if the torque setpoint
 	// has not been updated for more than 5ms
 	if (_vehicle_thrust_setpoint_sub.update(&vehicle_thrust_setpoint)) {
-		_thrust_sp = matrix::Vector3f(vehicle_thrust_setpoint.xyz);
+		_thrust_sp = matrix::Vector3f(vehicle_thrust_setpoint.xyz);  // 随体坐标系下的推力
 
 		if (dt > 5_ms) {
 			do_update = true;
@@ -405,6 +405,9 @@ ControlAllocator::Run()
 		check_for_motor_failures();
 
 		update_effectiveness_matrix_if_needed(EffectivenessUpdateReason::NO_EXTERNAL_UPDATE);
+
+		// 首先尝试自定义分配
+		calculate_custom_allocation();
 
 		// Set control setpoint vector(s)
 		matrix::Vector<float, NUM_AXES> c[ActuatorEffectiveness::MAX_NUM_MATRICES];
@@ -433,11 +436,51 @@ ControlAllocator::Run()
 
 			_control_allocation[i]->setControlSetpoint(c[i]);
 
+			// 只使用自定义分配
+			if (_custom_allocation_valid) {
+				// 使用自定义分配结果
+				matrix::Vector<float, NUM_ACTUATORS> custom_actuator_sp;
+				if (apply_custom_allocation(custom_actuator_sp)) {
+					_control_allocation[i]->setActuatorSetpoint(custom_actuator_sp);
+				} else {
+					// 自定义分配失败，设置du=0
+					matrix::Vector<float, NUM_ACTUATORS> zero_actuator_sp;
+					zero_actuator_sp.setZero();
+					_control_allocation[i]->setActuatorSetpoint(zero_actuator_sp);
+					PX4_INFO("自定义分配失败");
+				}
+			} else {
+				PX4_INFO("自定义分配无效，等待utrim消息");
+			}
+
+			// 注释掉标准分配代码
+			// // 尝试使用自定义分配
+			// if (_custom_allocation_valid) {
+			// 	// 使用自定义分配结果
+			// 	matrix::Vector<float, NUM_ACTUATORS> custom_actuator_sp;
+			// 	if (apply_custom_allocation(custom_actuator_sp)) {
+			// 		_control_allocation[i]->setActuatorSetpoint(custom_actuator_sp);
+			// 		// PX4_INFO("使用自定义控制分配");
+			// 	} else {
+			// 		// 回退到标准分配
+			// 		_control_allocation[i]->allocate();
+			// 	}
+			// } else {
+			// 	// 回退到标准分配
+			// 	_control_allocation[i]->allocate();
+			// }
+
+			// 获取当前的执行器设定点用于后续处理
+			matrix::Vector<float, NUM_ACTUATORS> actuator_sp = _control_allocation[i]->getActuatorSetpoint();
+
 			// Do allocation
-			_control_allocation[i]->allocate();
-			_actuator_effectiveness->allocateAuxilaryControls(dt, i, _control_allocation[i]->_actuator_sp); //flaps and spoilers
-			_actuator_effectiveness->updateSetpoint(c[i], i, _control_allocation[i]->_actuator_sp,
+			// _control_allocation[i]->allocate();
+			_actuator_effectiveness->allocateAuxilaryControls(dt, i, actuator_sp); //flaps and spoilers
+			_actuator_effectiveness->updateSetpoint(c[i], i, actuator_sp,
 								_control_allocation[i]->getActuatorMin(), _control_allocation[i]->getActuatorMax());
+
+			// 更新执行器设定点
+			_control_allocation[i]->setActuatorSetpoint(actuator_sp);
 
 			if (_has_slew_rate) {
 				_control_allocation[i]->applySlewRateLimit(dt);
@@ -876,4 +919,236 @@ extern "C" __EXPORT int control_allocator_main(int argc, char *argv[]);
 int control_allocator_main(int argc, char *argv[])
 {
 	return ControlAllocator::main(argc, argv);
+}
+
+void
+ControlAllocator::calculate_custom_allocation()
+{
+	// 重置有效性标志
+	_custom_allocation_valid = false;
+
+	// 检查是否有有效的推力设定点
+	if (!PX4_ISFINITE(_thrust_sp(0)) || !PX4_ISFINITE(_thrust_sp(2))) {
+		PX4_INFO("CA: 推力设定点无效");
+		return;
+	}
+
+	// 处理utrim消息：有新消息用新的，没新消息继续用旧的
+	utrim_s utrim{};
+	bool utrim_received = false;
+
+	if (_utrim_sub.update(&utrim)) {
+		// 收到新的utrim消息
+		utrim_received = true;
+	} else if (_utrim_sub.copy(&utrim)) {
+		// 使用最后一次的utrim消息
+		utrim_received = true;
+	}
+
+	_custom_trim_vec.setZero();
+	if (utrim_received && utrim.valid) {
+		// 前三个量（f1,f2,f3 推力值）转换为[0,1]范围（电机相关）
+		// 使用公式 f = 34.024x - 767.4，其中 f 是推力，x 是电机信号[0-100]
+		// 反推公式：x = (f + 767.4) / 34.024
+		const float motor_coeff = 34.024f;
+		const float motor_offset = 767.4f;
+
+		for (int i = 0; i < 3 && i < NUM_ACTUATORS; ++i) {
+			float thrust_value = utrim.polynomial_values[i];  // f1,f2,f3 推力值
+
+			// 从推力计算电机信号 [0-100]
+			float motor_signal = (thrust_value/9.81f*1000.0f + motor_offset) / motor_coeff;
+
+			// 限制在 [0-100] 范围内
+			motor_signal = math::constrain(motor_signal, 0.0f, 100.0f);
+
+			// 归一化到 [0-1] 范围
+			_custom_trim_vec(i) = motor_signal / 100.0f;
+
+			PX4_DEBUG("Motor %d: thrust=%.1f -> signal=%.1f -> normalized=%.3f",
+			         i, (double)thrust_value, (double)motor_signal, (double)_custom_trim_vec(i));
+		}
+
+		// 后三个量（theta1,theta2,theta3 角度）转换为[-1,1]范围（舵机相关）
+		// 使用标准舵机角度范围 ±45°
+		for (int i = 3; i < 6 && i < NUM_ACTUATORS; ++i) {
+			float angle_deg = utrim.polynomial_values[i];  // theta1,theta2,theta3 角度值（度）
+
+			// 角度转换为[-1,1]范围: angle / 45°
+			_custom_trim_vec(i) = angle_deg / 45.0f;
+
+			// 限制在[-1,1]范围内
+			_custom_trim_vec(i) = math::constrain(_custom_trim_vec(i), -1.0f, 1.0f);
+
+			PX4_DEBUG("Servo %d: theta=%.1f° -> actuator=%.3f (±45° range)",
+			         i-3, (double)angle_deg, (double)_custom_trim_vec(i));
+		}
+
+		// 从utrim获取值：f1,f2,f3=utrim[0,1,2]，theta1,theta2,theta3=utrim[3,4,5]
+		float f1 = utrim.polynomial_values[0];
+		float f2 = utrim.polynomial_values[1];
+		float f3 = utrim.polynomial_values[2];
+		float theta1 = utrim.polynomial_values[3];
+		float theta2 = utrim.polynomial_values[4];
+		float theta3 = utrim.polynomial_values[5];
+
+		// 角度转弧度，使用 PX4 自带的 M_PI_F
+		theta1 *= (M_PI_F / 180.0f);
+		theta2 *= (M_PI_F / 180.0f);
+		theta3 *= (M_PI_F / 180.0f);
+
+		// 常量定义
+		const float L1 = 0.23f;  // 常量 L1
+		const float L2 = 0.40f;  // 常量 L2
+		const float L3 = 0.20f;  // 常量 L3
+
+		// 从推力设定点获取fx和fz
+		float fx = _thrust_sp(0);
+		float fz = _thrust_sp(2);
+
+		float tau_x = _torque_sp(0);
+		float tau_y = _torque_sp(1);
+		float tau_z = _torque_sp(2);
+
+		// 计算三角函数值
+		float sin_theta1 = sinf(theta1);
+		float cos_theta1 = cosf(theta1);
+		float sin_theta2 = sinf(theta2);
+		float cos_theta2 = cosf(theta2);
+		float sin_theta3 = sinf(theta3);
+		float cos_theta3 = cosf(theta3);
+
+		// 构建效率矩阵 A (5x6) Control Effectiveness Matrix
+		matrix::Matrix<float, 5, 6> A;
+
+		// 第一行 (fx)
+		A(0, 0) = sin_theta1;
+		A(0, 1) = sin_theta2;
+		A(0, 2) = sin_theta3;
+		A(0, 3) = cos_theta1;
+		A(0, 4) = cos_theta2;
+		A(0, 5) = cos_theta3;
+
+		// 第二行 (fz)
+		A(1, 0) = -cos_theta1;
+		A(1, 1) = -cos_theta2;
+		A(1, 2) = -cos_theta3;
+		A(1, 3) = sin_theta1;
+		A(1, 4) = sin_theta2;
+		A(1, 5) = sin_theta3;
+
+		// 第三行 (d*tau_x/L3)
+		A(2, 0) = -cos_theta1;
+		A(2, 1) = cos_theta2;
+		A(2, 2) = 0.0f;
+		A(2, 3) = sin_theta1;
+		A(2, 4) = -sin_theta2;
+		A(2, 5) = 0.0f;
+
+		// 第四行 (d*tau_y/L1)
+		A(3, 0) = cos_theta1;
+		A(3, 1) = cos_theta2;
+		A(3, 2) = -(L2 / L1) * cos_theta3;
+		A(3, 3) = -sin_theta1;
+		A(3, 4) = -sin_theta2;
+		A(3, 5) = (L2 / L1) * sin_theta3;
+
+		// 第五行 (d*tau_z/L3)
+		A(4, 0) = -sin_theta1;
+		A(4, 1) = sin_theta2;
+		A(4, 2) = 0.0f;
+		A(4, 3) = -cos_theta1;
+		A(4, 4) = cos_theta2;
+		A(4, 5) = 0.0f;
+
+		// 左侧向量 b (5x1)
+		matrix::Vector<float, 5> b;
+		b(0) = fx;
+		b(1) = fz;
+		b(2) = tau_x / L3; // dtau_x/L3
+		b(3) = tau_y / L1; // dtau_y/L1
+		b(4) = tau_z / L3; // dtau_z/L3
+
+		// 计算右侧向量 du = A^T * (A * A^T)^{-1} * b (伪逆解)
+		matrix::Matrix<float, 6, 5> At = A.transpose();
+		matrix::Matrix<float, 5, 5> AAt = A * At;
+		matrix::Matrix<float, 5, 5> AAt_inv;
+
+		// 计算逆矩阵
+		if (matrix::geninv(AAt, AAt_inv)) {
+			matrix::Vector<float, 6> du = At * AAt_inv * b;
+
+			// du 后三个量分别除以 f1 f2 f3
+			du(3) /= f1;
+			du(4) /= f2;
+			du(5) /= f3;
+
+			// 存储结果
+			_custom_allocation_result = du;
+			_custom_allocation_valid = true;
+
+			// 记录结果
+			PX4_INFO("CA: fx=%.3f, fz=%.3f, Mx=%.3f, My=%.3f, Mz=%.3f",
+			        (double)fx, (double)fz,
+			         (double)tau_x, (double)tau_y, (double)tau_z);
+
+			PX4_INFO("CA: utrim=%.3f, %.3f, %.3f, %.3f, %.3f, %.3f",
+			        (double)f1, (double)f2, (double)f3, (double)theta1, (double)theta2, (double)theta3);
+
+			PX4_INFO("CA: du=%.3f, %.3f, %.3f, %.3f, %.3f, %.3f",
+			         (double)du(0), (double)du(1), (double)du(2), (double)du(3), (double)du(4), (double)du(5));
+
+		} else {
+			PX4_WARN("CA: 无法计算矩阵逆");
+		}
+	}
+
+	// 以10Hz频率发布日志（每100ms一次），仅在有有效utrim数据时
+	const hrt_abstime now = hrt_absolute_time();
+	if (utrim_received && utrim.valid && (now - _last_log_pub >= 100_ms)) {
+		publish_allocation_log(utrim, now);
+		_last_log_pub = now;
+	}
+}
+
+bool
+ControlAllocator::apply_custom_allocation(matrix::Vector<float, NUM_ACTUATORS> &actuator_sp)
+{
+	if (!_custom_allocation_valid) {
+		return false;
+	}
+
+	// actuator_sp = du + trim
+	for (int i = 0; i < NUM_ACTUATORS && i < 6; ++i) {
+		actuator_sp(i) = _custom_allocation_result(i) + _custom_trim_vec(i);
+	}
+	for (int i = 6; i < NUM_ACTUATORS; ++i) {
+		actuator_sp(i) = 0.f;
+	}
+
+	PX4_INFO("CA: 结果向量 du+utrim=%.3f, %.3f, %.3f",
+			 (double)actuator_sp(0), (double)actuator_sp(1), (double)actuator_sp(2));
+	PX4_INFO("CA: 结果向量 du+utrim=%.3f, %.3f, %.3f",
+			 (double)actuator_sp(3), (double)actuator_sp(4), (double)actuator_sp(5));
+
+	return true;
+}
+
+void
+ControlAllocator::publish_allocation_log(const utrim_s &utrim, hrt_abstime timestamp)
+{
+	_log_message.timestamp = timestamp;
+	_log_message.severity = 6; // INFO level
+
+	// 记录utrim数据
+	snprintf(_log_message.text, sizeof(_log_message.text),
+		 "CA_LOG: utrim[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f] du[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f] trim[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f]",
+		 (double)utrim.polynomial_values[0], (double)utrim.polynomial_values[1], (double)utrim.polynomial_values[2],
+		 (double)utrim.polynomial_values[3], (double)utrim.polynomial_values[4], (double)utrim.polynomial_values[5],
+		 (double)_custom_allocation_result(0), (double)_custom_allocation_result(1), (double)_custom_allocation_result(2),
+		 (double)_custom_allocation_result(3), (double)_custom_allocation_result(4), (double)_custom_allocation_result(5),
+		 (double)_custom_trim_vec(0), (double)_custom_trim_vec(1), (double)_custom_trim_vec(2),
+		 (double)_custom_trim_vec(3), (double)_custom_trim_vec(4), (double)_custom_trim_vec(5));
+
+	_log_message_pub.publish(_log_message);
 }
