@@ -36,6 +36,7 @@ px4_add_module(
 	MAIN trim_selector
 	SRCS
 		TrimSelector.cpp
+		TrimSelector.hpp
 	DEPENDS
 		px4_work_queue
 )

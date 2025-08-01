@@ -64,8 +64,15 @@ TrimSelector::~TrimSelector()
 
 bool TrimSelector::init()
 {
-	// 初始化定时器，定期执行Run()函数
-	ScheduleOnInterval(50_ms); // 20Hz 更新率，与 position control 相同
+	// 强制初始化定时器，确保20Hz执行Run()函数
+	ScheduleOnInterval(50_ms); // 20Hz 更新率 (1000ms / 50ms = 20Hz)
+
+	// 添加调试信息确认初始化
+	PX4_INFO("TrimSelector 初始化完成，设置为20Hz运行频率");
+
+	// 立即调度一次确保启动
+	ScheduleNow();
+
 	return true;
 }
 
@@ -113,6 +120,26 @@ void TrimSelector::Run()
 	}
 
 	perf_begin(_loop_perf);
+
+	// 添加调试信息确认Run()被调用
+	static uint64_t run_counter = 0;
+	static hrt_abstime last_run_time = 0;
+	hrt_abstime current_time = hrt_absolute_time();
+
+	run_counter++;
+
+	// 计算实际运行频率
+	float actual_hz = 0.0f;
+	if (last_run_time > 0) {
+		float dt_s = (current_time - last_run_time) / 1e6f;
+		actual_hz = 1.0f / dt_s;
+	}
+	last_run_time = current_time;
+
+	// 更频繁的调试输出来确认问题
+	if (run_counter % 20 == 0) { // 每1秒打印一次
+		PX4_INFO("TrimSelector Run() #%llu, 频率: %.1fHz", run_counter, (double)actual_hz);
+	}
 
 	// 首先检查参数是否需要更新
 	parameters_update();
@@ -183,7 +210,7 @@ void TrimSelector::Run()
 	}
 	// 否则使用默认值0.0f（已在上面初始化）
 
-	// 创建并填充utrim消息
+	// 创建并填充utrim消息 - 始终发布
 	utrim_s utrim{};
 	utrim.timestamp = hrt_absolute_time();
 	utrim.horizontal_velocity = horizontal_velocity_magnitude;
@@ -194,26 +221,32 @@ void TrimSelector::Run()
 		utrim.polynomial_values[i] = calculate_polynomial(horizontal_velocity_magnitude, i);
 	}
 
-	// 发布utrim消息
+	// 强制发布utrim消息 - 每次Run()都执行
 	_utrim_pub.publish(utrim);
 
-	// 添加到日志
-	_log_message.timestamp = hrt_absolute_time();
-	_log_message.severity = 6; // info
-	snprintf(_log_message.text, sizeof(_log_message.text),
-		 "UTRIM: v=%.2f%s, p1=%.2f, p2=%.2f, p3=%.2f, p4=%.2f, p5=%.2f, p6=%.2f",
-		 (double)utrim.horizontal_velocity,
-		 (PX4_ISFINITE(trajectory_setpoint.velocity[0]) && PX4_ISFINITE(trajectory_setpoint.velocity[1])) ? "" : "(default)",
-		 (double)utrim.polynomial_values[0],
-		 (double)utrim.polynomial_values[1],
-		 (double)utrim.polynomial_values[2],
-		 (double)utrim.polynomial_values[3],
-		 (double)utrim.polynomial_values[4],
-		 (double)utrim.polynomial_values[5]);
-	_log_message_pub.publish(_log_message);
+	// 确认发布成功的调试信息
+	if (run_counter % 20 == 0) { // 每1秒确认一次发布状态
+		PX4_INFO("UTRIM已发布 #%llu: valid=%d, v=%.2f", run_counter, utrim.valid, (double)utrim.horizontal_velocity);
+	}
 
-	// 计算俯仰角期望和发布theta_trim（原有逻辑）
-	// 使用上面已经计算好的horizontal_velocity_magnitude（包含默认值逻辑）
+	// 添加到日志（降低频率避免日志泛滥）
+	if (run_counter % 40 == 0) { // 每2秒打印一次utrim内容
+		_log_message.timestamp = hrt_absolute_time();
+		_log_message.severity = 6; // info
+		snprintf(_log_message.text, sizeof(_log_message.text),
+			 "UTRIM: v=%.2f%s, p1=%.2f, p2=%.2f, p3=%.2f, p4=%.2f, p5=%.2f, p6=%.2f",
+			 (double)utrim.horizontal_velocity,
+			 (PX4_ISFINITE(trajectory_setpoint.velocity[0]) && PX4_ISFINITE(trajectory_setpoint.velocity[1])) ? "" : "(default)",
+			 (double)utrim.polynomial_values[0],
+			 (double)utrim.polynomial_values[1],
+			 (double)utrim.polynomial_values[2],
+			 (double)utrim.polynomial_values[3],
+			 (double)utrim.polynomial_values[4],
+			 (double)utrim.polynomial_values[5]);
+		_log_message_pub.publish(_log_message);
+	}
+
+	// 计算俯仰角期望和发布theta_trim - 始终执行
 	float pitch_setpoint = 0.0f;
 	if (horizontal_velocity_magnitude > 2.0f) {
 		// float pitch_setpoint = _param_ts_pitch_gain.get() * horizontal_velocity_magnitude;
@@ -226,8 +259,13 @@ void TrimSelector::Run()
 	theta_trim.timestamp = hrt_absolute_time();
 	theta_trim.pitch_angle = pitch_setpoint; // 直接发布俯仰角度
 
+	// 强制发布theta_trim消息 - 每次Run()都执行
 	_theta_trim_pub.publish(theta_trim);
 
+	// 确认theta_trim发布成功
+	if (run_counter % 20 == 0) { // 每1秒确认一次
+		PX4_INFO("THETA_TRIM已发布 #%llu: pitch=%.2f°", run_counter, (double)theta_trim.pitch_angle);
+	}
 
 	perf_end(_loop_perf);
 }

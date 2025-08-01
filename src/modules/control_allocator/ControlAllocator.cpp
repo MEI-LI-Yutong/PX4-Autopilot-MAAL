@@ -436,22 +436,27 @@ ControlAllocator::Run()
 
 			_control_allocation[i]->setControlSetpoint(c[i]);
 
-			// 只使用自定义分配
-			if (_custom_allocation_valid) {
-				// 使用自定义分配结果
-				matrix::Vector<float, NUM_ACTUATORS> custom_actuator_sp;
-				if (apply_custom_allocation(custom_actuator_sp)) {
-					_control_allocation[i]->setActuatorSetpoint(custom_actuator_sp);
-				} else {
-					// 自定义分配失败，设置du=0
-					matrix::Vector<float, NUM_ACTUATORS> zero_actuator_sp;
-					zero_actuator_sp.setZero();
-					_control_allocation[i]->setActuatorSetpoint(zero_actuator_sp);
-					PX4_INFO("自定义分配失败");
-				}
+					// 只使用自定义分配
+		if (_custom_allocation_valid) {
+			// 使用自定义分配结果
+			matrix::Vector<float, NUM_ACTUATORS> custom_actuator_sp;
+			if (apply_custom_allocation(custom_actuator_sp)) {
+				_control_allocation[i]->setActuatorSetpoint(custom_actuator_sp);
+				// 调试：打印自定义分配结果
+				PX4_INFO("自定义分配成功 - 矩阵%d: [%.3f,%.3f,%.3f,%.3f,%.3f,%.3f]", i,
+					(double)custom_actuator_sp(0), (double)custom_actuator_sp(1),
+					(double)custom_actuator_sp(2), (double)custom_actuator_sp(3),
+					(double)custom_actuator_sp(4), (double)custom_actuator_sp(5));
 			} else {
-				PX4_INFO("自定义分配无效，等待utrim消息");
+				// 自定义分配失败，设置du=0
+				matrix::Vector<float, NUM_ACTUATORS> zero_actuator_sp;
+				zero_actuator_sp.setZero();
+				_control_allocation[i]->setActuatorSetpoint(zero_actuator_sp);
+				PX4_INFO("自定义分配失败 - 矩阵%d", i);
 			}
+		} else {
+			PX4_INFO("自定义分配无效 - 矩阵%d，等待utrim消息", i);
+		}
 
 			// 注释掉标准分配代码
 			// // 尝试使用自定义分配
@@ -697,8 +702,12 @@ void
 ControlAllocator::publish_actuator_controls()
 {
 	if (!_publish_controls) {
+		PX4_INFO("控制发布被禁用：_publish_controls = false");
 		return;
 	}
+
+	// 添加调试信息
+	PX4_INFO("开始发布控制信号 - 电机数量: %d, 舵机数量: %d", _num_actuators[0], _num_actuators[1]);
 
 	actuator_motors_s actuator_motors;
 	actuator_motors.timestamp = hrt_absolute_time();
@@ -737,6 +746,11 @@ ControlAllocator::publish_actuator_controls()
 
 	_actuator_motors_pub.publish(actuator_motors);
 
+	// 调试：打印电机控制值
+	PX4_INFO("电机控制值: [%.3f, %.3f, %.3f, %.3f]",
+		(double)actuator_motors.control[0], (double)actuator_motors.control[1],
+		(double)actuator_motors.control[2], (double)actuator_motors.control[3]);
+
 	// servos
 	if (_num_actuators[1] > 0) {
 		int servos_idx;
@@ -754,6 +768,11 @@ ControlAllocator::publish_actuator_controls()
 		}
 
 		_actuator_servos_pub.publish(actuator_servos);
+
+		// 调试：打印舵机控制值
+		PX4_INFO("舵机控制值: [%.3f, %.3f, %.3f, %.3f]",
+			(double)actuator_servos.control[0], (double)actuator_servos.control[1],
+			(double)actuator_servos.control[2], (double)actuator_servos.control[3]);
 	}
 }
 
@@ -1118,17 +1137,25 @@ ControlAllocator::apply_custom_allocation(matrix::Vector<float, NUM_ACTUATORS> &
 		return false;
 	}
 
-	// actuator_sp = du + trim
+	// 计算油门缩放因子：基于Z轴推力大小
+	float throttle_scale = 0.0f;
+	if (_armed && PX4_ISFINITE(_thrust_sp(2))) {
+		// 将Z轴推力从[-1,0]映射到[0,1]作为缩放因子
+		throttle_scale = math::constrain(-_thrust_sp(2), 0.0f, 1.0f);
+	}
+
+	// actuator_sp = du + (throttle_scale * trim)
+	// 这样trim只在有推力需求时才生效
 	for (int i = 0; i < NUM_ACTUATORS && i < 6; ++i) {
-		actuator_sp(i) = _custom_allocation_result(i) + _custom_trim_vec(i);
+		actuator_sp(i) = _custom_allocation_result(i) + (throttle_scale * _custom_trim_vec(i));
 	}
 	for (int i = 6; i < NUM_ACTUATORS; ++i) {
 		actuator_sp(i) = 0.f;
 	}
 
-	PX4_INFO("CA: 结果向量 du+utrim=%.3f, %.3f, %.3f",
-			 (double)actuator_sp(0), (double)actuator_sp(1), (double)actuator_sp(2));
-	PX4_INFO("CA: 结果向量 du+utrim=%.3f, %.3f, %.3f",
+	PX4_INFO("CA: throttle_scale=%.3f, du+scaled_trim[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f]",
+			 (double)throttle_scale,
+			 (double)actuator_sp(0), (double)actuator_sp(1), (double)actuator_sp(2),
 			 (double)actuator_sp(3), (double)actuator_sp(4), (double)actuator_sp(5));
 
 	return true;
@@ -1140,15 +1167,20 @@ ControlAllocator::publish_allocation_log(const utrim_s &utrim, hrt_abstime times
 	_log_message.timestamp = timestamp;
 	_log_message.severity = 6; // INFO level
 
-	// 记录utrim数据
+	// 计算当前的throttle_scale用于日志
+	float throttle_scale = 0.0f;
+	if (_armed && PX4_ISFINITE(_thrust_sp(2))) {
+		throttle_scale = math::constrain(-_thrust_sp(2), 0.0f, 1.0f);
+	}
+
+	// 记录utrim数据，包含throttle_scale和armed状态
 	snprintf(_log_message.text, sizeof(_log_message.text),
-		 "CA_LOG: utrim[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f] du[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f] trim[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f]",
+		 "CA_LOG: thr_scale=%.3f armed=%d fz=%.3f utrim[%.2f,%.2f,%.2f,%.2f,%.2f,%.2f] du[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f]",
+		 (double)throttle_scale, _armed, (double)_thrust_sp(2),
 		 (double)utrim.polynomial_values[0], (double)utrim.polynomial_values[1], (double)utrim.polynomial_values[2],
 		 (double)utrim.polynomial_values[3], (double)utrim.polynomial_values[4], (double)utrim.polynomial_values[5],
 		 (double)_custom_allocation_result(0), (double)_custom_allocation_result(1), (double)_custom_allocation_result(2),
-		 (double)_custom_allocation_result(3), (double)_custom_allocation_result(4), (double)_custom_allocation_result(5),
-		 (double)_custom_trim_vec(0), (double)_custom_trim_vec(1), (double)_custom_trim_vec(2),
-		 (double)_custom_trim_vec(3), (double)_custom_trim_vec(4), (double)_custom_trim_vec(5));
+		 (double)_custom_allocation_result(3), (double)_custom_allocation_result(4), (double)_custom_allocation_result(5));
 
 	_log_message_pub.publish(_log_message);
 }

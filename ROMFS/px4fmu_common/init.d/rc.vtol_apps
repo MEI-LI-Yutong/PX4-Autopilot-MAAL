@@ -10,6 +10,11 @@
 #
 control_allocator start
 
+#
+# Start Trim Selector (for custom allocation)
+#
+trim_selector start
+
 airspeed_selector start
 
 vtol_att_control start

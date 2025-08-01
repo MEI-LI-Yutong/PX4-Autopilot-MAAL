@@ -11,6 +11,11 @@
 control_allocator start
 
 #
+# Start Trim Selector (for custom allocation)
+#
+trim_selector start
+
+#
 # Start Multicopter Rate Controller.
 #
 mc_rate_control start
