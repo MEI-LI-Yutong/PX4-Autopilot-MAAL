@@ -442,11 +442,18 @@ ControlAllocator::Run()
 			matrix::Vector<float, NUM_ACTUATORS> custom_actuator_sp;
 			if (apply_custom_allocation(custom_actuator_sp)) {
 				_control_allocation[i]->setActuatorSetpoint(custom_actuator_sp);
-				// 调试：打印自定义分配结果
+
+				// 调试：打印自定义分配结果和验证设置
 				PX4_INFO("自定义分配成功 - 矩阵%d: [%.3f,%.3f,%.3f,%.3f,%.3f,%.3f]", i,
 					(double)custom_actuator_sp(0), (double)custom_actuator_sp(1),
 					(double)custom_actuator_sp(2), (double)custom_actuator_sp(3),
 					(double)custom_actuator_sp(4), (double)custom_actuator_sp(5));
+
+				// 验证设置后的值
+				for (int j = 0; j < 6; j++) {
+					float check_val = _control_allocation[i]->getActuatorSetpoint()(j);
+					PX4_INFO("验证矩阵%d[%d]: set=%.3f, get=%.3f", i, j, (double)custom_actuator_sp(j), (double)check_val);
+				}
 			} else {
 				// 自定义分配失败，设置du=0
 				matrix::Vector<float, NUM_ACTUATORS> zero_actuator_sp;
@@ -730,6 +737,11 @@ ControlAllocator::publish_actuator_controls()
 	for (motors_idx = 0; motors_idx < _num_actuators[0] && motors_idx < actuator_motors_s::NUM_CONTROLS; motors_idx++) {
 		int selected_matrix = _control_allocation_selection_indexes[actuator_idx];
 		float actuator_sp = _control_allocation[selected_matrix]->getActuatorSetpoint()(actuator_idx_matrix[selected_matrix]);
+
+		// 调试索引计算
+		PX4_INFO("电机%d: actuator_idx=%d, selected_matrix=%d, matrix_idx=%d, value=%.3f",
+			motors_idx, actuator_idx, selected_matrix, actuator_idx_matrix[selected_matrix], (double)actuator_sp);
+
 		actuator_motors.control[motors_idx] = PX4_ISFINITE(actuator_sp) ? actuator_sp : NAN;
 
 		if (stopped_motors & (1u << motors_idx)) {
@@ -758,6 +770,11 @@ ControlAllocator::publish_actuator_controls()
 		for (servos_idx = 0; servos_idx < _num_actuators[1] && servos_idx < actuator_servos_s::NUM_CONTROLS; servos_idx++) {
 			int selected_matrix = _control_allocation_selection_indexes[actuator_idx];
 			float actuator_sp = _control_allocation[selected_matrix]->getActuatorSetpoint()(actuator_idx_matrix[selected_matrix]);
+
+			// 调试索引计算
+			PX4_INFO("舵机%d: actuator_idx=%d, selected_matrix=%d, matrix_idx=%d, value=%.3f",
+				servos_idx, actuator_idx, selected_matrix, actuator_idx_matrix[selected_matrix], (double)actuator_sp);
+
 			actuator_servos.control[servos_idx] = PX4_ISFINITE(actuator_sp) ? actuator_sp : NAN;
 			++actuator_idx_matrix[selected_matrix];
 			++actuator_idx;
@@ -1137,24 +1154,17 @@ ControlAllocator::apply_custom_allocation(matrix::Vector<float, NUM_ACTUATORS> &
 		return false;
 	}
 
-	// 计算油门缩放因子：基于Z轴推力大小
-	float throttle_scale = 0.0f;
-	if (_armed && PX4_ISFINITE(_thrust_sp(2))) {
-		// 将Z轴推力从[-1,0]映射到[0,1]作为缩放因子
-		throttle_scale = math::constrain(-_thrust_sp(2), 0.0f, 1.0f);
-	}
-
-	// actuator_sp = du + (throttle_scale * trim)
-	// 这样trim只在有推力需求时才生效
+	// 简化逻辑：actuator_sp = _custom_allocation_result + _custom_trim_vec
+	// _custom_allocation_result = du (控制分配结果)
+	// _custom_trim_vec = utrim归一化后的值
 	for (int i = 0; i < NUM_ACTUATORS && i < 6; ++i) {
-		actuator_sp(i) = _custom_allocation_result(i) + (throttle_scale * _custom_trim_vec(i));
+		actuator_sp(i) = _custom_allocation_result(i) + _custom_trim_vec(i);
 	}
 	for (int i = 6; i < NUM_ACTUATORS; ++i) {
 		actuator_sp(i) = 0.f;
 	}
 
-	PX4_INFO("CA: throttle_scale=%.3f, du+scaled_trim[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f]",
-			 (double)throttle_scale,
+	PX4_INFO("CA: du+trim[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f]",
 			 (double)actuator_sp(0), (double)actuator_sp(1), (double)actuator_sp(2),
 			 (double)actuator_sp(3), (double)actuator_sp(4), (double)actuator_sp(5));
 
@@ -1167,16 +1177,10 @@ ControlAllocator::publish_allocation_log(const utrim_s &utrim, hrt_abstime times
 	_log_message.timestamp = timestamp;
 	_log_message.severity = 6; // INFO level
 
-	// 计算当前的throttle_scale用于日志
-	float throttle_scale = 0.0f;
-	if (_armed && PX4_ISFINITE(_thrust_sp(2))) {
-		throttle_scale = math::constrain(-_thrust_sp(2), 0.0f, 1.0f);
-	}
-
-	// 记录utrim数据，包含throttle_scale和armed状态
+	// 记录utrim数据和du值，简化版本
 	snprintf(_log_message.text, sizeof(_log_message.text),
-		 "CA_LOG: thr_scale=%.3f armed=%d fz=%.3f utrim[%.2f,%.2f,%.2f,%.2f,%.2f,%.2f] du[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f]",
-		 (double)throttle_scale, _armed, (double)_thrust_sp(2),
+		 "CA_LOG: armed=%d fz=%.3f utrim[%.2f,%.2f,%.2f,%.2f,%.2f,%.2f] du[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f]",
+		 _armed, (double)_thrust_sp(2),
 		 (double)utrim.polynomial_values[0], (double)utrim.polynomial_values[1], (double)utrim.polynomial_values[2],
 		 (double)utrim.polynomial_values[3], (double)utrim.polynomial_values[4], (double)utrim.polynomial_values[5],
 		 (double)_custom_allocation_result(0), (double)_custom_allocation_result(1), (double)_custom_allocation_result(2),
