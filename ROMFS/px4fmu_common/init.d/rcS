@@ -507,6 +507,8 @@ else
 		payload_deliverer start
 	fi
 
+	trim_selector start
+
 	#
 	# Optional board supplied extras: rc.board_extras
 	#

@@ -46,6 +46,7 @@
 #include <uORB/topics/parameter_update.h>
 #include <uORB/topics/trajectory_setpoint.h>
 #include <uORB/topics/theta_trim.h>
+#include <uORB/topics/utrim.h>
 
 using namespace time_literals;
 
@@ -71,6 +72,7 @@ private:
 	void parameters_update(bool force = false);
 
 	uORB::Publication<theta_trim_s> _theta_trim_pub{ORB_ID(theta_trim)};
+	uORB::Publication<utrim_s> _utrim_pub{ORB_ID(utrim)};
 	uORB::Subscription _trajectory_setpoint_sub{ORB_ID(trajectory_setpoint)};
 	uORB::Subscription _parameter_update_sub{ORB_ID(parameter_update)};
 
