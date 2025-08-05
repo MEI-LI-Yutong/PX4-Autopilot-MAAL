@@ -46,6 +46,7 @@
 #include <uORB/topics/vehicle_local_position_setpoint.h>
 #include <uORB/topics/vehicle_constraints.h>
 #include <uORB/topics/theta_trim.h>
+#include <uORB/topics/vehicle_attitude.h>
 #include <uORB/Subscription.hpp>
 
 struct PositionControlStates {
@@ -150,6 +151,15 @@ public:
 	void setInputSetpoint(const trajectory_setpoint_s &setpoint);
 
 	/**
+	 * Set the theta trim value for pitch control
+	 * @param theta_trim theta trim message containing pitch angle information
+	 */
+	void setThetaTrim(const theta_trim_s &theta_trim) {
+		_theta_trim = theta_trim;
+		_external_theta_trim_valid = true;
+	}
+
+	/**
 	 * Apply P-position and PID-velocity controller that updates the member
 	 * thrust, yaw- and yawspeed-setpoints.
 	 * @see _thr_sp
@@ -236,8 +246,17 @@ private:
 	float _yaw_sp{}; /**< desired heading */
 	float _yawspeed_sp{}; /** desired yaw-speed */
 
-	/* 订阅 theta_trim */
+	// Theta trim related members
+	theta_trim_s _theta_trim{};
+	bool _external_theta_trim_valid{false};
+
+	// Vehicle attitude related members
 	uORB::Subscription _theta_trim_sub{ORB_ID(theta_trim)};
-	theta_trim_s _last_theta_trim{}; ///< 存储最新的 theta_trim 消息
-	bool _theta_trim_valid{false};   ///< 标记是否有有效的 theta_trim 消息
+	uORB::Subscription _vehicle_attitude_sub{ORB_ID(vehicle_attitude)};
+	theta_trim_s _last_theta_trim{};
+	vehicle_attitude_s _last_vehicle_attitude{};
+	bool _theta_trim_valid{false};
+	bool _vehicle_attitude_valid{false};
+
+	/* 订阅 theta_trim */
 };

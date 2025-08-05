@@ -117,11 +117,17 @@ bool PositionControl::update(const float dt)
 			_theta_trim_valid = true;
 		}
 
+		// 更新 vehicle_attitude 订阅
+		if (_vehicle_attitude_sub.update(&_last_vehicle_attitude)) {
+			_vehicle_attitude_valid = true;
+		}
+
 		// 每秒打印一次状态
 		if (hrt_absolute_time() - last_print_time > 1000000) {
-			PX4_INFO("theta_trim_valid: %d", _theta_trim_valid);
+			// PX4_INFO("theta_trim_valid: %d", _theta_trim_valid);
 			last_print_time = hrt_absolute_time();
 		}
+
 		_positionControl();
 		_velocityControl(dt);
 
@@ -147,6 +153,7 @@ void PositionControl::_positionControl()
 	_vel_sp.xy() = ControlMath::constrainXY(vel_sp_position.xy(), (_vel_sp - vel_sp_position).xy(), _lim_vel_horizontal);
 	// Constrain velocity in z-direction.
 	_vel_sp(2) = math::constrain(_vel_sp(2), -_lim_vel_up, _lim_vel_down);
+	// 这个 _vel_sp(2) 是垂直方向速度，_vel_sp.xy() 是水平方向速度，包含 x y
 }
 
 void PositionControl::_velocityControl(const float dt)
@@ -225,12 +232,43 @@ void PositionControl::_accelerationControl()
 
 	Vector3f body_z = Vector3f(-_acc_sp(0), -_acc_sp(1), -z_specific_force).normalized();
 	ControlMath::limitTilt(body_z, Vector3f(0, 0, 1), _lim_tilt);
+
 	// Convert to thrust assuming hover thrust produces standard gravity
 	const float thrust_ned_z = _acc_sp(2) * (_hover_thrust / CONSTANTS_ONE_G) - _hover_thrust;
+	//const float thrust_ned_x = _acc_sp(0) * (_hover_thrust / CONSTANTS_ONE_G);
+
+	// 打印推力值用于调试
+	PX4_INFO("body_z: %.3f, %.3f, %.3f", (double)body_z(0), (double)body_z(1), (double)body_z(2));
+
 	// Project thrust to planned body attitude
 	const float cos_ned_body = (Vector3f(0, 0, 1).dot(body_z));
 	const float collective_thrust = math::min(thrust_ned_z / cos_ned_body, -_lim_thr_min);
 	_thr_sp = body_z * collective_thrust;
+
+	// 根据飞机的实际姿态将NED坐标系下的推力转换为机体坐标系下的推力
+	if (_vehicle_attitude_valid) {
+		// 获取当前飞机姿态四元数
+		Quatf q_current(_last_vehicle_attitude.q);
+
+		// 构造NED坐标系下的推力向量
+		const float thrust_ned_z_custom = _acc_sp(2) * (_hover_thrust / CONSTANTS_ONE_G);
+		const float thrust_ned_x_custom = _acc_sp(0) * (_hover_thrust / CONSTANTS_ONE_G);
+
+		Vector3f thrust_ned_custom(thrust_ned_x_custom, 0.0f, thrust_ned_z_custom);
+
+		// 将NED坐标系下的推力转换到机体坐标系
+		Vector3f thrust_body_custom = q_current.rotateVectorInverse(thrust_ned_custom);
+
+		// 更新_thr_sp为机体坐标系下的推力
+		_thr_sp = thrust_body_custom;
+
+		// 确保推力在合理范围内
+		_thr_sp(0) = math::constrain(_thr_sp(0), -_lim_thr_max, _lim_thr_max);
+		_thr_sp(1) = math::constrain(_thr_sp(1), -_lim_thr_max, _lim_thr_max);
+		_thr_sp(2) = math::constrain(_thr_sp(2), -_lim_thr_max, _lim_thr_max);
+	}
+
+	// PX4_INFO("thr_sp: %.2f, %.2f, %.2f", (double)_thr_sp(0), (double)_thr_sp(1), (double)_thr_sp(2));
 }
 
 bool PositionControl::_inputValid()
@@ -277,6 +315,21 @@ void PositionControl::getLocalPositionSetpoint(vehicle_local_position_setpoint_s
 
 void PositionControl::getAttitudeSetpoint(vehicle_attitude_setpoint_s &attitude_setpoint) const
 {
+	// 从 theta_trim 中提取 pitch 角度，优先使用外部设置的值
+	float pitch_sp = 0.0f;  // 默认值
+	if (_external_theta_trim_valid) {
+		// 使用外部设置的 theta_trim (从 MulticopterPositionControl 传入)
+		pitch_sp = _theta_trim.pitch_angle * M_PI_F / 180.0f;  // 转换为弧度
+	}
+
+	// 使用修改后的 thrustToAttitude 函数，传入 pitch_sp
+	ControlMath::thrustToAttitude(_thr_sp, _yaw_sp, pitch_sp, attitude_setpoint);
+
+	// 原来的代码（注释掉）
+	/*
+	// 首先使用原来的计算方法得到完整的姿态
+	ControlMath::thrustToAttitude(_thr_sp, _yaw_sp, attitude_setpoint);
+
 	if (_theta_trim_valid) {
 		// 从 theta_trim 中提取 pitch 角度
 		Quatf q_trim(_last_theta_trim.q_d);
@@ -285,30 +338,31 @@ void PositionControl::getAttitudeSetpoint(vehicle_attitude_setpoint_s &attitude_
 		// 从当前计算的姿态中获取 roll 和 yaw
 		Quatf q_current(attitude_setpoint.q_d);
 		Eulerf euler_current(q_current);
-		PX4_INFO("originnal pitch: %.2f, trimed pitch: %.2f",
-			(double)euler_current(1) * 180.0 / M_PI,
-			(double)euler_trim(1) * 180.0 / M_PI);
+		// PX4_INFO("originnal pitch: %.2f, trimed pitch: %.2f",
+		// 	(double)euler_current(1) * 180.0 / M_PI,
+		// 	(double)euler_trim(1) * 180.0 / M_PI);
 
 		// 组合：使用当前的 roll 和 yaw，但使用 theta_trim 的 pitch
 		Eulerf euler_combined(euler_current(0), euler_trim(1), euler_current(2));
 		Quatf q_combined(euler_combined);
 
 		// 将结果复制回 attitude_setpoint
-		q_combined.copyTo(attitude_setpoint.q_d);
+		// q_combined.copyTo(attitude_setpoint.q_d);
 
-		PX4_INFO("Combined attitude - roll: %.2f, pitch: %.2f(trim), yaw: %.2f",
-			(double)euler_combined(0) * 180.0 / M_PI,
-			(double)euler_combined(1) * 180.0 / M_PI,
-			(double)euler_combined(2) * 180.0 / M_PI);
+		// PX4_INFO("Combined attitude - roll: %.2f, pitch: %.2f(trim), yaw: %.2f",
+		// 	(double)euler_combined(0) * 180.0 / M_PI,
+		// 	(double)euler_trim(1) * 180.0 / M_PI,
+		// 	(double)euler_combined(2) * 180.0 / M_PI);
 	} else {
 		// 如果没有有效的消息，已经使用了原来的计算方法
 		Quatf q_current(attitude_setpoint.q_d);
 		Eulerf euler_current(q_current);
-		PX4_INFO("Using thrustToAttitude - roll: %.2f, pitch: %.2f, yaw: %.2f",
-			(double)euler_current(0) * 180.0 / M_PI,
-			(double)euler_current(1) * 180.0 / M_PI,
-			(double)euler_current(2) * 180.0 / M_PI);
+		// PX4_INFO("Using thrustToAttitude - roll: %.2f, pitch: %.2f, yaw: %.2f",
+		// 	(double)euler_current(0) * 180.0 / M_PI,
+		// 	(double)euler_current(1) * 180.0 / M_PI,
+		// 	(double)euler_current(2) * 180.0 / M_PI);
 	}
-	ControlMath::thrustToAttitude(_thr_sp, _yaw_sp, attitude_setpoint);
+	*/
+
 	attitude_setpoint.yaw_sp_move_rate = _yawspeed_sp;
 }

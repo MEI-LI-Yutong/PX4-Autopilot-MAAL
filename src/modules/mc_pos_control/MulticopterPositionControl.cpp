@@ -514,6 +514,19 @@ void MulticopterPositionControl::Run()
 
 			_control.setState(states);
 
+			// Update theta_trim message
+			theta_trim_s theta_trim;
+			if (_theta_trim_sub.update(&theta_trim)) {
+				PX4_INFO("Received NEW theta_trim - pitch_angle: %.2f degrees, timestamp: %llu",
+					(double)theta_trim.pitch_angle, (unsigned long long)theta_trim.timestamp);
+			}
+
+			// 总是尝试获取最新的 theta_trim（无论是新消息还是旧消息）
+			if (_theta_trim_sub.copy(&theta_trim)) {
+				// 将 theta_trim 传递给 PositionControl（每次都传递，确保一直有效）
+				_control.setThetaTrim(theta_trim);
+			}
+
 			// Run position control
 			if (!_control.update(dt)) {
 				// Failsafe

@@ -46,12 +46,16 @@
 namespace ControlMath
 {
 /**
- * Converts thrust vector and yaw set-point to a desired attitude.
- * @param thr_sp desired 3D thrust vector
+ * Converts thrust vector and yaw/pitch set-point to a desired attitude.
  * @param yaw_sp the desired yaw
- * @param att_sp attitude setpoint to fill
+ * @param pitch_sp the desired pitch
  */
+void thrustToAttitude(const matrix::Vector3f &thr_sp, const float yaw_sp, const float pitch_sp, vehicle_attitude_setpoint_s &att_sp);
+
+// 原来的函数声明（注释掉）
+/*
 void thrustToAttitude(const matrix::Vector3f &thr_sp, const float yaw_sp, vehicle_attitude_setpoint_s &att_sp);
+*/
 
 /**
  * Limits the tilt angle between two unit vectors
@@ -62,12 +66,16 @@ void thrustToAttitude(const matrix::Vector3f &thr_sp, const float yaw_sp, vehicl
 void limitTilt(matrix::Vector3f &body_unit, const matrix::Vector3f &world_unit, const float max_angle);
 
 /**
- * Converts a body z vector and yaw set-point to a desired attitude.
- * @param body_z a world frame 3D vector in direction of the desired body z axis
+ * Converts a body z vector and yaw/pitch set-point to a desired attitude.
  * @param yaw_sp the desired yaw setpoint
- * @param att_sp attitude setpoint to fill
+ * @param pitch_sp the desired pitch setpoint
  */
+void bodyzToAttitude(matrix::Vector3f body_z, const float yaw_sp, const float pitch_sp, vehicle_attitude_setpoint_s &att_sp);
+
+// 原来的函数声明（注释掉）
+/*
 void bodyzToAttitude(matrix::Vector3f body_z, const float yaw_sp, vehicle_attitude_setpoint_s &att_sp);
+*/
 
 /**
  * Outputs the sum of two vectors but respecting the limits and priority.
