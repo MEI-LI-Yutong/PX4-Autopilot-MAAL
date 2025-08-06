@@ -186,14 +186,14 @@ private:
 
 	DataValidator	_airspeed_validator;		/**< data validator to monitor airspeed */
 
-	float _diff_pres_pressure_sum{0.f};
-	float _diff_pres_temperature_sum{0.f};
-	float _baro_pressure_sum{0.f};
-
-	int _diff_pres_count{0};
+	// Moving average variables for airspeed calculation
+	static constexpr float AIRSPEED_MOVING_AVG_ALPHA = 0.2f;	/**< moving average smoothing factor (≈10 points equivalent, 100ms window) */
+	float _diff_pres_pressure_avg{0.f};		/**< moving average of differential pressure */
+	float _diff_pres_temperature_avg{0.f};		/**< moving average of temperature */
+	float _baro_pressure_avg{0.f};			/**< moving average of barometric pressure */
+	bool _airspeed_moving_avg_initialized{false};	/**< flag to indicate if moving averages are initialized */
 
 	uint64_t _airspeed_last_publish{0};
-	uint64_t _diff_pres_timestamp_sum{0};
 
 # ifdef ADC_AIRSPEED_VOLTAGE_CHANNEL
 	uORB::Subscription _adc_report_sub {ORB_ID(adc_report)};

@@ -45,6 +45,7 @@
 #include <circuit_breaker/circuit_breaker.h>
 #include <mathlib/math/Limits.hpp>
 #include <mathlib/math/Functions.hpp>
+#include <lib/geo/geo.h>
 
 using namespace matrix;
 using namespace time_literals;
@@ -391,8 +392,7 @@ ControlAllocator::Run()
 	// Also run allocator on thrust setpoint changes if the torque setpoint
 	// has not been updated for more than 5ms
 	if (_vehicle_thrust_setpoint_sub.update(&vehicle_thrust_setpoint)) {
-		_thrust_sp = matrix::Vector3f(vehicle_thrust_setpoint.xyz);
-
+		_thrust_sp = matrix::Vector3f(vehicle_thrust_setpoint.xyz);  // 随体坐标系下的推力，ned
 		if (dt > 5_ms) {
 			do_update = true;
 			_timestamp_sample = vehicle_thrust_setpoint.timestamp_sample;
@@ -405,6 +405,9 @@ ControlAllocator::Run()
 		check_for_motor_failures();
 
 		update_effectiveness_matrix_if_needed(EffectivenessUpdateReason::NO_EXTERNAL_UPDATE);
+
+		// 首先尝试自定义分配
+		calculate_custom_allocation();
 
 		// Set control setpoint vector(s)
 		matrix::Vector<float, NUM_AXES> c[ActuatorEffectiveness::MAX_NUM_MATRICES];
@@ -433,11 +436,46 @@ ControlAllocator::Run()
 
 			_control_allocation[i]->setControlSetpoint(c[i]);
 
-			// Do allocation
-			_control_allocation[i]->allocate();
-			_actuator_effectiveness->allocateAuxilaryControls(dt, i, _control_allocation[i]->_actuator_sp); //flaps and spoilers
-			_actuator_effectiveness->updateSetpoint(c[i], i, _control_allocation[i]->_actuator_sp,
+			// 尝试使用自定义分配
+			if (_custom_allocation_valid) {
+				// 使用自定义分配结果
+				matrix::Vector<float, NUM_ACTUATORS> custom_actuator_sp;
+				if (apply_custom_allocation(custom_actuator_sp)) {
+					_control_allocation[i]->setActuatorSetpoint(custom_actuator_sp);
+					// 限制日志输出频率，避免影响系统性能
+					static hrt_abstime last_custom_log = 0;
+					if (hrt_elapsed_time(&last_custom_log) > 1000000) { // 1秒输出一次
+						PX4_INFO("CA: 使用自定义控制分配算法");
+						last_custom_log = hrt_absolute_time();
+					}
+				} else {
+					// 回退到标准分配
+					_control_allocation[i]->allocate();
+					static hrt_abstime last_fallback_log = 0;
+					if (hrt_elapsed_time(&last_fallback_log) > 1000000) { // 1秒输出一次
+						PX4_INFO("CA: 自定义分配失败，回退到标准PX4分配算法");
+						last_fallback_log = hrt_absolute_time();
+					}
+				}
+			} else {
+				// 回退到标准分配
+				_control_allocation[i]->allocate();
+				static hrt_abstime last_invalid_log = 0;
+				if (hrt_elapsed_time(&last_invalid_log) > 1000000) { // 1秒输出一次
+					PX4_INFO("CA: 自定义分配无效，使用标准PX4分配算法");
+					last_invalid_log = hrt_absolute_time();
+				}
+			}
+
+			// 获取当前的执行器设定点用于后续处理
+			matrix::Vector<float, NUM_ACTUATORS> actuator_sp = _control_allocation[i]->getActuatorSetpoint();
+
+			_actuator_effectiveness->allocateAuxilaryControls(dt, i, actuator_sp); //flaps and spoilers
+			_actuator_effectiveness->updateSetpoint(c[i], i, actuator_sp,
 								_control_allocation[i]->getActuatorMin(), _control_allocation[i]->getActuatorMax());
+
+			// 更新执行器设定点
+			_control_allocation[i]->setActuatorSetpoint(actuator_sp);
 
 			if (_has_slew_rate) {
 				_control_allocation[i]->applySlewRateLimit(dt);
@@ -876,4 +914,308 @@ extern "C" __EXPORT int control_allocator_main(int argc, char *argv[]);
 int control_allocator_main(int argc, char *argv[])
 {
 	return ControlAllocator::main(argc, argv);
+}
+
+void
+ControlAllocator::calculate_custom_allocation()
+{
+	// 重置有效性标志
+	_custom_allocation_valid = false;
+
+	// 检查是否有有效的推力设定点
+	if (!PX4_ISFINITE(_thrust_sp(0)) || !PX4_ISFINITE(_thrust_sp(2))) {
+		static hrt_abstime last_invalid_thrust_log = 0;
+		if (hrt_elapsed_time(&last_invalid_thrust_log) > 5000000) { // 5秒输出一次
+			PX4_INFO("CA: 推力设定点无效，无法使用自定义分配");
+			last_invalid_thrust_log = hrt_absolute_time();
+		}
+		return;
+	}
+
+	// 订阅utrim消息，允许使用上一次的消息
+	utrim_s utrim{};
+	_custom_trim_vec.setZero();
+
+	// 首先检查是否能接收到utrim消息
+	bool utrim_received = _utrim_sub.update(&utrim) || _utrim_sub.copy(&utrim);
+
+	static hrt_abstime last_utrim_debug_log = 0;
+	if (hrt_elapsed_time(&last_utrim_debug_log) > 3000000) { // 3秒输出一次调试信息
+		if (utrim_received) {
+			PX4_INFO("CA: utrim接收状态: valid=%s, f1=%.2f, f2=%.2f, f3=%.2f, θ1=%.1f°, θ2=%.1f°, θ3=%.1f°",
+			         utrim.valid ? "true" : "false",
+			         (double)utrim.polynomial_values[0], (double)utrim.polynomial_values[1], (double)utrim.polynomial_values[2],
+			         (double)utrim.polynomial_values[3], (double)utrim.polynomial_values[4], (double)utrim.polynomial_values[5]);
+		} else {
+			PX4_INFO("CA: 未接收到utrim消息，update()=%s, copy()=%s",
+			         _utrim_sub.update(&utrim) ? "true" : "false",
+			         _utrim_sub.copy(&utrim) ? "true" : "false");
+		}
+		last_utrim_debug_log = hrt_absolute_time();
+	}
+
+	if (utrim_received) {
+		// 检查utrim数据的合理性而不是依赖valid标志
+		bool data_reasonable = true;
+
+		// 检查推力值是否合理（f1, f2, f3应该在合理范围内）
+		for (int i = 0; i < 3; ++i) {
+			if (!PX4_ISFINITE(utrim.polynomial_values[i]) ||
+			    utrim.polynomial_values[i] < 0.1f ||
+			    utrim.polynomial_values[i] > 50.0f) {
+				data_reasonable = false;
+				break;
+			}
+		}
+
+		// 检查角度值是否合理（theta1, theta2, theta3应该在±90度范围内）
+		for (int i = 3; i < 6; ++i) {
+			if (!PX4_ISFINITE(utrim.polynomial_values[i]) ||
+			    fabsf(utrim.polynomial_values[i]) > 90.0f) {
+				data_reasonable = false;
+				break;
+			}
+		}
+
+		if (data_reasonable) {
+			static hrt_abstime last_utrim_log = 0;
+			if (hrt_elapsed_time(&last_utrim_log) > 2000000) { // 2秒输出一次
+				PX4_INFO("CA: 接收到utrim消息(valid=%s)，数据合理，开始自定义控制分配计算",
+				         utrim.valid ? "true" : "false");
+				last_utrim_log = hrt_absolute_time();
+			}
+		// 前三个量（f1,f2,f3 推力值）转换为[0,1]范围（电机相关）
+		// 使用公式 f = 34.024x - 767.4，其中 f 是推力，x 是电机信号[0-100]
+		// 反推公式：x = (f + 767.4) / 34.024
+		const float motor_coeff = 34.024f;
+		const float motor_offset = 767.4f;
+
+		for (int i = 0; i < 3 && i < NUM_ACTUATORS; ++i) {
+			float thrust_value = utrim.polynomial_values[i];  // f1,f2,f3 推力值
+
+			// 从推力计算电机信号 [0-100]
+			float motor_signal = (thrust_value/CONSTANTS_ONE_G*1000.0f + motor_offset) / motor_coeff;
+
+			// 限制在 [0-100] 范围内
+			motor_signal = math::constrain(motor_signal, 0.0f, 100.0f);
+
+			// 归一化到 [0-1] 范围
+			_custom_trim_vec(i) = motor_signal / 100.0f;
+
+			PX4_DEBUG("Motor %d: thrust=%.1f -> signal=%.1f -> normalized=%.3f",
+			         i, (double)thrust_value, (double)motor_signal, (double)_custom_trim_vec(i));
+		}
+
+		// 后三个量（theta1,theta2,theta3 角度）转换为[-1,1]范围（舵机相关）
+		// 使用标准舵机角度范围 ±45°
+		for (int i = 3; i < 6 && i < NUM_ACTUATORS; ++i) {
+			float angle_deg = utrim.polynomial_values[i];  // theta1,theta2,theta3 角度值（度）
+
+			// 角度转换为[-1,1]范围: angle / 45°
+			_custom_trim_vec(i) = angle_deg / 45.0f;
+
+			// 限制在[-1,1]范围内
+			_custom_trim_vec(i) = math::constrain(_custom_trim_vec(i), -1.0f, 1.0f);
+
+			PX4_DEBUG("Servo %d: theta=%.1f° -> actuator=%.3f (±45° range)",
+			         i-3, (double)angle_deg, (double)_custom_trim_vec(i));
+		}
+
+		// 从utrim获取值：f1,f2,f3=utrim[0,1,2]，theta1,theta2,theta3=utrim[3,4,5]
+		float f1 = utrim.polynomial_values[0];
+		float f2 = utrim.polynomial_values[1];
+		float f3 = utrim.polynomial_values[2];
+		float theta1 = utrim.polynomial_values[3];
+		float theta2 = utrim.polynomial_values[4];
+		float theta3 = utrim.polynomial_values[5];
+
+		// 角度转弧度，使用 PX4 自带的 M_PI_F
+		theta1 *= (M_PI_F / 180.0f);
+		theta2 *= (M_PI_F / 180.0f);
+		theta3 *= (M_PI_F / 180.0f);
+
+		// 常量定义
+		const float L1 = 0.23f;  // 常量 L1
+		const float L2 = 0.40f;  // 常量 L2
+		const float L3 = 0.20f;  // 常量 L3
+
+		// 从推力设定点获取fx和fz
+		float fx = _thrust_sp(0);
+		float fz = _thrust_sp(2);
+
+		float tau_x = _torque_sp(0);
+		float tau_y = _torque_sp(1);
+		float tau_z = _torque_sp(2);
+
+		// 计算三角函数值
+		float sin_theta1 = sinf(theta1);
+		float cos_theta1 = cosf(theta1);
+		float sin_theta2 = sinf(theta2);
+		float cos_theta2 = cosf(theta2);
+		float sin_theta3 = sinf(theta3);
+		float cos_theta3 = cosf(theta3);
+
+		// 构建效率矩阵 A (5x6) Control Effectiveness Matrix
+		matrix::Matrix<float, 5, 6> A;
+
+		// 第一行 (fx)
+		A(0, 0) = sin_theta1;
+		A(0, 1) = sin_theta2;
+		A(0, 2) = sin_theta3;
+		A(0, 3) = cos_theta1;
+		A(0, 4) = cos_theta2;
+		A(0, 5) = cos_theta3;
+
+		// 第二行 (fz)
+		A(1, 0) = -cos_theta1;
+		A(1, 1) = -cos_theta2;
+		A(1, 2) = -cos_theta3;
+		A(1, 3) = sin_theta1;
+		A(1, 4) = sin_theta2;
+		A(1, 5) = sin_theta3;
+
+		// 第三行 (d*tau_x/L3)
+		A(2, 0) = -cos_theta1;
+		A(2, 1) = cos_theta2;
+		A(2, 2) = 0.0f;
+		A(2, 3) = sin_theta1;
+		A(2, 4) = -sin_theta2;
+		A(2, 5) = 0.0f;
+
+		// 第四行 (d*tau_y/L1)
+		A(3, 0) = cos_theta1;
+		A(3, 1) = cos_theta2;
+		A(3, 2) = -(L2 / L1) * cos_theta3;
+		A(3, 3) = -sin_theta1;
+		A(3, 4) = -sin_theta2;
+		A(3, 5) = (L2 / L1) * sin_theta3;
+
+		// 第五行 (d*tau_z/L3)
+		A(4, 0) = -sin_theta1;
+		A(4, 1) = sin_theta2;
+		A(4, 2) = 0.0f;
+		A(4, 3) = -cos_theta1;
+		A(4, 4) = cos_theta2;
+		A(4, 5) = 0.0f;
+
+		// 左侧向量 b (5x1)
+		matrix::Vector<float, 5> b;
+		b(0) = fx;
+		b(1) = fz;
+		b(2) = tau_x / L3; // dtau_x/L3
+		b(3) = tau_y / L1; // dtau_y/L1
+		b(4) = tau_z / L3; // dtau_z/L3
+
+		// 计算右侧向量 du = A^T * (A * A^T)^{-1} * b (伪逆解)
+		matrix::Matrix<float, 6, 5> At = A.transpose();
+		matrix::Matrix<float, 5, 5> AAt = A * At;
+		matrix::Matrix<float, 5, 5> AAt_inv;
+
+		// 计算逆矩阵
+		if (matrix::geninv(AAt, AAt_inv)) {
+			matrix::Vector<float, 6> du = At * AAt_inv * b;
+
+			// du 后三个量分别除以 f1 f2 f3
+			du(3) /= f1;
+			du(4) /= f2;
+			du(5) /= f3;
+
+			// 存储结果
+			_custom_allocation_result = du;
+			_custom_allocation_valid = true;
+
+			static hrt_abstime last_success_log = 0;
+			if (hrt_elapsed_time(&last_success_log) > 2000000) { // 2秒输出一次详细信息
+				PX4_INFO("CA: 自定义控制分配计算成功！");
+
+				// 记录结果
+				PX4_INFO("CA: fx=%.3f, fz=%.3f, Mx=%.3f, My=%.3f, Mz=%.3f",
+				        (double)fx, (double)fz,
+				         (double)tau_x, (double)tau_y, (double)tau_z);
+
+				PX4_INFO("CA: utrim=%.3f, %.3f, %.3f, %.3f, %.3f, %.3f",
+				        (double)f1, (double)f2, (double)f3, (double)theta1, (double)theta2, (double)theta3);
+
+				PX4_INFO("CA: du=%.3f, %.3f, %.3f, %.3f, %.3f, %.3f",
+				         (double)du(0), (double)du(1), (double)du(2), (double)du(3), (double)du(4), (double)du(5));
+
+				last_success_log = hrt_absolute_time();
+			}
+
+		} else {
+			static hrt_abstime last_matrix_error_log = 0;
+			if (hrt_elapsed_time(&last_matrix_error_log) > 5000000) { // 5秒输出一次
+				PX4_WARN("CA: 无法计算矩阵逆，自定义分配失败");
+				last_matrix_error_log = hrt_absolute_time();
+			}
+		}
+	} else {
+		static hrt_abstime last_unreasonable_data_log = 0;
+		if (hrt_elapsed_time(&last_unreasonable_data_log) > 5000000) { // 5秒输出一次
+			PX4_INFO("CA: utrim数据不合理，无法进行自定义分配");
+			last_unreasonable_data_log = hrt_absolute_time();
+		}
+	}
+	} else {
+		static hrt_abstime last_no_utrim_log = 0;
+		if (hrt_elapsed_time(&last_no_utrim_log) > 5000000) { // 5秒输出一次
+			PX4_INFO("CA: 未接收到utrim消息，无法进行自定义分配");
+			last_no_utrim_log = hrt_absolute_time();
+		}
+	}
+}
+
+bool
+ControlAllocator::apply_custom_allocation(matrix::Vector<float, NUM_ACTUATORS> &actuator_sp)
+{
+	if (!_custom_allocation_valid) {
+		return false;
+	}
+
+	// actuator_sp = du + trim
+	bool values_valid = true;
+	for (int i = 0; i < NUM_ACTUATORS && i < 6; ++i) {
+		actuator_sp(i) = _custom_allocation_result(i) + _custom_trim_vec(i);
+
+		// 安全检查：确保执行器指令在合理范围内
+		if (!PX4_ISFINITE(actuator_sp(i))) {
+			values_valid = false;
+			PX4_WARN("CA: 执行器%d指令无效(NaN/Inf)", i);
+		}
+
+		// 对于电机(0-2)：范围应该在[0,1]
+		if (i < 3) {
+			actuator_sp(i) = math::constrain(actuator_sp(i), 0.0f, 1.0f);
+		}
+		// 对于舵机(3-5)：范围应该在[-1,1]
+		else {
+			actuator_sp(i) = math::constrain(actuator_sp(i), -1.0f, 1.0f);
+		}
+	}
+
+	for (int i = 6; i < NUM_ACTUATORS; ++i) {
+		actuator_sp(i) = 0.f;
+	}
+
+	// 如果值无效，返回false使系统回退到标准分配
+	if (!values_valid) {
+		static hrt_abstime last_invalid_log = 0;
+		if (hrt_elapsed_time(&last_invalid_log) > 1000000) {
+			PX4_WARN("CA: 自定义分配产生无效值，回退到标准分配");
+			last_invalid_log = hrt_absolute_time();
+		}
+		return false;
+	}
+
+	// 限制详细结果日志输出频率
+	static hrt_abstime last_result_log = 0;
+	if (hrt_elapsed_time(&last_result_log) > 3000000) { // 3秒输出一次详细结果
+		PX4_INFO("CA: 结果向量 du+utrim=%.3f, %.3f, %.3f",
+				 (double)actuator_sp(0), (double)actuator_sp(1), (double)actuator_sp(2));
+		PX4_INFO("CA: 结果向量 du+utrim=%.3f, %.3f, %.3f",
+				 (double)actuator_sp(3), (double)actuator_sp(4), (double)actuator_sp(5));
+		last_result_log = hrt_absolute_time();
+	}
+
+	return true;
 }

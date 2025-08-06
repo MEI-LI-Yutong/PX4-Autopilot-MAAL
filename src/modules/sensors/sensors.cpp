@@ -265,14 +265,7 @@ void Sensors::diff_pres_poll()
 	if (_diff_pres_sub.update(&diff_pres)) {
 
 		if (!PX4_ISFINITE(diff_pres.differential_pressure_pa)) {
-			// ignore invalid data and reset accumulated
-
-			// reset
-			_diff_pres_timestamp_sum = 0;
-			_diff_pres_pressure_sum = 0;
-			_diff_pres_temperature_sum = 0;
-			_baro_pressure_sum = 0;
-			_diff_pres_count = 0;
+			// ignore invalid data but don't reset moving averages
 			return;
 		}
 
@@ -300,27 +293,30 @@ void Sensors::diff_pres_poll()
 		float airspeed_input[3] { diff_pres.differential_pressure_pa, air_temperature_celsius, 0.0f };
 		_airspeed_validator.put(diff_pres.timestamp_sample, airspeed_input, diff_pres.error_count, 100); // TODO: real priority?
 
-		// accumulate average for publication
-		_diff_pres_timestamp_sum += diff_pres.timestamp_sample;
-		_diff_pres_pressure_sum += diff_pres.differential_pressure_pa;
-		_diff_pres_temperature_sum += air_temperature_celsius;
-		_baro_pressure_sum += air_data.baro_pressure_pa;
-		_diff_pres_count++;
+		// Initialize moving averages on first valid data
+		if (!_airspeed_moving_avg_initialized) {
+			_diff_pres_pressure_avg = diff_pres.differential_pressure_pa;
+			_diff_pres_temperature_avg = air_temperature_celsius;
+			_baro_pressure_avg = air_data.baro_pressure_pa;
+			_airspeed_moving_avg_initialized = true;
+		} else {
+			// Update moving averages using exponential smoothing
+			// new_avg = alpha * new_value + (1 - alpha) * old_avg
+			_diff_pres_pressure_avg = AIRSPEED_MOVING_AVG_ALPHA * diff_pres.differential_pressure_pa +
+						  (1.0f - AIRSPEED_MOVING_AVG_ALPHA) * _diff_pres_pressure_avg;
+			_diff_pres_temperature_avg = AIRSPEED_MOVING_AVG_ALPHA * air_temperature_celsius +
+						     (1.0f - AIRSPEED_MOVING_AVG_ALPHA) * _diff_pres_temperature_avg;
+			_baro_pressure_avg = AIRSPEED_MOVING_AVG_ALPHA * air_data.baro_pressure_pa +
+					     (1.0f - AIRSPEED_MOVING_AVG_ALPHA) * _baro_pressure_avg;
+		}
 
-		if ((_diff_pres_count > 0) && hrt_elapsed_time(&_airspeed_last_publish) >= 50_ms) {
+		if (hrt_elapsed_time(&_airspeed_last_publish) >= 50_ms) {
 
-			// average data and apply calibration offset (SENS_DPRES_OFF)
-			const uint64_t timestamp_sample = _diff_pres_timestamp_sum / _diff_pres_count;
-			const float differential_pressure_pa = _diff_pres_pressure_sum / _diff_pres_count - _parameters.diff_pres_offset_pa;
-			const float baro_pressure_pa = _baro_pressure_sum / _diff_pres_count;
-			const float temperature = _diff_pres_temperature_sum / _diff_pres_count;
-
-			// reset
-			_diff_pres_timestamp_sum = 0;
-			_diff_pres_pressure_sum = 0;
-			_diff_pres_temperature_sum = 0;
-			_baro_pressure_sum = 0;
-			_diff_pres_count = 0;
+			// Use moving averages for calculation and apply calibration offset (SENS_DPRES_OFF)
+			const uint64_t timestamp_sample = diff_pres.timestamp_sample;
+			const float differential_pressure_pa = _diff_pres_pressure_avg - _parameters.diff_pres_offset_pa;
+			const float baro_pressure_pa = _baro_pressure_avg;
+			const float temperature = _diff_pres_temperature_avg;
 
 
 			enum AIRSPEED_SENSOR_MODEL smodel;
