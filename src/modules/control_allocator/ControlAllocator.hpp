@@ -78,6 +78,7 @@
 #include <uORB/topics/vehicle_thrust_setpoint.h>
 #include <uORB/topics/vehicle_status.h>
 #include <uORB/topics/failure_detector_status.h>
+#include <uORB/topics/utrim.h>
 
 class ControlAllocator : public ModuleBase<ControlAllocator>, public ModuleParams, public px4::ScheduledWorkItem
 {
@@ -138,6 +139,16 @@ private:
 
 	void publish_actuator_controls();
 
+	/**
+	 * Custom control allocation calculation based on matrix formula
+	 */
+	void calculate_custom_allocation();
+
+	/**
+	 * Apply custom allocation results to actuator setpoints
+	 */
+	bool apply_custom_allocation(matrix::Vector<float, NUM_ACTUATORS> &actuator_sp);
+
 	AllocationMethod _allocation_method_id{AllocationMethod::NONE};
 	ControlAllocation *_control_allocation[ActuatorEffectiveness::MAX_NUM_MATRICES] {}; 	///< class for control allocation calculations
 	int _num_control_allocation{0};
@@ -196,6 +207,15 @@ private:
 	matrix::Vector3f _torque_sp;
 	matrix::Vector3f _thrust_sp;
 	bool _publish_controls{true};
+
+	uORB::Subscription _utrim_sub{ORB_ID(utrim)};  /**< utrim subscription for custom allocation */
+
+	// Custom allocation results
+	matrix::Vector<float, 6> _custom_allocation_result;
+	bool _custom_allocation_valid{false};
+
+	// 新增：自定义trim向量
+	matrix::Vector<float, NUM_ACTUATORS> _custom_trim_vec;
 
 	// Reflects motor failures that are currently handled, not motor failures that are reported.
 	// For example, the system might report two motor failures, but only the first one is handled by CA

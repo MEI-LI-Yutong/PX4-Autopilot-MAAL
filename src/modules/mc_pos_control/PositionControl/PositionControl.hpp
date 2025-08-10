@@ -44,6 +44,10 @@
 #include <uORB/topics/trajectory_setpoint.h>
 #include <uORB/topics/vehicle_attitude_setpoint.h>
 #include <uORB/topics/vehicle_local_position_setpoint.h>
+#include <uORB/topics/vehicle_constraints.h>
+#include <uORB/topics/theta_trim.h>
+#include <uORB/topics/vehicle_attitude.h>
+#include <uORB/Subscription.hpp>
 
 struct PositionControlStates {
 	matrix::Vector3f position;
@@ -125,6 +129,12 @@ public:
 	 * @param hover_thrust [HOVER_THRUST_MIN, HOVER_THRUST_MAX] with which the vehicle hovers not accelerating down or up with level orientation
 	 */
 	void setHoverThrust(const float hover_thrust) { _hover_thrust = math::constrain(hover_thrust, HOVER_THRUST_MIN, HOVER_THRUST_MAX); }
+
+	/**
+	 * Set the theta trim value for pitch control
+	 * @param theta_trim theta_trim message containing pitch angle
+	 */
+	void setThetaTrim(const theta_trim_s &theta_trim) { _theta_trim = theta_trim; _external_theta_trim_valid = true; }
 
 	/**
 	 * Update the hover thrust without immediately affecting the output
@@ -233,4 +243,18 @@ private:
 	matrix::Vector3f _thr_sp; /**< desired thrust */
 	float _yaw_sp{}; /**< desired heading */
 	float _yawspeed_sp{}; /** desired yaw-speed */
+
+	/* 订阅 theta_trim */
+	uORB::Subscription _theta_trim_sub{ORB_ID(theta_trim)};
+	theta_trim_s _last_theta_trim{}; ///< 存储最新的 theta_trim 消息
+	bool _theta_trim_valid{false};   ///< 标记是否有有效的 theta_trim 消息
+
+	/* 外部设置的 theta_trim */
+	theta_trim_s _theta_trim{}; ///< 从外部设置的 theta_trim 消息
+	bool _external_theta_trim_valid{false}; ///< 标记外部 theta_trim 是否有效
+
+	/* 订阅 vehicle_attitude */
+	uORB::Subscription _vehicle_attitude_sub{ORB_ID(vehicle_attitude)};
+	vehicle_attitude_s _last_vehicle_attitude{}; ///< 存储最新的 vehicle_attitude 消息
+	bool _vehicle_attitude_valid{false};   ///< 标记是否有有效的 vehicle_attitude 消息
 };

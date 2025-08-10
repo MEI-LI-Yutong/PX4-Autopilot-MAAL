@@ -567,6 +567,8 @@ else
 		internal_combustion_engine_control start
 	fi
 
+	trim_selector start
+
 	#
 	# Optional board supplied extras: rc.board_extras
 	#

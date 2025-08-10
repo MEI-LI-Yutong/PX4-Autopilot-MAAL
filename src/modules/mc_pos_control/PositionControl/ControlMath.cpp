@@ -39,15 +39,32 @@
 #include <px4_platform_common/defines.h>
 #include <float.h>
 #include <mathlib/mathlib.h>
+#include <px4_platform_common/log.h>
 
 using namespace matrix;
 
 namespace ControlMath
 {
-void thrustToAttitude(const Vector3f &thr_sp, const float yaw_sp, vehicle_attitude_setpoint_s &att_sp)
+void thrustToAttitude(const Vector3f &thr_sp, const float yaw_sp, const float pitch_sp, vehicle_attitude_setpoint_s &att_sp)
 {
+	bodyzToAttitude(-thr_sp, yaw_sp, pitch_sp, att_sp);
+	// att_sp.thrust_body[2] = -thr_sp.length();
+	// 直接复制三维推力向量，而不是压缩成标量长度
+	att_sp.thrust_body[0] = thr_sp(0);
+	att_sp.thrust_body[1] = thr_sp(1);
+	att_sp.thrust_body[2] = thr_sp(2);
+
+	// 打印三维推力向量
+	PX4_INFO("thrust_body[0,1,2]: [%.3f, %.3f, %.3f]",
+		(double)att_sp.thrust_body[0],
+		(double)att_sp.thrust_body[1],
+		(double)att_sp.thrust_body[2]);
+
+	// 原来的实现（注释掉）
+	/*
 	bodyzToAttitude(-thr_sp, yaw_sp, att_sp);
 	att_sp.thrust_body[2] = -thr_sp.length();
+	*/
 }
 
 void limitTilt(Vector3f &body_unit, const Vector3f &world_unit, const float max_angle)
@@ -67,7 +84,7 @@ void limitTilt(Vector3f &body_unit, const Vector3f &world_unit, const float max_
 	body_unit = cosf(angle) * world_unit + sinf(angle) * rejection.unit();
 }
 
-void bodyzToAttitude(Vector3f body_z, const float yaw_sp, vehicle_attitude_setpoint_s &att_sp)
+void bodyzToAttitude(Vector3f body_z, const float yaw_sp, const float pitch_sp, vehicle_attitude_setpoint_s &att_sp)
 {
 	// zero vector, no direction, set safe level value
 	if (body_z.norm_squared() < FLT_EPSILON) {
@@ -99,6 +116,7 @@ void bodyzToAttitude(Vector3f body_z, const float yaw_sp, vehicle_attitude_setpo
 	// desired body_y axis
 	const Vector3f body_y = body_z % body_x;
 
+	// 7. 构造旋转矩阵
 	Dcmf R_sp;
 
 	// fill rotation matrix
@@ -110,7 +128,27 @@ void bodyzToAttitude(Vector3f body_z, const float yaw_sp, vehicle_attitude_setpo
 
 	// copy quaternion setpoint to attitude setpoint topic
 	const Quatf q_sp{R_sp};
-	q_sp.copyTo(att_sp.q_d);
+
+	// calculate euler angles from the computed rotation matrix
+	const Eulerf euler{R_sp};
+
+	// print initial euler angles for debugging
+	PX4_INFO("Initial euler angles - roll: %.2f, pitch: %.2f, yaw: %.2f",
+		(double)(euler.phi() * 180.0f / M_PI_F),
+		(double)(euler.theta() * 180.0f / M_PI_F),
+		(double)(euler.psi() * 180.0f / M_PI_F));
+
+	// create new euler angles using computed roll and yaw, but theta_trim pitch
+	Eulerf euler_modified(euler.phi(), pitch_sp, euler.psi());
+
+	// convert modified euler angles back to quaternion
+	const Quatf q_sp_modified{euler_modified};
+	q_sp_modified.copyTo(att_sp.q_d);
+
+	// set euler angles for logging (using the modified values)
+	// att_sp.roll_body = euler_modified.phi();
+	// att_sp.pitch_body = euler_modified.theta();
+	// att_sp.yaw_body = euler_modified.psi();
 }
 
 Vector2f constrainXY(const Vector2f &v0, const Vector2f &v1, const float &max)

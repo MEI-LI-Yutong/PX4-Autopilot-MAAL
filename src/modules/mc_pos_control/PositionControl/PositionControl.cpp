@@ -41,6 +41,7 @@
 #include <mathlib/mathlib.h>
 #include <px4_platform_common/defines.h>
 #include <geo/geo.h>
+#include <px4_platform_common/log.h>
 
 using namespace matrix;
 
@@ -108,8 +109,25 @@ void PositionControl::setInputSetpoint(const trajectory_setpoint_s &setpoint)
 bool PositionControl::update(const float dt)
 {
 	bool valid = _inputValid();
+	static uint64_t last_print_time = 0;
 
 	if (valid) {
+		// 只在收到新消息时更新 valid 标志
+		if (_theta_trim_sub.update(&_last_theta_trim)) {
+			_theta_trim_valid = true;
+		}
+
+		// 更新 vehicle_attitude 订阅
+		if (_vehicle_attitude_sub.update(&_last_vehicle_attitude)) {
+			_vehicle_attitude_valid = true;
+		}
+
+		// 每秒打印一次状态
+		if (hrt_absolute_time() - last_print_time > 1000000) {
+			// PX4_INFO("theta_trim_valid: %d", _theta_trim_valid);
+			last_print_time = hrt_absolute_time();
+		}
+
 		_positionControl();
 		_velocityControl(dt);
 
@@ -265,6 +283,54 @@ void PositionControl::getLocalPositionSetpoint(vehicle_local_position_setpoint_s
 
 void PositionControl::getAttitudeSetpoint(vehicle_attitude_setpoint_s &attitude_setpoint) const
 {
+	// 从 theta_trim 中提取 pitch 角度，优先使用外部设置的值
+	float pitch_sp = 0.0f;  // 默认值
+	if (_external_theta_trim_valid) {
+		// 使用外部设置的 theta_trim (从 MulticopterPositionControl 传入)
+		pitch_sp = _theta_trim.pitch_angle * M_PI_F / 180.0f;  // 转换为弧度
+	}
+
+	// 使用修改后的 thrustToAttitude 函数，传入 pitch_sp
+	ControlMath::thrustToAttitude(_thr_sp, _yaw_sp, pitch_sp, attitude_setpoint);
+
+	// 原来的代码（注释掉）
+	/*
+	// 首先使用原来的计算方法得到完整的姿态
 	ControlMath::thrustToAttitude(_thr_sp, _yaw_sp, attitude_setpoint);
+
+	if (_theta_trim_valid) {
+		// 从 theta_trim 中提取 pitch 角度
+		Quatf q_trim(_last_theta_trim.q_d);
+		Eulerf euler_trim(q_trim);
+
+		// 从当前计算的姿态中获取 roll 和 yaw
+		Quatf q_current(attitude_setpoint.q_d);
+		Eulerf euler_current(q_current);
+		// PX4_INFO("originnal pitch: %.2f, trimed pitch: %.2f",
+		// 	(double)euler_current(1) * 180.0 / M_PI,
+		// 	(double)euler_trim(1) * 180.0 / M_PI);
+
+		// 组合：使用当前的 roll 和 yaw，但使用 theta_trim 的 pitch
+		Eulerf euler_combined(euler_current(0), euler_trim(1), euler_current(2));
+		Quatf q_combined(euler_combined);
+
+		// 将结果复制回 attitude_setpoint
+		// q_combined.copyTo(attitude_setpoint.q_d);
+
+		// PX4_INFO("Combined attitude - roll: %.2f, pitch: %.2f(trim), yaw: %.2f",
+		// 	(double)euler_combined(0) * 180.0 / M_PI,
+		// 	(double)euler_trim(1) * 180.0 / M_PI,
+		// 	(double)euler_combined(2) * 180.0 / M_PI);
+	} else {
+		// 如果没有有效的消息，已经使用了原来的计算方法
+		Quatf q_current(attitude_setpoint.q_d);
+		Eulerf euler_current(q_current);
+		// PX4_INFO("Using thrustToAttitude - roll: %.2f, pitch: %.2f, yaw: %.2f",
+		// 	(double)euler_current(0) * 180.0 / M_PI,
+		// 	(double)euler_current(1) * 180.0 / M_PI,
+		// 	(double)euler_current(2) * 180.0 / M_PI);
+	}
+	*/
+
 	attitude_setpoint.yaw_sp_move_rate = _yawspeed_sp;
 }

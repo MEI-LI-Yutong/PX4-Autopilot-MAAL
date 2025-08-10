@@ -208,6 +208,7 @@ set(msg_files
 	TakeoffStatus.msg
 	TaskStackInfo.msg
 	TecsStatus.msg
+	theta_trim.msg
 	TelemetryStatus.msg
 	TiltrotorExtraControls.msg
 	TimesyncStatus.msg
@@ -218,6 +219,7 @@ set(msg_files
 	UavcanParameterValue.msg
 	UlogStream.msg
 	UlogStreamAck.msg
+	utrim.msg
 	VehicleAcceleration.msg
 	VehicleAirData.msg
 	VehicleAngularAccelerationSetpoint.msg
