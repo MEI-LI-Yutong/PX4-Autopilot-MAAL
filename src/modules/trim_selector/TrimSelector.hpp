@@ -47,6 +47,15 @@
 #include <uORB/topics/trajectory_setpoint.h>
 #include <uORB/topics/theta_trim.h>
 #include <uORB/topics/utrim.h>
+// 新增 uORB 话题
+#include <uORB/topics/airspeed_wind.h>
+#include <uORB/topics/airspeed_validated.h>
+#include <uORB/topics/vehicle_local_position.h>
+#include <uORB/topics/vehicle_attitude.h>
+// 平滑起降所需话题
+#include <uORB/topics/vehicle_land_detected.h>
+#include <uORB/topics/vehicle_status.h>
+#include <uORB/topics/manual_control_setpoint.h>
 
 using namespace time_literals;
 
@@ -75,6 +84,42 @@ private:
 	uORB::Publication<utrim_s> _utrim_pub{ORB_ID(utrim)};
 	uORB::Subscription _trajectory_setpoint_sub{ORB_ID(trajectory_setpoint)};
 	uORB::Subscription _parameter_update_sub{ORB_ID(parameter_update)};
+
+    // === 新增订阅 ===
+    uORB::Subscription _airspeed_wind_sub{ORB_ID(airspeed_wind)};
+    uORB::Subscription _airspeed_validated_sub{ORB_ID(airspeed_validated)};
+    uORB::Subscription _vehicle_local_position_sub{ORB_ID(vehicle_local_position)};
+    uORB::Subscription _vehicle_attitude_sub{ORB_ID(vehicle_attitude)};
+
+    // === 获取风速大小的辅助函数 ===
+    float get_wind_magnitude();
+
+    // === 平滑起降：内部状态 ===
+    uORB::Subscription _vehicle_land_detected_sub{ORB_ID(vehicle_land_detected)};
+    uORB::Subscription _vehicle_status_sub{ORB_ID(vehicle_status)};
+    uORB::Subscription _manual_control_setpoint_sub{ORB_ID(manual_control_setpoint)};
+
+    enum class RampPhase : uint8_t {
+        Idle = 0,
+        TakeoffRamp,
+        Flight,
+        LandingRamp
+    };
+
+    RampPhase _ramp_phase{RampPhase::Idle};
+    float _utrim_alpha{0.f};               // 0..1，用于缩放 f1..f3
+    hrt_abstime _ramp_start_time{0};
+
+    // 默认斜坡时间（秒）。如需参数化，可后续加入参数系统
+    static constexpr float _takeoff_ramp_time_s{1.5f};
+    static constexpr float _landing_ramp_time_s{2.0f};
+
+    // 油门阈值：用于判断起飞/降落意图
+    static constexpr float _takeoff_throttle_threshold{0.6f};  // 起飞油门阈值
+    static constexpr float _landing_throttle_threshold{0.3f};  // 降落油门阈值
+
+    // 飞机质量参数
+    static constexpr float _vehicle_mass{2.8f};  // 质量 [kg]
 
 	DEFINE_PARAMETERS(
 		(ParamFloat<px4::params::TS_PITCH_GAIN>) _param_ts_pitch_gain   /**< 俯仰角增益参数 */

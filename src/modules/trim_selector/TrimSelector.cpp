@@ -39,6 +39,8 @@
 
 #include <mathlib/mathlib.h>
 #include <geo/geo.h>
+// 若之前未包含矩阵库头，补充包含
+#include <lib/matrix/matrix/math.hpp>
 
 using namespace matrix;
 
@@ -53,6 +55,52 @@ TrimSelector::TrimSelector() :
 TrimSelector::~TrimSelector()
 {
 	// 析构函数，清理资源（如果有需要）
+}
+
+/* === 新增函数实现：获取风速大小 === */
+float TrimSelector::get_wind_magnitude()
+{
+    using namespace time_literals;
+
+    // 1) 首选 airspeed_wind 话题
+    airspeed_wind_s wind{};
+
+    if (_airspeed_wind_sub.copy(&wind)) {
+        const bool recent = (hrt_absolute_time() - wind.timestamp) < 500_ms;
+
+        if (recent && PX4_ISFINITE(wind.windspeed_north) && PX4_ISFINITE(wind.windspeed_east)) {
+            return sqrtf(wind.windspeed_north * wind.windspeed_north +
+                         wind.windspeed_east  * wind.windspeed_east);
+        }
+    }
+
+    // 2) 回退方案：|v_ground − v_air_rel|
+    vehicle_local_position_s lpos{};
+    vehicle_attitude_s       att{};
+    airspeed_validated_s     asp{};
+
+    const bool have_lpos = _vehicle_local_position_sub.copy(&lpos);
+    const bool have_att  = _vehicle_attitude_sub.copy(&att);
+    const bool have_asp  = _airspeed_validated_sub.copy(&asp);
+
+    if (have_lpos && have_att && have_asp && PX4_ISFINITE(asp.true_airspeed_m_s)) {
+        // 地速（惯性系）
+        const Vector2f v_ground{lpos.vx, lpos.vy};
+
+        // 将机体系真空速 (TAS, 0, 0) 旋转到惯性系
+        const Dcmf R_nb{Quatf(att.q)};
+        const Vector3f v_air_body{asp.true_airspeed_m_s, 0.f, 0.f};
+        const Vector3f v_air_earth = R_nb * v_air_body;
+
+        const Vector2f v_air_xy{v_air_earth(0), v_air_earth(1)};
+
+        // 风 = 地速 − 空速
+        const Vector2f wind_xy = v_ground - v_air_xy;
+        return wind_xy.norm();
+    }
+
+    // 3) 数据不足，返回 0
+    return 0.f;
 }
 
 bool TrimSelector::init()
@@ -85,7 +133,7 @@ void TrimSelector::Run()
 	trajectory_setpoint_s trajectory_setpoint{};
 	bool has_trajectory_data = _trajectory_setpoint_sub.copy(&trajectory_setpoint);
 
-	// 添加调试信息（每5秒打印一次状态）
+    // 添加调试信息（每5秒打印一次状态）
 	static uint64_t last_status_time = 0;
 	uint64_t now = hrt_absolute_time();
 	if (now - last_status_time > 5000000) { // 5秒
@@ -99,7 +147,111 @@ void TrimSelector::Run()
 		last_status_time = now;
 	}
 
-	// 初始化默认值
+    // === 平滑起降：更新斜坡状态 ===
+    vehicle_status_s vstatus{};
+    _vehicle_status_sub.copy(&vstatus);
+    vehicle_land_detected_s land{};
+    _vehicle_land_detected_sub.copy(&land);
+    manual_control_setpoint_s manual{};
+    _manual_control_setpoint_sub.copy(&manual);
+
+    const bool armed = (vstatus.arming_state == vehicle_status_s::ARMING_STATE_ARMED);
+    const bool landed = land.landed;
+    const bool ground_contact = land.ground_contact;
+    const bool auto_landing_mode = (vstatus.nav_state == vehicle_status_s::NAVIGATION_STATE_AUTO_LAND
+                                 || vstatus.nav_state == vehicle_status_s::NAVIGATION_STATE_AUTO_RTL
+                                 || vstatus.nav_state == vehicle_status_s::NAVIGATION_STATE_AUTO_PRECLAND);
+    const bool manual_mode = (vstatus.nav_state == vehicle_status_s::NAVIGATION_STATE_ALTCTL
+                           || vstatus.nav_state == vehicle_status_s::NAVIGATION_STATE_POSCTL
+                           || vstatus.nav_state == vehicle_status_s::NAVIGATION_STATE_MANUAL);
+
+    // 获取油门输入（0-1范围，1表示最大油门）
+    const float throttle = manual.throttle;
+    const bool high_throttle = (throttle > _takeoff_throttle_threshold);
+    const bool low_throttle = (throttle < _landing_throttle_threshold);
+
+    switch (_ramp_phase) {
+    case RampPhase::Idle:
+        _utrim_alpha = 0.f;
+        // 起飞条件：解锁 + 未落地 + (自动模式 或 手动模式下高油门)
+        if (armed && !landed) {
+            bool should_takeoff = false;
+            if (!manual_mode) {
+                // 自动模式：直接触发起飞斜坡
+                should_takeoff = true;
+            } else if (manual_mode && high_throttle) {
+                // 手动模式：需要高油门才触发起飞斜坡
+                should_takeoff = true;
+            }
+
+            if (should_takeoff) {
+                _ramp_phase = RampPhase::TakeoffRamp;
+                _ramp_start_time = now;
+                _utrim_alpha = 0.f;
+            }
+        }
+        break;
+
+    case RampPhase::TakeoffRamp: {
+        const float dt_s = (now - _ramp_start_time) * 1e-6f;
+        const float progress = dt_s / _takeoff_ramp_time_s;
+        _utrim_alpha = math::constrain(progress, 0.f, 1.f);
+        if (!armed) {
+            _ramp_phase = RampPhase::Idle;
+            _utrim_alpha = 0.f;
+        } else if (_utrim_alpha >= 1.f) {
+            _ramp_phase = RampPhase::Flight;
+            _utrim_alpha = 1.f;
+        }
+        break; }
+
+    case RampPhase::Flight:
+        _utrim_alpha = 1.f;
+        if (!armed) {
+            _ramp_phase = RampPhase::Idle;
+            _utrim_alpha = 0.f;
+        } else {
+            // 降落条件：自动降落模式 或 接地 或 (手动模式下低油门+接地)
+            bool should_land = false;
+            if (auto_landing_mode) {
+                should_land = true;
+            } else if (ground_contact || landed) {
+                should_land = true;
+            } else if (manual_mode && low_throttle && ground_contact) {
+                should_land = true;
+            }
+
+            if (should_land) {
+                _ramp_phase = RampPhase::LandingRamp;
+                _ramp_start_time = now;
+            }
+        }
+        break;
+
+    case RampPhase::LandingRamp: {
+        const float dt_s = (now - _ramp_start_time) * 1e-6f;
+        const float progress = dt_s / _landing_ramp_time_s;
+        _utrim_alpha = math::constrain(1.f - progress, 0.f, 1.f);
+        if (!armed || landed) {
+            if (_utrim_alpha <= 0.f) {
+                _ramp_phase = RampPhase::Idle;
+            }
+        }
+        break; }
+    }
+
+    // 每2秒打印一次斜坡状态
+    static uint64_t last_ramp_log = 0;
+    if (now - last_ramp_log > 2'000'000) {
+        const char* phase_names[] = {"Idle", "TakeoffRamp", "Flight", "LandingRamp"};
+        const char* nav_mode = manual_mode ? "MANUAL" : "AUTO";
+        PX4_INFO("Trim Selector: phase=%s, alpha=%.2f, throttle=%.2f, mode=%s, armed=%d, landed=%d",
+                 phase_names[(int)_ramp_phase], (double)_utrim_alpha, (double)throttle,
+                 nav_mode, armed, landed);
+        last_ramp_log = now;
+    }
+
+    // 初始化默认值
 	float horizontal_velocity_magnitude = 0.0f;
 	float pitch_setpoint = 0.0f;
 	bool data_valid = false;
@@ -114,32 +266,47 @@ void TrimSelector::Run()
 	}
 	// 如果没有有效数据，使用默认值（已经初始化为0）
 
+    // === 计算风速大小（在 pitch_setpoint 计算之后） ===
+    const float wind_magnitude = get_wind_magnitude();
+    static uint64_t last_wind_log = 0;
+    if (now - last_wind_log > 1_s) {
+        PX4_INFO("Trim Selector: wind=%.2f m/s", (double)wind_magnitude);
+        last_wind_log = now;
+    }
+
 	// 创建并发布 utrim 消息（始终发布）
 	utrim_s utrim{};
 	utrim.timestamp = hrt_absolute_time();
 	utrim.horizontal_velocity = horizontal_velocity_magnitude;
 	utrim.valid = data_valid;
 
-	if (data_valid) {
+    // 注释掉基于速度和俯仰角的计算，改为都使用默认值
+    /*
+    if (data_valid) {
 		// 有效数据：基于实际速度和俯仰角计算
-		utrim.polynomial_values[0] = 5.0f + horizontal_velocity_magnitude * 2.0f;  // f1
-		utrim.polynomial_values[1] = 5.0f + horizontal_velocity_magnitude * 2.0f;  // f2
-		utrim.polynomial_values[2] = 8.0f + horizontal_velocity_magnitude * 1.5f;  // f3
+        utrim.polynomial_values[0] = 5.0f + horizontal_velocity_magnitude * 2.0f;  // f1
+        utrim.polynomial_values[1] = 5.0f + horizontal_velocity_magnitude * 2.0f;  // f2
+        utrim.polynomial_values[2] = 8.0f + horizontal_velocity_magnitude * 1.5f;  // f3
 
 		float pitch_degrees = pitch_setpoint * 180.0f / M_PI_F;
 		utrim.polynomial_values[3] = pitch_degrees * 0.5f;  // theta1
 		utrim.polynomial_values[4] = pitch_degrees * 0.5f;  // theta2
 		utrim.polynomial_values[5] = pitch_degrees * 0.8f;  // theta3
-	} else {
-		// 默认值：基于重力和质量的安全参数
-		// m = 2.8 kg, g = CONSTANTS_ONE_G (9.80665 m/s^2)
-		// 每个电机承担 m*g/3 的推力
-		const float mass = 2.8f;  // 质量 [kg]
-		const float thrust_per_motor = mass * CONSTANTS_ONE_G / 3.0f;  // 每个电机的推力 [N]
+        // 应用斜坡缩放，丝滑起飞/降落
+        utrim.polynomial_values[0] *= _utrim_alpha;
+        utrim.polynomial_values[1] *= _utrim_alpha;
+        utrim.polynomial_values[2] *= _utrim_alpha;
 
-		utrim.polynomial_values[0] = thrust_per_motor;  // f1 = m*g/3
-		utrim.polynomial_values[1] = thrust_per_motor;  // f2 = m*g/3
-		utrim.polynomial_values[2] = thrust_per_motor;  // f3 = m*g/3
+    } else {
+    */
+		// 默认值：使用指定的推力值
+        utrim.polynomial_values[0] = 10.1569f;  // f1
+        utrim.polynomial_values[1] = 10.1569f;  // f2
+        utrim.polynomial_values[2] = 8.1255f;   // f3
+        // 应用斜坡缩放
+        utrim.polynomial_values[0] *= _utrim_alpha;
+        utrim.polynomial_values[1] *= _utrim_alpha;
+        utrim.polynomial_values[2] *= _utrim_alpha;
 		utrim.polynomial_values[3] = 0.0f;  // theta1 默认值
 		utrim.polynomial_values[4] = 0.0f;  // theta2 默认值
 		utrim.polynomial_values[5] = 0.0f;  // theta3 默认值
@@ -147,11 +314,11 @@ void TrimSelector::Run()
 		// 在第一次使用默认值时打印计算信息
 		static bool first_default_log = true;
 		if (first_default_log) {
-			PX4_INFO("Trim Selector: Using calculated defaults - mass=%.1f kg, g=%.3f m/s², thrust_per_motor=%.3f N",
-				(double)mass, (double)CONSTANTS_ONE_G, (double)thrust_per_motor);
+			PX4_INFO("Trim Selector: Using specified defaults - f1=%.4f, f2=%.4f, f3=%.4f",
+				(double)utrim.polynomial_values[0], (double)utrim.polynomial_values[1], (double)utrim.polynomial_values[2]);
 			first_default_log = false;
 		}
-	}
+	// }
 
 	// 发布 utrim（始终发布）
 	_utrim_pub.publish(utrim);
@@ -174,12 +341,7 @@ void TrimSelector::Run()
 	// 添加调试信息（每秒只打印一次，避免日志刷屏）
 	static uint64_t last_log_time = 0;
 	if (now - last_log_time > 1000000) { // 1秒
-		if (data_valid) {
-			PX4_INFO("Trim Selector: vel_mag=%.3f, pitch=%.3f deg [VALID]",
-				(double)horizontal_velocity_magnitude, (double)(pitch_setpoint * 180.0f / M_PI_F));
-		} else {
-			PX4_INFO("Trim Selector: Using DEFAULT values [INVALID DATA]");
-		}
+		PX4_INFO("Trim Selector: Using DEFAULT values for utrim");
 
 		// 记录 utrim 发布数据
 		PX4_INFO("Published utrim: f1=%.3f, f2=%.3f, f3=%.3f, θ1=%.3f°, θ2=%.3f°, θ3=%.3f°, valid=%s",

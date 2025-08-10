@@ -685,6 +685,9 @@ ControlAllocator::publish_control_allocator_status(int matrix_index)
 	// Handled motor failures
 	control_allocator_status.handled_motor_failure_mask = _handled_motor_failure_bitmask;
 
+	// Custom allocation status
+	control_allocator_status.custom_allocation_used = _custom_allocation_valid;
+
 	_control_allocator_status_pub[matrix_index].publish(control_allocator_status);
 }
 
@@ -940,16 +943,16 @@ ControlAllocator::calculate_custom_allocation()
 	bool utrim_received = _utrim_sub.update(&utrim) || _utrim_sub.copy(&utrim);
 
 	static hrt_abstime last_utrim_debug_log = 0;
-	if (hrt_elapsed_time(&last_utrim_debug_log) > 3000000) { // 3秒输出一次调试信息
+	if (hrt_elapsed_time(&last_utrim_debug_log) > 30000000) { // 30秒输出一次调试信息
 		if (utrim_received) {
 			PX4_INFO("CA: utrim接收状态: valid=%s, f1=%.2f, f2=%.2f, f3=%.2f, θ1=%.1f°, θ2=%.1f°, θ3=%.1f°",
-			         utrim.valid ? "true" : "false",
-			         (double)utrim.polynomial_values[0], (double)utrim.polynomial_values[1], (double)utrim.polynomial_values[2],
-			         (double)utrim.polynomial_values[3], (double)utrim.polynomial_values[4], (double)utrim.polynomial_values[5]);
+				utrim.valid ? "true" : "false",
+				(double)utrim.polynomial_values[0], (double)utrim.polynomial_values[1], (double)utrim.polynomial_values[2],
+				(double)utrim.polynomial_values[3], (double)utrim.polynomial_values[4], (double)utrim.polynomial_values[5]);
 		} else {
 			PX4_INFO("CA: 未接收到utrim消息，update()=%s, copy()=%s",
-			         _utrim_sub.update(&utrim) ? "true" : "false",
-			         _utrim_sub.copy(&utrim) ? "true" : "false");
+				_utrim_sub.update(&utrim) ? "true" : "false",
+				_utrim_sub.copy(&utrim) ? "true" : "false");
 		}
 		last_utrim_debug_log = hrt_absolute_time();
 	}
@@ -979,7 +982,7 @@ ControlAllocator::calculate_custom_allocation()
 
 		if (data_reasonable) {
 			static hrt_abstime last_utrim_log = 0;
-			if (hrt_elapsed_time(&last_utrim_log) > 2000000) { // 2秒输出一次
+			if (hrt_elapsed_time(&last_utrim_log) > 15000000) { // 15秒输出一次
 				PX4_INFO("CA: 接收到utrim消息(valid=%s)，数据合理，开始自定义控制分配计算",
 				         utrim.valid ? "true" : "false");
 				last_utrim_log = hrt_absolute_time();
@@ -1125,7 +1128,7 @@ ControlAllocator::calculate_custom_allocation()
 			_custom_allocation_valid = true;
 
 			static hrt_abstime last_success_log = 0;
-			if (hrt_elapsed_time(&last_success_log) > 2000000) { // 2秒输出一次详细信息
+			if (hrt_elapsed_time(&last_success_log) > 15000000) { // 15秒输出一次详细信息
 				PX4_INFO("CA: 自定义控制分配计算成功！");
 
 				// 记录结果
@@ -1158,7 +1161,7 @@ ControlAllocator::calculate_custom_allocation()
 	}
 	} else {
 		static hrt_abstime last_no_utrim_log = 0;
-		if (hrt_elapsed_time(&last_no_utrim_log) > 5000000) { // 5秒输出一次
+		if (hrt_elapsed_time(&last_no_utrim_log) > 30000000) { // 30秒输出一次
 			PX4_INFO("CA: 未接收到utrim消息，无法进行自定义分配");
 			last_no_utrim_log = hrt_absolute_time();
 		}
@@ -1209,7 +1212,7 @@ ControlAllocator::apply_custom_allocation(matrix::Vector<float, NUM_ACTUATORS> &
 
 	// 限制详细结果日志输出频率
 	static hrt_abstime last_result_log = 0;
-	if (hrt_elapsed_time(&last_result_log) > 3000000) { // 3秒输出一次详细结果
+	if (hrt_elapsed_time(&last_result_log) > 20000000) { // 20秒输出一次详细结果
 		PX4_INFO("CA: 结果向量 du+utrim=%.3f, %.3f, %.3f",
 				 (double)actuator_sp(0), (double)actuator_sp(1), (double)actuator_sp(2));
 		PX4_INFO("CA: 结果向量 du+utrim=%.3f, %.3f, %.3f",
