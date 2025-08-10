@@ -55,7 +55,7 @@ if [ -z "${PX4_GZ_STANDALONE}" ]; then
 
 		if [ -z "${HEADLESS}" ]; then
 			echo "INFO  [init] Starting gz gui"
-			${gz_command} ${gz_sub_command} -g > /dev/null 2>&1 &
+			${gz_command} ${gz_sub_command} -g --render-engine ogre > /dev/null 2>&1 &
 		fi
 
 	else
