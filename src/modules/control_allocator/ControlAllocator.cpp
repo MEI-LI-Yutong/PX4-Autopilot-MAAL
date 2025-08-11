@@ -665,6 +665,42 @@ ControlAllocator::publish_control_allocator_status(int matrix_index)
 	// Handled motor failures
 	control_allocator_status.handled_motor_failure_mask = _handled_motor_failure_bitmask;
 
+	// Custom allocation status and data
+	control_allocator_status.custom_allocation_used = _custom_allocation_valid;
+
+	// Set custom allocation inputs and results
+	if (control_allocator_status.custom_allocation_used) {
+		// Thrust inputs [fx, fy, fz]
+		control_allocator_status.custom_thrust_input[0] = _thrust_sp(0);  // fx
+		control_allocator_status.custom_thrust_input[1] = _thrust_sp(1);  // fy
+		control_allocator_status.custom_thrust_input[2] = _thrust_sp(2);  // fz
+
+		// Torque inputs [tau_x, tau_y, tau_z]
+		control_allocator_status.custom_torque_input[0] = _torque_sp(0);  // tau_x
+		control_allocator_status.custom_torque_input[1] = _torque_sp(1);  // tau_y
+		control_allocator_status.custom_torque_input[2] = _torque_sp(2);  // tau_z
+
+		// Custom allocation result vector du [6]
+		for (int i = 0; i < 6; i++) {
+			control_allocator_status.custom_allocation_result[i] = _custom_allocation_result(i);
+		}
+
+		// Custom trim vector [6]
+		for (int i = 0; i < 6; i++) {
+			control_allocator_status.custom_trim_vector[i] = _custom_trim_vec(i);
+		}
+	} else {
+		// Clear custom allocation data when not used
+		for (int i = 0; i < 3; i++) {
+			control_allocator_status.custom_thrust_input[i] = 0.0f;
+			control_allocator_status.custom_torque_input[i] = 0.0f;
+		}
+		for (int i = 0; i < 6; i++) {
+			control_allocator_status.custom_allocation_result[i] = 0.0f;
+			control_allocator_status.custom_trim_vector[i] = 0.0f;
+		}
+	}
+
 	_control_allocator_status_pub[matrix_index].publish(control_allocator_status);
 }
 
@@ -977,44 +1013,44 @@ ControlAllocator::calculate_custom_allocation()
 		matrix::Matrix<float, 5, 6> A;
 
 		// 第一行 (fx)
-		A(0, 0) = sin_theta1;
-		A(0, 1) = sin_theta2;
-		A(0, 2) = sin_theta3;
-		A(0, 3) = cos_theta1;
-		A(0, 4) = cos_theta2;
-		A(0, 5) = cos_theta3;
+		A(0, 0) = sin_theta1;                  // ∂fx/∂f1
+		A(0, 1) = sin_theta2;                  // ∂fx/∂f2
+		A(0, 2) = sin_theta3;                  // ∂fx/∂f3
+		A(0, 3) = f1 * cos_theta1;             // ∂fx/∂θ1 = f1*cosθ1
+		A(0, 4) = f2 * cos_theta2;             // ∂fx/∂θ2 = f2*cosθ2
+		A(0, 5) = f3 * cos_theta3;             // ∂fx/∂θ3 = f3*cosθ3
 
 		// 第二行 (fz)
-		A(1, 0) = -cos_theta1;
-		A(1, 1) = -cos_theta2;
-		A(1, 2) = -cos_theta3;
-		A(1, 3) = sin_theta1;
-		A(1, 4) = sin_theta2;
-		A(1, 5) = sin_theta3;
+		A(1, 0) = -cos_theta1;                 // ∂fz/∂f1
+		A(1, 1) = -cos_theta2;                 // ∂fz/∂f2
+		A(1, 2) = -cos_theta3;                 // ∂fz/∂f3
+		A(1, 3) = f1 * sin_theta1;             // ∂fz/∂θ1 = f1*sinθ1
+		A(1, 4) = f2 * sin_theta2;             // ∂fz/∂θ2 = f2*sinθ2
+		A(1, 5) = f3 * sin_theta3;             // ∂fz/∂θ3 = f3*sinθ3
 
 		// 第三行 (d*tau_x/L3)
 		A(2, 0) = -cos_theta1;
-		A(2, 1) = cos_theta2;
-		A(2, 2) = 0.0f;
-		A(2, 3) = sin_theta1;
+		A(2, 1) =  cos_theta2;
+		A(2, 2) =  0.0f;
+		A(2, 3) =  sin_theta1;
 		A(2, 4) = -sin_theta2;
-		A(2, 5) = 0.0f;
+		A(2, 5) =  0.0f;
 
 		// 第四行 (d*tau_y/L1)
-		A(3, 0) = cos_theta1;
-		A(3, 1) = cos_theta2;
+		A(3, 0) =  cos_theta1;
+		A(3, 1) =  cos_theta2;
 		A(3, 2) = -(L2 / L1) * cos_theta3;
 		A(3, 3) = -sin_theta1;
 		A(3, 4) = -sin_theta2;
-		A(3, 5) = (L2 / L1) * sin_theta3;
+		A(3, 5) =  (L2 / L1) * sin_theta3;
 
 		// 第五行 (d*tau_z/L3)
 		A(4, 0) = -sin_theta1;
-		A(4, 1) = sin_theta2;
-		A(4, 2) = 0.0f;
+		A(4, 1) =  sin_theta2;
+		A(4, 2) =  0.0f;
 		A(4, 3) = -cos_theta1;
-		A(4, 4) = cos_theta2;
-		A(4, 5) = 0.0f;
+		A(4, 4) =  cos_theta2;
+		A(4, 5) =  0.0f;
 
 		// 左侧向量 b (5x1)
 		matrix::Vector<float, 5> b;
@@ -1024,37 +1060,46 @@ ControlAllocator::calculate_custom_allocation()
 		b(3) = tau_y / L1; // dtau_y/L1
 		b(4) = tau_z / L3; // dtau_z/L3
 
-		// 计算右侧向量 du = A^T * (A * A^T)^{-1} * b (伪逆解)
-		matrix::Matrix<float, 6, 5> At = A.transpose();
-		matrix::Matrix<float, 5, 5> AAt = A * At;
+		// 列权重 W：弱化舵机列，并鼓励成对对称（0~1 和 3~4）
+		// 通过缩放列来实现带权伪逆，W_diag 为每列的惩罚因子
+		const float w_motor = 1.0f;     // 电机列权重
+		const float w_servo = 2.0f;     // 舵机列更大权重，减少无谓动作
+		matrix::Vector<float, 6> W_diag;
+		W_diag(0) = w_motor;
+		W_diag(1) = w_motor;
+		W_diag(2) = w_motor;
+		W_diag(3) = w_servo;
+		W_diag(4) = w_servo;
+		W_diag(5) = w_servo;
+
+		// 列缩放：A_scaled = A * W^{-1}
+		matrix::Matrix<float, 5, 6> A_scaled = A;
+		for (int j = 0; j < 6; j++) {
+			const float inv_w = 1.0f / math::max(W_diag(j), 1e-6f);
+			for (int i = 0; i < 5; i++) {
+				A_scaled(i, j) *= inv_w;
+			}
+		}
+
+		// 计算右侧向量（带正则的最小二乘）：du_scaled = A_scaled^T * (A_scaled*A_scaled^T + λI)^{-1} * b
+		const float lambda = 1e-4f;  // 轻微正则
+		matrix::Matrix<float, 6, 5> At = A_scaled.transpose();
+		matrix::Matrix<float, 5, 5> AAt = A_scaled * At;
+		for (int i = 0; i < 5; i++) { AAt(i, i) += lambda; }
 		matrix::Matrix<float, 5, 5> AAt_inv;
-
-		// 计算逆矩阵
 		if (matrix::geninv(AAt, AAt_inv)) {
-			matrix::Vector<float, 6> du = At * AAt_inv * b;
+			matrix::Vector<float, 6> du_scaled = At * AAt_inv * b;
 
-			// du 后三个量分别除以 f1 f2 f3
-			du(3) /= f1;
-			du(4) /= f2;
-			du(5) /= f3;
+			// 还原尺度：du = W^{-1} * du_scaled
+			matrix::Vector<float, 6> du;
+			for (int j = 0; j < 6; j++) {
+				const float inv_w = 1.0f / math::max(W_diag(j), 1e-6f);
+				du(j) = inv_w * du_scaled(j);
+			}
 
 			// 存储结果
 			_custom_allocation_result = du;
 			_custom_allocation_valid = true;
-
-			// 记录结果
-			PX4_INFO("CA: fx=%.3f, fz=%.3f, Mx=%.3f, My=%.3f, Mz=%.3f",
-			        (double)fx, (double)fz,
-			         (double)tau_x, (double)tau_y, (double)tau_z);
-
-			PX4_INFO("CA: utrim=%.3f, %.3f, %.3f, %.3f, %.3f, %.3f",
-			        (double)f1, (double)f2, (double)f3, (double)theta1, (double)theta2, (double)theta3);
-
-			PX4_INFO("CA: du=%.3f, %.3f, %.3f, %.3f, %.3f, %.3f",
-			         (double)du(0), (double)du(1), (double)du(2), (double)du(3), (double)du(4), (double)du(5));
-
-		} else {
-			PX4_WARN("CA: 无法计算矩阵逆");
 		}
 	}
 }

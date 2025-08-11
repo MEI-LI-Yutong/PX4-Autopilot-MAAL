@@ -55,10 +55,10 @@ void thrustToAttitude(const Vector3f &thr_sp, const float yaw_sp, const float pi
 	att_sp.thrust_body[2] = thr_sp(2);
 
 	// 打印三维推力向量
-	PX4_INFO("thrust_body[0,1,2]: [%.3f, %.3f, %.3f]",
-		(double)att_sp.thrust_body[0],
-		(double)att_sp.thrust_body[1],
-		(double)att_sp.thrust_body[2]);
+	// PX4_INFO("thrust_body[0,1,2]: [%.3f, %.3f, %.3f]",
+	// 	(double)att_sp.thrust_body[0],
+	// 	(double)att_sp.thrust_body[1],
+	// 	(double)att_sp.thrust_body[2]);
 
 	// 原来的实现（注释掉）
 	/*
@@ -133,10 +133,10 @@ void bodyzToAttitude(Vector3f body_z, const float yaw_sp, const float pitch_sp, 
 	const Eulerf euler{R_sp};
 
 	// print initial euler angles for debugging
-	PX4_INFO("Initial euler angles - roll: %.2f, pitch: %.2f, yaw: %.2f",
-		(double)(euler.phi() * 180.0f / M_PI_F),
-		(double)(euler.theta() * 180.0f / M_PI_F),
-		(double)(euler.psi() * 180.0f / M_PI_F));
+	// PX4_INFO("Initial euler angles - roll: %.2f, pitch: %.2f, yaw: %.2f",
+	// 	(double)(euler.phi() * 180.0f / M_PI_F),
+	// 	(double)(euler.theta() * 180.0f / M_PI_F),
+	// 	(double)(euler.psi() * 180.0f / M_PI_F));
 
 	// create new euler angles using computed roll and yaw, but theta_trim pitch
 	Eulerf euler_modified(euler.phi(), pitch_sp, euler.psi());

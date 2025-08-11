@@ -44,3 +44,73 @@
  * @group Trim Selector
  */
 PARAM_DEFINE_FLOAT(TS_PITCH_GAIN, 2.0f);
+
+/**
+ * Takeoff ramp time
+ *
+ * Time for ramping utrim from 0 to 1 during takeoff.
+ *
+ * @unit s
+ * @min 0.05
+ * @max 5.0
+ * @group Trim Selector
+ */
+PARAM_DEFINE_FLOAT(TS_RAMP_T_UP, 1.0f);
+
+/**
+ * Landing ramp time
+ *
+ * Time for ramping utrim down towards TS_S_LAND during landing.
+ *
+ * @unit s
+ * @min 0.05
+ * @max 5.0
+ * @group Trim Selector
+ */
+PARAM_DEFINE_FLOAT(TS_RAMP_T_DN, 1.0f);
+
+/**
+ * Manual takeoff throttle threshold
+ *
+ * When landed and not in auto, ramp-up starts when throttle exceeds this threshold.
+ *
+ * @unit norm
+ * @min 0.0
+ * @max 1.0
+ * @group Trim Selector
+ */
+PARAM_DEFINE_FLOAT(TS_THR_TKO, 0.15f);
+
+/**
+ * Landing target ramp factor
+ *
+ * Target utrim scaling during landing phase (0..1).
+ *
+ * @min 0.0
+ * @max 1.0
+ * @group Trim Selector
+ */
+PARAM_DEFINE_FLOAT(TS_S_LAND, 0.15f);
+
+/**
+ * Enable utrim ramping
+ *
+ * 0: disabled (utrim is not ramped), 1: enabled
+ *
+ * @boolean
+ * @group Trim Selector
+ */
+PARAM_DEFINE_INT32(TS_RAMP_EN, 1);
+
+/**
+ * Vehicle mass for nominal trim
+ *
+ * Mass used to compute nominal thrust per motor.
+ *
+ * @unit kg
+ * @min 0.1
+ * @max 100
+ * @decimal 2
+ * @group Trim Selector
+ */
+PARAM_DEFINE_FLOAT(TS_MASS, 2.8f);

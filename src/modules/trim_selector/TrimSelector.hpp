@@ -42,12 +42,17 @@
 #include <drivers/drv_hrt.h>
 #include <lib/mathlib/mathlib.h>
 #include <lib/matrix/matrix/math.hpp>
+
 #include <uORB/Publication.hpp>
 #include <uORB/Subscription.hpp>
 #include <uORB/topics/parameter_update.h>
 #include <uORB/topics/trajectory_setpoint.h>
 #include <uORB/topics/theta_trim.h>
 #include <uORB/topics/utrim.h>
+#include <uORB/topics/vehicle_status.h>
+#include <uORB/topics/vehicle_control_mode.h>
+#include <uORB/topics/vehicle_land_detected.h>
+#include <uORB/topics/manual_control_setpoint.h>
 #include <uORB/topics/airspeed_validated.h>
 #include <uORB/topics/vehicle_local_position.h>
 #include <uORB/topics/log_message.h>
@@ -77,20 +82,46 @@ private:
 	void parameters_update(bool force = false);
 	float calculate_polynomial(float x, int polynomial_index);
 
+	// 起飞/降落斜坡更新
+	void update_takeoff_land_ramp(float dt);
+
+	// 计算名义配平（不含 ramp），返回是否有有效轨迹数据
+	bool compute_nominal_trim(float &f1, float &f2, float &f3,
+	                          float &theta1_deg, float &theta2_deg, float &theta3_deg,
+	                          float &horizontal_velocity_magnitude, bool &data_valid);
+
+	// Publications
 	uORB::Publication<theta_trim_s> _theta_trim_pub{ORB_ID(theta_trim)};
 	uORB::Publication<utrim_s> _utrim_pub{ORB_ID(utrim)};
 	uORB::Publication<log_message_s> _log_message_pub{ORB_ID(log_message)};
 	uORB::Publication<wind_s> _wind_pub{ORB_ID(wind)};
 
-	uORB::Subscription _parameter_update_sub{ORB_ID(parameter_update)};
+	// Subscriptions
 	uORB::Subscription _trajectory_setpoint_sub{ORB_ID(trajectory_setpoint)};
+	uORB::Subscription _parameter_update_sub{ORB_ID(parameter_update)};
+	uORB::Subscription _vehicle_status_sub{ORB_ID(vehicle_status)};
+	uORB::Subscription _vehicle_control_mode_sub{ORB_ID(vehicle_control_mode)};
+	uORB::Subscription _vehicle_land_detected_sub{ORB_ID(vehicle_land_detected)};
+	uORB::Subscription _manual_sp_sub{ORB_ID(manual_control_setpoint)};
 	uORB::Subscription _airspeed_validated_sub{ORB_ID(airspeed_validated)};
 	uORB::Subscription _vehicle_local_position_sub{ORB_ID(vehicle_local_position)};
 
 	perf_counter_t _loop_perf{nullptr};      ///< 循环性能计数器
 	log_message_s _log_message{};            ///< 日志消息
 
+	// Params
 	DEFINE_PARAMETERS(
-		(ParamFloat<px4::params::TS_PITCH_GAIN>) _param_ts_pitch_gain   /**< 俯仰角增益参数 */
+		(ParamFloat<px4::params::TS_PITCH_GAIN>) _param_ts_pitch_gain,    // 原有：俯仰角增益
+		(ParamFloat<px4::params::TS_RAMP_T_UP>)  _param_ts_ramp_t_up,     // 起飞斜坡时间（s）
+		(ParamFloat<px4::params::TS_RAMP_T_DN>)  _param_ts_ramp_t_dn,     // 降落斜坡时间（s）
+		(ParamFloat<px4::params::TS_THR_TKO>)    _param_ts_thr_tko,       // 手动模式起飞油门阈值 [0..1]
+		(ParamFloat<px4::params::TS_S_LAND>)     _param_ts_s_land,        // 降落阶段目标 s
+		(ParamFloat<px4::params::TS_MASS>)       _param_ts_mass,         // 机体质量 [kg]
+		(ParamInt<px4::params::TS_RAMP_EN>)      _param_ts_ramp_en        // 斜坡开关（1 启用）
 	)
+
+	// Ramp state
+	float _s{0.f};                // 当前 ramp 因子 [0..1]
+	float _s_target{0.f};         // 目标 ramp 因子
+	hrt_abstime _last_run{0};     // 上次运行时间
 };

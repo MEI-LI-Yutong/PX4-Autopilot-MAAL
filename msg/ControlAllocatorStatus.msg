@@ -19,3 +19,11 @@ int8[16] actuator_saturation            # Indicates actuator saturation status.
                                         # Note 2: an actuator with limited dynamics can be indicated as upper-saturated even if it as not reached its maximum value.
 
 uint16 handled_motor_failure_mask        # Bitmask of failed motors that were removed from the allocation / effectiveness matrix. Not necessarily identical to the report from FailureDetector
+
+bool custom_allocation_used             # Boolean indicating whether custom control allocation was used (1) or standard PX4 allocation (0)
+
+# Custom allocation control inputs and results
+float32[3] custom_thrust_input          # Custom allocation thrust inputs [fx, fy, fz] [N]
+float32[3] custom_torque_input          # Custom allocation torque inputs [tau_x, tau_y, tau_z] [Nm]
+float32[6] custom_allocation_result     # Custom allocation result vector du [6]
+float32[6] custom_trim_vector           # Custom trim vector [6]
