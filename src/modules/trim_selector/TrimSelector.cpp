@@ -58,8 +58,8 @@ TrimSelector::~TrimSelector() = default;
 
 bool TrimSelector::init()
 {
-	ScheduleOnInterval(10_ms); // 100 Hz
-	PX4_INFO("Trim Selector initialized (with takeoff/landing ramp)");
+    ScheduleOnInterval(50_ms); // 20 Hz
+    PX4_INFO("Trim Selector initialized at 20 Hz (with takeoff/landing ramp)");
 	return true;
 }
 
@@ -78,8 +78,9 @@ bool TrimSelector::compute_nominal_trim(float &f1, float &f2, float &f3,
                                         float &theta1_deg, float &theta2_deg, float &theta3_deg,
                                         float &horizontal_velocity_magnitude, bool &data_valid)
 {
-	trajectory_setpoint_s traj{};
-	bool has_traj = _trajectory_setpoint_sub.copy(&traj);
+    trajectory_setpoint_s traj{};
+    // 优先读取本周期更新的轨迹设定；若无更新则使用上一次的轨迹设定
+    bool has_traj = _trajectory_setpoint_sub.update(&traj) || _trajectory_setpoint_sub.copy(&traj);
 
 	horizontal_velocity_magnitude = 0.f;
 	float pitch_setpoint_rad = 0.f;
@@ -167,17 +168,16 @@ void TrimSelector::update_takeoff_land_ramp(float dt)
 		_s_target = 1.f; // 正常飞行保持 1
 	}
 
-	// 线性 ramp
-	const float up_rate = 1.f / math::max(_param_ts_ramp_t_up.get(), 0.05f);
-	const float dn_rate = 1.f / math::max(_param_ts_ramp_t_dn.get(), 0.05f);
+    // 一阶滤波 ramp（时间常数）
+    const float tau_up = math::max(_param_ts_ramp_t_up.get(), 0.05f);
+    const float tau_dn = math::max(_param_ts_ramp_t_dn.get(), 0.05f);
 
-	if (_s_target > _s) {
-		_s = math::min(_s + up_rate * dt, _s_target);
-	} else if (_s_target < _s) {
-		_s = math::max(_s - dn_rate * dt, _s_target);
-	}
+    const bool rising = (_s_target > _s);
+    const float tau = rising ? tau_up : tau_dn;
+    const float alpha = dt / (tau + dt);
 
-	_s = math::constrain(_s, 0.f, 1.f);
+    _s += alpha * (_s_target - _s);
+    _s = math::constrain(_s, 0.f, 1.f);
 }
 
 void TrimSelector::Run()
@@ -202,8 +202,9 @@ void TrimSelector::Run()
 	bool data_valid=false;
 	compute_nominal_trim(f1_nom, f2_nom, f3_nom, th1_nom, th2_nom, th3_nom, vxy_mag, data_valid);
 
-	// 应用 ramp：实际输出 = s * 名义
-	const float s = _s;
+    // 应用 ramp：实际输出 = s * 名义（对 s 使用 smoothstep 以获得更平滑的端点）
+    const float s_raw = _s;
+    const float s = (3.f * s_raw * s_raw) - (2.f * s_raw * s_raw * s_raw); // smoothstep(s_raw)
 
 	utrim_s utrim{};
 	utrim.timestamp = now;
@@ -223,9 +224,8 @@ void TrimSelector::Run()
 	theta_trim_s theta_trim{};
 	theta_trim.timestamp = now;
 
-	// 这里用 pitch = 0.5*(θ1+θ2)*deg 的代表值，也可直接用 data_valid 的 pitch_setpoint
-	const float pitch_deg = 0.5f * (utrim.polynomial_values[3] + utrim.polynomial_values[4]);
-	theta_trim.pitch_angle = pitch_deg; // 单位：deg（与原消息定义一致）
+	// 固定发布 0 度（单位：deg）
+	theta_trim.pitch_angle = 0.0f;
 
 	_theta_trim_pub.publish(theta_trim);
 
