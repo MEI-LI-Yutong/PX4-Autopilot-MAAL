@@ -1119,14 +1119,17 @@ ControlAllocator::apply_custom_allocation(matrix::Vector<float, NUM_ACTUATORS> &
         actuator_sp(i) = 0.f;
     }
 
-    // 10Hz 限频打印: 结果向量 + fx,fz,tau_x,y,z
+    // 10Hz 限频打印: 分别输出 du、utrim（trim）以及 fx,fz,tau_x,y,z
     static hrt_abstime last_log = 0;
     const hrt_abstime now = hrt_absolute_time();
     if (now - last_log >= 100_ms) {
-        PX4_INFO("CA: 结果向量 du+utrim=%.3f, %.3f, %.3f",
-                 (double)actuator_sp(0), (double)actuator_sp(1), (double)actuator_sp(2));
-        PX4_INFO("CA: 结果向量 du+utrim=%.3f, %.3f, %.3f",
-                 (double)actuator_sp(3), (double)actuator_sp(4), (double)actuator_sp(5));
+        // du（伪逆结果）
+        PX4_INFO("CA: du=%.3f, %.3f, %.3f", (double)_custom_allocation_result(0), (double)_custom_allocation_result(1), (double)_custom_allocation_result(2));
+        PX4_INFO("CA: du=%.3f, %.3f, %.3f", (double)_custom_allocation_result(3), (double)_custom_allocation_result(4), (double)_custom_allocation_result(5));
+
+        // utrim（trim 偏置）
+        PX4_INFO("CA: utrim=%.3f, %.3f, %.3f", (double)_custom_trim_vec(0), (double)_custom_trim_vec(1), (double)_custom_trim_vec(2));
+        PX4_INFO("CA: utrim=%.3f, %.3f, %.3f", (double)_custom_trim_vec(3), (double)_custom_trim_vec(4), (double)_custom_trim_vec(5));
 
         // 同步打印 fx, fz, tau_x, tau_y, tau_z（10Hz）
         PX4_INFO("CA: 输入 fx=%.3f fz=%.3f tau_x=%.3f tau_y=%.3f tau_z=%.3f",

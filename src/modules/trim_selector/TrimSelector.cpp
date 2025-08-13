@@ -82,41 +82,72 @@ bool TrimSelector::compute_nominal_trim(float &f1, float &f2, float &f3,
     // 优先读取本周期更新的轨迹设定；若无更新则使用上一次的轨迹设定
     bool has_traj = _trajectory_setpoint_sub.update(&traj) || _trajectory_setpoint_sub.copy(&traj);
 
-	horizontal_velocity_magnitude = 0.f;
-	float pitch_setpoint_rad = 0.f;
-	data_valid = false;
+    // 轨迹前馈水平速度幅值
+    float v_ff = 0.f;
+    if (has_traj && PX4_ISFINITE(traj.velocity[0]) && PX4_ISFINITE(traj.velocity[1])) {
+        matrix::Vector2f vxy(traj.velocity);
+        v_ff = sqrtf(vxy.norm_squared());
+    }
 
-	if (has_traj && PX4_ISFINITE(traj.velocity[0]) && PX4_ISFINITE(traj.velocity[1])) {
-		Vector2f vxy(traj.velocity);
-		horizontal_velocity_magnitude = sqrtf(vxy.norm_squared());
+    // 在起飞/降落阶段强制使用 v=0 来计算 utrim
+    vehicle_status_s vs{};
+    vehicle_control_mode_s vcm{};
+    vehicle_land_detected_s vld{};
+    manual_control_setpoint_s msp{};
 
-		// 这里仍用你的经验：pitch = k * |v_xy|
-		pitch_setpoint_rad = _param_ts_pitch_gain.get() * horizontal_velocity_magnitude;
-		data_valid = true;
-	}
+    _vehicle_status_sub.copy(&vs);
+    _vehicle_control_mode_sub.copy(&vcm);
+    _vehicle_land_detected_sub.copy(&vld);
+    _manual_sp_sub.copy(&msp);
 
-	if (data_valid) {
-		// 名义（不含 ramp）的推力与角度（单位：N 与 deg）
-		f1 = 5.0f + 2.0f * horizontal_velocity_magnitude;
-		f2 = 5.0f + 2.0f * horizontal_velocity_magnitude;
-		f3 = 8.0f + 1.5f * horizontal_velocity_magnitude;
+    const bool landed = vld.landed || vld.ground_contact;
 
-		const float pitch_deg = rad2deg(pitch_setpoint_rad);
-		theta1_deg = 0.5f * pitch_deg;
-		theta2_deg = 0.5f * pitch_deg;
-		theta3_deg = 0.8f * pitch_deg;
+    const bool auto_takeoff =
+        (vs.nav_state == vehicle_status_s::NAVIGATION_STATE_AUTO_TAKEOFF) ||
+        (vs.nav_state == vehicle_status_s::NAVIGATION_STATE_AUTO_MISSION && landed);
 
-	} else {
-		// 无有效轨迹：使用图片中的默认值，角度为 0（注意：仅名义，实际输出仍要乘以 ramp s）
-		f1 = 10.1569f;  // 图片中的第一个值
-		f2 = 10.1569f;  // 图片中的第二个值
-		f3 = 8.1255f;   // 图片中的第三个值
-		theta1_deg = 0.f;
-		theta2_deg = 0.f;
-		theta3_deg = 0.f;
-	}
+    const bool auto_landing =
+        (vs.nav_state == vehicle_status_s::NAVIGATION_STATE_AUTO_LAND) ||
+        (vs.nav_state == vehicle_status_s::NAVIGATION_STATE_AUTO_RTL);
 
-	return data_valid;
+    const bool is_auto = vcm.flag_control_auto_enabled;
+    const float thr_tko = math::constrain(_param_ts_thr_tko.get(), 0.f, 1.f);
+    const bool throttle_valid = PX4_ISFINITE(msp.throttle);
+
+    const bool manual_takeoff = (!is_auto) && landed && throttle_valid && (msp.throttle > thr_tko);
+    const bool manual_landing = (!is_auto) && (landed || (throttle_valid && (msp.throttle < 0.1f)));
+
+    if (auto_takeoff || manual_takeoff || auto_landing || manual_landing) {
+        v_ff = 0.f;
+    }
+
+    horizontal_velocity_magnitude = v_ff;
+
+    // 使用提供的多项式计算名义配平（单位与原定义一致：f[N]，theta[deg]）
+    const float v = v_ff;
+    const float v2 = v * v;
+    const float v3 = v2 * v;
+    const float v4 = v2 * v2;
+    const float v5 = v4 * v;
+
+    // f1, f2 共用三次多项式
+    const float f12 = 6.216e-07f * v3 - 0.00878f * v2 + 7.304e-06f * v + 9.705f;
+    // f3 的四次多项式
+    const float f3_poly = -2.04e-07f * v4 + 4.487e-06f * v3 - 0.009367f * v2 + 6.474e-05f * v + 9.028f;
+    // 三个角度共用五次多项式（单位：deg）
+    const float theta_deg = 1.763e-07f * v5 + 1.967e-07f * v4 + 2.233e-05f * v3 + 0.003304f * v2 + 9.515e-05f * v - 5.07e-06f;
+
+    f1 = f12;
+    f2 = f12;
+    f3 = f3_poly;
+
+    theta1_deg = theta_deg;
+    theta2_deg = theta_deg;
+    theta3_deg = theta_deg;
+
+    // 始终认为数据有效，保证控制分配在起飞/降落阶段也使用该配平
+    data_valid = true;
+    return data_valid;
 }
 
 void TrimSelector::update_takeoff_land_ramp(float dt)
@@ -162,7 +193,7 @@ void TrimSelector::update_takeoff_land_ramp(float dt)
 		_s_target = 0.f; // 地面待机：不开启名义配平
 	} else if (auto_takeoff || manual_takeoff) {
 		_s_target = 1.f; // 起飞：拉满名义配平
-	} else if (auto_landing || manual_landing) {
+    	} else if (auto_landing || manual_landing) {
 		_s_target = math::constrain(_param_ts_s_land.get(), 0.f, 1.f); // 降落阶段减到 s_land
 	} else {
 		_s_target = 1.f; // 正常飞行保持 1
@@ -202,9 +233,9 @@ void TrimSelector::Run()
 	bool data_valid=false;
 	compute_nominal_trim(f1_nom, f2_nom, f3_nom, th1_nom, th2_nom, th3_nom, vxy_mag, data_valid);
 
-    // 应用 ramp：实际输出 = s * 名义（对 s 使用 smoothstep 以获得更平滑的端点）
-    const float s_raw = _s;
-    const float s = (3.f * s_raw * s_raw) - (2.f * s_raw * s_raw * s_raw); // smoothstep(s_raw)
+    	// 应用 ramp：实际输出 = s * 名义（对 s 使用 smoothstep 以获得更平滑的端点）
+	const float s_raw = _s;
+	const float s = (3.f * s_raw * s_raw) - (2.f * s_raw * s_raw * s_raw); // smoothstep(s_raw)
 
 	utrim_s utrim{};
 	utrim.timestamp = now;
