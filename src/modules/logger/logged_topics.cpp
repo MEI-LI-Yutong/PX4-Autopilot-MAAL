@@ -127,9 +127,11 @@ void LoggedTopics::add_default_topics()
 	add_topic("system_power", 500);
 	add_optional_topic("takeoff_status", 1000);
 	add_optional_topic("tecs_status", 200);
+	add_optional_topic("theta_trim", 50);  // 俯仰角设定点，20Hz
 	add_optional_topic("tiltrotor_extra_controls", 100);
 	add_topic("trajectory_setpoint", 200);
 	add_topic("transponder_report");
+	add_optional_topic("utrim", 50);  // 控制分配参数，20Hz
 	add_topic("vehicle_acceleration", 50);
 	add_topic("vehicle_air_data", 200);
 	add_topic("vehicle_angular_velocity", 20);

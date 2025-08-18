@@ -229,10 +229,10 @@ void PositionControl::_accelerationControl()
 		z_specific_force += _acc_sp(2);
 	}
 
-	Vector3f body_z = Vector3f(-_acc_sp(0), -_acc_sp(1), -z_specific_force).normalized();
+	Vector3f body_z = Vector3f(-_acc_sp(0), -_acc_sp(1) , -_acc_sp(2)).normalized();
 	ControlMath::limitTilt(body_z, Vector3f(0, 0, 1), _lim_tilt);
 	// Convert to thrust assuming hover thrust produces standard gravity
-	const float thrust_ned_z = _acc_sp(2) * (_hover_thrust / CONSTANTS_ONE_G) - _hover_thrust;
+	const float thrust_ned_z = _acc_sp(2) * (_hover_thrust / CONSTANTS_ONE_G);
 	// Project thrust to planned body attitude
 	const float cos_ned_body = (Vector3f(0, 0, 1).dot(body_z));
 	const float collective_thrust = math::min(thrust_ned_z / cos_ned_body, -_lim_thr_min);

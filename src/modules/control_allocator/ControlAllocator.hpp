@@ -217,6 +217,14 @@ private:
 	// 新增：自定义trim向量
 	matrix::Vector<float, NUM_ACTUATORS> _custom_trim_vec;
 
+	// 新增：utrim状态管理
+	utrim_s _current_utrim{};
+	bool _utrim_available{false};
+	hrt_abstime _last_utrim_update{0};
+
+	// 新增：utrim状态更新方法
+	void update_utrim_status();
+
 	// Reflects motor failures that are currently handled, not motor failures that are reported.
 	// For example, the system might report two motor failures, but only the first one is handled by CA
 	uint16_t _handled_motor_failure_bitmask{0};

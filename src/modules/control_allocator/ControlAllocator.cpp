@@ -45,6 +45,8 @@
 #include <circuit_breaker/circuit_breaker.h>
 #include <mathlib/math/Limits.hpp>
 #include <mathlib/math/Functions.hpp>
+#include <matrix/matrix/math.hpp>
+#include <lib/geo/geo.h>
 
 using namespace matrix;
 using namespace time_literals;
@@ -400,6 +402,9 @@ ControlAllocator::Run()
 		check_for_motor_failures();
 
 		update_effectiveness_matrix_if_needed(EffectivenessUpdateReason::NO_EXTERNAL_UPDATE);
+
+		// 更新 utrim 状态
+		update_utrim_status();
 
 		// 首先尝试自定义分配
 		calculate_custom_allocation();
@@ -923,185 +928,275 @@ as inputs and outputs actuator setpoint messages.
 }
 
 void
+ControlAllocator::update_utrim_status()
+{
+    // 尝试更新 utrim 消息
+    if (_utrim_sub.update(&_current_utrim)) {
+        // 有新消息，更新状态
+        _utrim_available = _current_utrim.valid;
+        _last_utrim_update = hrt_absolute_time();
+
+        if (_utrim_available) {
+            PX4_DEBUG("CA: utrim 更新成功，时间戳: %llu", (unsigned long long)_current_utrim.timestamp);
+        }
+    } else if (_utrim_sub.copy(&_current_utrim)) {
+        // 没有新消息，但可以获取上一次的消息
+        _utrim_available = _current_utrim.valid;
+
+        if (_utrim_available) {
+            PX4_DEBUG("CA: 使用上一次 utrim 消息，时间戳: %llu", (unsigned long long)_current_utrim.timestamp);
+        }
+    } else {
+        // 无法获取任何 utrim 消息
+        _utrim_available = false;
+        PX4_DEBUG("CA: 无法获取 utrim 消息");
+    }
+}
+
+void
 ControlAllocator::calculate_custom_allocation()
 {
-	// 重置有效性标志
-	_custom_allocation_valid = false;
+    _custom_allocation_valid = false;
 
-	// 检查是否有有效的推力设定点
-	if (!PX4_ISFINITE(_thrust_sp(0)) || !PX4_ISFINITE(_thrust_sp(2))) {
-		PX4_INFO("CA: 推力设定点无效");
-		return;
-	}
+    // 检查是否有有效的推力设定点
+    if (!PX4_ISFINITE(_thrust_sp(0)) || !PX4_ISFINITE(_thrust_sp(2))) {
+        PX4_INFO("CA: 推力设定点无效");
+        return;
+    }
 
-	// 订阅utrim消息，允许使用上一次的消息
-	utrim_s utrim{};
-	_custom_trim_vec.setZero();
-	if ((_utrim_sub.update(&utrim) || _utrim_sub.copy(&utrim)) && utrim.valid) {
-		// 前三个量（f1,f2,f3 推力值）转换为[0,1]范围（电机相关）
-		// 使用公式 f = 34.024x - 767.4，其中 f 是推力，x 是电机信号[0-100]
-		// 反推公式：x = (f + 767.4) / 34.024
-		const float motor_coeff = 34.024f;
-		const float motor_offset = 767.4f;
+    _custom_trim_vec.setZero();
 
-		for (int i = 0; i < 3 && i < NUM_ACTUATORS; ++i) {
-			float thrust_value = utrim.polynomial_values[i];  // f1,f2,f3 推力值
+	// --- 2) read/define constants & states ---
+    // 如果utrim消息可用且有效，使用utrim值；否则使用合理的默认值
+    float f1, f2, f3, theta1, theta2, theta3;
 
-			// 从推力计算电机信号 [0-100]
-			float motor_signal = (thrust_value/9.81f*1000.0f + motor_offset) / motor_coeff;
+    if (_utrim_available && _current_utrim.valid) {
+        // 使用utrim消息中的值
+        f1 = _current_utrim.polynomial_values[0];
+        f2 = _current_utrim.polynomial_values[1];
+        f3 = _current_utrim.polynomial_values[2];
+        theta1 = _current_utrim.polynomial_values[3] * (M_PI_F/180.0f);
+        theta2 = _current_utrim.polynomial_values[4] * (M_PI_F/180.0f);
+        theta3 = _current_utrim.polynomial_values[5] * (M_PI_F/180.0f);
 
-			// 限制在 [0-100] 范围内
-			motor_signal = math::constrain(motor_signal, 0.0f, 100.0f);
+        PX4_DEBUG("CA: 使用utrim值 f1=%.2f f2=%.2f f3=%.2f θ1=%.1f° θ2=%.1f° θ3=%.1f°",
+                 (double)f1, (double)f2, (double)f3,
+                 (double)_current_utrim.polynomial_values[3], (double)_current_utrim.polynomial_values[4], (double)_current_utrim.polynomial_values[5]);
+    } else {
+        // 使用更合理的起飞默认值，而不是回退到标准分配
+        f1 = 12.0f;  // 增加默认推力值以支持起飞
+        f2 = 12.0f;
+        f3 = 12.0f;
+        theta1 = 0.0f;
+        theta2 = 0.0f;
+        theta3 = 0.0f;
 
-			// 归一化到 [0-1] 范围
-			_custom_trim_vec(i) = motor_signal / 100.0f;
+        PX4_DEBUG("CA: utrim不可用，使用默认值 f1=%.2f f2=%.2f f3=%.2f", (double)f1, (double)f2, (double)f3);
+    }
 
-			PX4_DEBUG("Motor %d: thrust=%.1f -> signal=%.1f -> normalized=%.3f",
-			         i, (double)thrust_value, (double)motor_signal, (double)_custom_trim_vec(i));
-		}
+    // geometric constants
+    const float L1 = 0.23f;
+    const float L2 = 0.40f;
+    const float L3 = 0.20f;
 
-		// 后三个量（theta1,theta2,theta3 角度）转换为[-1,1]范围（舵机相关）
-		// 使用标准舵机角度范围 ±45°
-		for (int i = 3; i < 6 && i < NUM_ACTUATORS; ++i) {
-			float angle_deg = utrim.polynomial_values[i];  // theta1,theta2,theta3 角度值（度）
+    // Desired task vector b (5x1) (use your measured setpoints)
+    matrix::Vector<float, 5> b;
+    b(0) = _thrust_sp(0);                 // fx
+    b(1) = _thrust_sp(2);                 // fz
+    b(2) = (-_torque_sp(0)) / L3;         // dtau_x / L3
+    b(3) = (_torque_sp(1)) / L1;          // dtau_y / L1
+    b(4) = (-_torque_sp(2)) / L3;         // dtau_z / L3
 
-			// 角度转换为[-1,1]范围: angle / 45°
-			_custom_trim_vec(i) = angle_deg / 45.0f;
+    // --- 3) construct geometric effectiveness matrix A (5x6) ---
+    matrix::Matrix<float, 5, 6> A;
+    A.setZero();
 
-			// 限制在[-1,1]范围内
-			_custom_trim_vec(i) = math::constrain(_custom_trim_vec(i), -1.0f, 1.0f);
+    // compute sines/cosines
+    const float s1 = sinf(theta1), c1 = cosf(theta1);
+    const float s2 = sinf(theta2), c2 = cosf(theta2);
+    const float s3 = sinf(theta3), c3 = cosf(theta3);
 
-			PX4_DEBUG("Servo %d: theta=%.1f° -> actuator=%.3f (±45° range)",
-			         i-3, (double)angle_deg, (double)_custom_trim_vec(i));
-		}
+    // fill A: (example following your geometric form)
+    // row 0: fx coefficients (df1, df2, df3, dtheta1, dtheta2, dtheta3)
+    A(0,0) =  s1; A(0,1) =  s2; A(0,2) =  s3; A(0,3) =  f1 * c1; A(0,4) =  f2 * c2; A(0,5) =  f3 * c3;
 
-		// 从utrim获取值：f1,f2,f3=utrim[0,1,2]，theta1,theta2,theta3=utrim[3,4,5]
-		float f1 = utrim.polynomial_values[0];
-		float f2 = utrim.polynomial_values[1];
-		float f3 = utrim.polynomial_values[2];
-		float theta1 = utrim.polynomial_values[3];
-		float theta2 = utrim.polynomial_values[4];
-		float theta3 = utrim.polynomial_values[5];
+    // row 1: fz
+    A(1,0) = -c1; A(1,1) = -c2; A(1,2) = -c3; A(1,3) =  f1 * s1; A(1,4) =  f2 * s2; A(1,5) =  f3 * s3;
 
-		// 角度转弧度，使用 PX4 自带的 M_PI_F
-		theta1 *= (M_PI_F / 180.0f);
-		theta2 *= (M_PI_F / 180.0f);
-		theta3 *= (M_PI_F / 180.0f);
+    // row 2: d*tau_x / L3
+    A(2,0) = -c1; A(2,1) =  c2; A(2,2) = 0.0f; A(2,3) =  f1 * s1; A(2,4) = -f2 * s2; A(2,5) = 0.0f;
 
-		// 常量定义
-		const float L1 = 0.23f;  // 常量 L1
-		const float L2 = 0.40f;  // 常量 L2
-		const float L3 = 0.20f;  // 常量 L3
+    // row 3: d*tau_y / L1
+    A(3,0) =  c1; A(3,1) =  c2; A(3,2) = -(L2 / L1) * c3; A(3,3) = -f1 * s1; A(3,4) = -f2 * s2; A(3,5) =  f3 * (L2 / L1) * s3;
 
-		// 从推力设定点获取fx和fz
-		float fx = _thrust_sp(0);
-		float fz = _thrust_sp(2);
+    // row 4: d*tau_z / L3
+    A(4,0) = -s1; A(4,1) =  s2; A(4,2) = 0.0f; A(4,3) = -f1 * c1; A(4,4) =  f2 * c2; A(4,5) = 0.0f;
 
-		float tau_x = _torque_sp(0);
-		float tau_y = _torque_sp(1);
-		float tau_z = _torque_sp(2);
+    // --- 4) column weights W_diag (6 elements) ---
+    // Lower weight = more freedom to move (motors usually cheaper), higher weight = penalize change (servos)
+    matrix::Vector<float, 6> W_diag;
+    W_diag(0) = 1.0f;   // motor1
+    W_diag(1) = 1.0f;   // motor2
+    W_diag(2) = 1.0f;   // motor3
+    W_diag(3) = 2.0f;   // servo1 (penalize)
+    W_diag(4) = 2.0f;   // servo2
+    W_diag(5) = 2.0f;   // servo3
 
-		// 计算三角函数值
-		float sin_theta1 = sinf(theta1);
-		float cos_theta1 = cosf(theta1);
-		float sin_theta2 = sinf(theta2);
-		float cos_theta2 = cosf(theta2);
-		float sin_theta3 = sinf(theta3);
-		float cos_theta3 = cosf(theta3);
+    // Optionally adapt servo weights when fi small (not needed if fi in 3-9N)
+    // for (int j=3; j<6; ++j) W_diag(j) = base_servo_weight / max(f_i_normalized, eps);
 
-		// 构建效率矩阵 A (5x6) Control Effectiveness Matrix
-		matrix::Matrix<float, 5, 6> A;
+    // --- 5) scale columns: A_scaled = A * W^{-1}  (i.e. divide each column j by W_diag(j)) ---
+    matrix::Matrix<float, 5, 6> A_scaled = A;
+    for (int j = 0; j < 6; ++j) {
+        const float inv_w = 1.0f / math::max(W_diag(j), 1e-6f);
+        for (int i = 0; i < 5; ++i) {
+            A_scaled(i,j) *= inv_w;
+        }
+    }
 
-		// 第一行 (fx)
-		A(0, 0) = sin_theta1;                  // ∂fx/∂f1
-		A(0, 1) = sin_theta2;                  // ∂fx/∂f2
-		A(0, 2) = sin_theta3;                  // ∂fx/∂f3
-		A(0, 3) = f1 * cos_theta1;             // ∂fx/∂θ1 = f1*cosθ1
-		A(0, 4) = f2 * cos_theta2;             // ∂fx/∂θ2 = f2*cosθ2
-		A(0, 5) = f3 * cos_theta3;             // ∂fx/∂θ3 = f3*cosθ3
+    // --- 6) build normal matrix A_scaled * A_scaled^T (5x5) ---
+    matrix::Matrix<float, 5, 5> AAt = A_scaled * A_scaled.transpose();
 
-		// 第二行 (fz)
-		A(1, 0) = -cos_theta1;                 // ∂fz/∂f1
-		A(1, 1) = -cos_theta2;                 // ∂fz/∂f2
-		A(1, 2) = -cos_theta3;                 // ∂fz/∂f3
-		A(1, 3) = f1 * sin_theta1;             // ∂fz/∂θ1 = f1*sinθ1
-		A(1, 4) = f2 * sin_theta2;             // ∂fz/∂θ2 = f2*sinθ2
-		A(1, 5) = f3 * sin_theta3;             // ∂fz/∂θ3 = f3*sinθ3
+    // --- 7) optional pre-check: diag / approximate condition test ---
+    // A simple heuristic: check diagonal magnitude spread to detect ill-conditioning
+    float max_diag = 0.f, min_diag = 1e12f;
+    for (int i = 0; i < 5; ++i) {
+        float d = fabsf(AAt(i,i));
+        max_diag = math::max(max_diag, d);
+        min_diag = math::min(min_diag, d);
+    }
+    // If min_diag is extremely small relative to max_diag, we may need stronger regularization or fallback
+    const float cond_diag_ratio = (min_diag > 0.f) ? (max_diag / min_diag) : 1e12f;
 
-		// 第三行 (d*tau_x/L3)
-		A(2, 0) = -cos_theta1;
-		A(2, 1) =  cos_theta2;
-		A(2, 2) =  0.0f;
-		A(2, 3) =  sin_theta1;
-		A(2, 4) = -sin_theta2;
-		A(2, 5) =  0.0f;
+    // --- 8) regularization and geninv attempt(s) ---
+    matrix::Matrix<float, 5, 5> AAt_inv;
+    const float lambda_base = 1e-6f;    // base damp
+    float lambda = lambda_base;
 
-		// 第四行 (d*tau_y/L1)
-		A(3, 0) =  cos_theta1;
-		A(3, 1) =  cos_theta2;
-		A(3, 2) = -(L2 / L1) * cos_theta3;
-		A(3, 3) = -sin_theta1;
-		A(3, 4) = -sin_theta2;
-		A(3, 5) =  (L2 / L1) * sin_theta3;
+    // If heuristic indicates poor conditioning, increase lambda
+    if (cond_diag_ratio > 1e6f) {
+        lambda = 1e-3f; // escalate regularization
+        PX4_DEBUG("CA: condition ratio %.3e, increasing lambda to %.3e", (double)cond_diag_ratio, (double)lambda);
+    }
 
-		// 第五行 (d*tau_z/L3)
-		A(4, 0) = -sin_theta1;
-		A(4, 1) =  sin_theta2;
-		A(4, 2) =  0.0f;
-		A(4, 3) = -cos_theta1;
-		A(4, 4) =  cos_theta2;
-		A(4, 5) =  0.0f;
+    // add lambda to diagonal (Tikhonov)
+    for (int i = 0; i < 5; ++i) { AAt(i,i) += lambda; }
 
-		// 左侧向量 b (5x1)
-		matrix::Vector<float, 5> b;
-		b(0) = fx;
-		b(1) = fz;
-		b(2) = tau_x / L3; // dtau_x/L3
-		b(3) = tau_y / L1; // dtau_y/L1
-		b(4) = tau_z / L3; // dtau_z/L3
+    bool invert_ok = matrix::geninv(AAt, AAt_inv);
 
-		// 列权重 W：弱化舵机列，并鼓励成对对称（0~1 和 3~4）
-		// 通过缩放列来实现带权伪逆，W_diag 为每列的惩罚因子
-		const float w_motor = 1.0f;     // 电机列权重
-		const float w_servo = 2.0f;     // 舵机列更大权重，减少无谓动作
-		matrix::Vector<float, 6> W_diag;
-		W_diag(0) = w_motor;
-		W_diag(1) = w_motor;
-		W_diag(2) = w_motor;
-		W_diag(3) = w_servo;
-		W_diag(4) = w_servo;
-		W_diag(5) = w_servo;
+    // if geninv failed, try increasing lambda a couple times
+    if (!invert_ok) {
+        for (int retry = 0; retry < 3 && !invert_ok; ++retry) {
+            lambda *= 10.0f;
+            for (int i = 0; i < 5; ++i) { AAt(i,i) += lambda; } // add extra reg
+            invert_ok = matrix::geninv(AAt, AAt_inv);
+            PX4_DEBUG("CA: geninv retry %d lambda=%.3e ok=%d", retry, (double)lambda, invert_ok);
+        }
+    }
 
-		// 列缩放：A_scaled = A * W^{-1}
-		matrix::Matrix<float, 5, 6> A_scaled = A;
-		for (int j = 0; j < 6; j++) {
-			const float inv_w = 1.0f / math::max(W_diag(j), 1e-6f);
-			for (int i = 0; i < 5; i++) {
-				A_scaled(i, j) *= inv_w;
-			}
-		}
+    if (!invert_ok) {
+        PX4_WARN("CA: geninv failed even after retries; allocation invalid");
+        _custom_allocation_valid = false;
+        return;
+    }
 
-		// 计算右侧向量（带正则的最小二乘）：du_scaled = A_scaled^T * (A_scaled*A_scaled^T + λI)^{-1} * b
-		const float lambda = 1e-4f;  // 轻微正则
-		matrix::Matrix<float, 6, 5> At = A_scaled.transpose();
-		matrix::Matrix<float, 5, 5> AAt = A_scaled * At;
-		for (int i = 0; i < 5; i++) { AAt(i, i) += lambda; }
-		matrix::Matrix<float, 5, 5> AAt_inv;
-		if (matrix::geninv(AAt, AAt_inv)) {
-			matrix::Vector<float, 6> du_scaled = At * AAt_inv * b;
+    // --- 9) compute du_scaled = A_scaled^T * AAt_inv * b  (6x1) ---
+    matrix::Matrix<float, 6, 5> At = A_scaled.transpose();
+    matrix::Vector<float, 6> du_scaled = At * (AAt_inv * b);
 
-			// 还原尺度：du = W^{-1} * du_scaled
-			matrix::Vector<float, 6> du;
-			for (int j = 0; j < 6; j++) {
-				const float inv_w = 1.0f / math::max(W_diag(j), 1e-6f);
-				du(j) = inv_w * du_scaled(j);
-			}
+    // --- 10) undo scaling: du = W^{-1} * du_scaled  (since we did A_scaled = A * W^{-1}) ---
+    matrix::Vector<float, 6> du;
+    for (int j = 0; j < 6; ++j) {
+        const float inv_w = 1.0f / math::max(W_diag(j), 1e-6f);
+        du(j) = inv_w * du_scaled(j);
+    }
 
-			// 存储结果
-			_custom_allocation_result = du;
-			_custom_allocation_valid = true;
-		}
-	}
+    // At this point, du holds [ df1, df2, df3, dtheta1_scaled, dtheta2_scaled, dtheta3_scaled ]
+    // If your A used geometric columns for theta (i.e. the 4..6 columns were cos/sin),
+    // the 4..6 entries correspond to f_i * dtheta_i (or dtheta_i depending on construction).
+    // Ensure you interpret du consistently with how you built A.
+
+    // --- 11) compute residual and quick sanity check ---
+    matrix::Vector<float,5> residual = A * du - b;
+    float res_norm = 0.0f;
+    float b_norm = 0.0f;
+    for (int i=0;i<5;i++) { res_norm += residual(i)*residual(i); b_norm += b(i)*b(i); }
+    res_norm = sqrtf(res_norm);
+    b_norm = sqrtf(b_norm);
+    float rel_res = (b_norm > 0.0f) ? (res_norm / b_norm) : res_norm;
+
+    if (rel_res > 0.05f) { // example threshold 5% - tune for your vehicle
+        PX4_WARN("CA: relative residual %.3f > threshold, consider switching to fallback", (double)rel_res);
+        // Option: fall back to stronger method (e.g., increase lambda, or use a different solver)
+        // For now we accept but flag.
+    }
+
+    // --- 12) actuator limits & clipping (simple) ---
+    // Map du entries to actual actuator command deltas / normalized ranges
+    // Example mapping (you should replace with your actuator scaling):
+    matrix::Vector<float, 6> actuator_cmd = du; // placeholder mapping
+
+    // Clip each actuator to [min,max] (example -1..1 for servos, 0..1 for motors)
+    for (int j = 0; j < 3; ++j) {
+        // motors: suppose normalized 0..1
+        actuator_cmd(j) = math::constrain(actuator_cmd(j), -0.5f, 0.5f); // example limits; adjust
+    }
+    for (int j = 3; j < 6; ++j) {
+        actuator_cmd(j) = math::constrain(actuator_cmd(j), -1.0f, 1.0f);
+    }
+
+    // --- 13) optional: sequential desaturation (advanced) ---
+    // If clipping happened and you want to preserve primary objectives, you can implement
+    // sequential desaturation: iteratively fix saturated actuators and re-solve for remaining DOF.
+    // Place hook here to call a desaturation routine if required.
+
+    // --- 14) finalize results ---
+    _custom_allocation_result = actuator_cmd; // store the result in your class member
+    _custom_allocation_valid = true;
+
+    PX4_DEBUG("CA: allocation OK rel_res=%.3f", (double)rel_res);
+
+    // Update trim vector for apply_custom_allocation
+    _custom_trim_vec.setZero();
+    if (_utrim_available && _current_utrim.valid) {
+        // 前三个量（f1,f2,f3 推力值）转换为[0,1]范围（电机相关）
+        const float motor_coeff = 34.024f;
+        const float motor_offset = 767.4f;
+
+        for (int i = 0; i < 3 && i < NUM_ACTUATORS; ++i) {
+            float thrust_value = _current_utrim.polynomial_values[i];  // f1,f2,f3 推力值
+            // 从推力计算电机信号 [0-100]
+            float motor_signal = (thrust_value/CONSTANTS_ONE_G*1000.0f + motor_offset) / motor_coeff;
+            // 限制在 [0-100] 范围内
+            motor_signal = math::constrain(motor_signal, 0.0f, 100.0f);
+            // 归一化到 [0-1] 范围
+            _custom_trim_vec(i) = motor_signal / 100.0f;
+        }
+
+        // 后三个量（theta1,theta2,theta3 角度）转换为[-1,1]范围（舵机相关）
+        for (int i = 3; i < 6 && i < NUM_ACTUATORS; ++i) {
+            float angle_deg = _current_utrim.polynomial_values[i];  // theta1,theta2,theta3 角度值（度）
+            // 角度转换为[-1,1]范围: angle / 45°
+            _custom_trim_vec(i) = math::constrain(angle_deg / 45.0f, -1.0f, 1.0f);
+        }
+    } else {
+        // 当utrim不可用时，使用默认的trim值
+        // 对于电机：使用默认推力值计算trim
+        const float motor_coeff = 34.024f;
+        const float motor_offset = 767.4f;
+
+        for (int i = 0; i < 3 && i < NUM_ACTUATORS; ++i) {
+            float default_thrust = (i == 0 ? f1 : (i == 1 ? f2 : f3));
+            float motor_signal = (default_thrust/CONSTANTS_ONE_G*1000.0f + motor_offset) / motor_coeff;
+            motor_signal = math::constrain(motor_signal, 0.0f, 100.0f);
+            _custom_trim_vec(i) = motor_signal / 100.0f;
+        }
+
+        // 对于舵机：使用默认角度（0度）
+        for (int i = 3; i < 6 && i < NUM_ACTUATORS; ++i) {
+            _custom_trim_vec(i) = 0.0f;  // 0度对应0.0f
+        }
+    }
 }
 
 bool
@@ -1123,13 +1218,27 @@ ControlAllocator::apply_custom_allocation(matrix::Vector<float, NUM_ACTUATORS> &
     static hrt_abstime last_log = 0;
     const hrt_abstime now = hrt_absolute_time();
     if (now - last_log >= 100_ms) {
-        // du（伪逆结果）
-        PX4_INFO("CA: du=%.3f, %.3f, %.3f", (double)_custom_allocation_result(0), (double)_custom_allocation_result(1), (double)_custom_allocation_result(2));
-        PX4_INFO("CA: du=%.3f, %.3f, %.3f", (double)_custom_allocation_result(3), (double)_custom_allocation_result(4), (double)_custom_allocation_result(5));
+        // du（伪逆结果）- 电机推力变化量 df1, df2, df3
+        PX4_INFO("CA: du_motors(df1,df2,df3)=%.3f, %.3f, %.3f",
+                 (double)_custom_allocation_result(0), (double)_custom_allocation_result(1), (double)_custom_allocation_result(2));
 
-        // utrim（trim 偏置）
-        PX4_INFO("CA: utrim=%.3f, %.3f, %.3f", (double)_custom_trim_vec(0), (double)_custom_trim_vec(1), (double)_custom_trim_vec(2));
-        PX4_INFO("CA: utrim=%.3f, %.3f, %.3f", (double)_custom_trim_vec(3), (double)_custom_trim_vec(4), (double)_custom_trim_vec(5));
+        // du（伪逆结果）- 舵机角度变化量 dtheta1, dtheta2, dtheta3
+        PX4_INFO("CA: du_servos(dθ1,dθ2,dθ3)=%.3f, %.3f, %.3f",
+                 (double)_custom_allocation_result(3), (double)_custom_allocation_result(4), (double)_custom_allocation_result(5));
+
+        // utrim（trim 偏置）- 电机基准值
+        PX4_INFO("CA: trim_motors(f1,f2,f3)=%.3f, %.3f, %.3f",
+                 (double)_custom_trim_vec(0), (double)_custom_trim_vec(1), (double)_custom_trim_vec(2));
+
+        // utrim（trim 偏置）- 舵机基准值
+        PX4_INFO("CA: trim_servos(θ1,θ2,θ3)=%.3f, %.3f, %.3f",
+                 (double)_custom_trim_vec(3), (double)_custom_trim_vec(4), (double)_custom_trim_vec(5));
+
+        // 最终执行器指令 = du + trim
+        PX4_INFO("CA: final_motors=%.3f, %.3f, %.3f",
+                 (double)actuator_sp(0), (double)actuator_sp(1), (double)actuator_sp(2));
+        PX4_INFO("CA: final_servos=%.3f, %.3f, %.3f",
+                 (double)actuator_sp(3), (double)actuator_sp(4), (double)actuator_sp(5));
 
         // 同步打印 fx, fz, tau_x, tau_y, tau_z（10Hz）
         PX4_INFO("CA: 输入 fx=%.3f fz=%.3f tau_x=%.3f tau_y=%.3f tau_z=%.3f",

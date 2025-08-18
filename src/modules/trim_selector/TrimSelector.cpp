@@ -237,28 +237,34 @@ void TrimSelector::Run()
 	const float s_raw = _s;
 	const float s = (3.f * s_raw * s_raw) - (2.f * s_raw * s_raw * s_raw); // smoothstep(s_raw)
 
-	utrim_s utrim{};
-	utrim.timestamp = now;
-	utrim.horizontal_velocity = vxy_mag;
-	utrim.valid = data_valid; // 表示名义值的来源（轨迹有效性），而不是 ramp 状态
+	// 限频发布：20Hz (50ms间隔)
+	static hrt_abstime last_publish_time = 0;
+	if (now - last_publish_time >= 50_ms) {
+		utrim_s utrim{};
+		utrim.timestamp = now;
+		utrim.horizontal_velocity = vxy_mag;
+		utrim.valid = data_valid; // 表示名义值的来源（轨迹有效性），而不是 ramp 状态
 
-	utrim.polynomial_values[0] = s * f1_nom; // f1 [N]
-	utrim.polynomial_values[1] = s * f2_nom; // f2 [N]
-	utrim.polynomial_values[2] = s * f3_nom; // f3 [N]
-	utrim.polynomial_values[3] = s * th1_nom; // θ1 [deg]
-	utrim.polynomial_values[4] = s * th2_nom; // θ2 [deg]
-	utrim.polynomial_values[5] = s * th3_nom; // θ3 [deg]
+		utrim.polynomial_values[0] = s * f1_nom; // f1 [N]
+		utrim.polynomial_values[1] = s * f2_nom; // f2 [N]
+		utrim.polynomial_values[2] = s * f3_nom; // f3 [N]
+		utrim.polynomial_values[3] = s * th1_nom; // θ1 [deg]
+		utrim.polynomial_values[4] = s * th2_nom; // θ2 [deg]
+		utrim.polynomial_values[5] = s * th3_nom; // θ3 [deg]
 
-	_utrim_pub.publish(utrim);
+		_utrim_pub.publish(utrim);
 
-	// 同步发布 theta_trim（俯仰角，带 ramp）
-	theta_trim_s theta_trim{};
-	theta_trim.timestamp = now;
+		// 同步发布 theta_trim（俯仰角，带 ramp）
+		theta_trim_s theta_trim{};
+		theta_trim.timestamp = now;
 
-	// 固定发布 0 度（单位：deg）
-	theta_trim.pitch_angle = 0.0f;
+		// 固定发布 0 度（单位：deg）
+		theta_trim.pitch_angle = 0.0f;
 
-	_theta_trim_pub.publish(theta_trim);
+		_theta_trim_pub.publish(theta_trim);
+
+		last_publish_time = now;
+	}
 
 	/*
 	// 调试日志（限频） — 如需调试可取消注释
