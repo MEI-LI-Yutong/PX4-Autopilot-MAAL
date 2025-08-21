@@ -200,6 +200,20 @@ void PositionControl::_velocityControl(const float dt)
 		_thr_sp.xy() = thrust_sp_xy / thrust_sp_xy_norm * thrust_max_xy;
 	}
 
+	// ---------- 1) 计算悬停所需的归一化推力向量 ----------
+	float hover_collective = _hover_thrust / math::max(_cos_ned_body, 0.1f);
+	Vector3f T_hover = _body_z * hover_collective; // NED
+
+	// ---------- 2) 得到纯增量（去掉重力） ----------
+	_thr_sp_increment = _thr_sp - T_hover; // NED，单位：油门百分比
+
+	// // ---------- 3) 如需机体系，再旋一次 ----------
+	// Dcmf R_sp(attitude_setpoint.q_d); // body → NED
+	// Vector3f delta_thr_norm_body = R_sp.transpose() * delta_thr_norm_ned;
+
+	// // ---------- 4) 可发布 / 记录 ----------
+	// _vehicle_thrust_setpoint.xyz = delta_thr_norm_body; // 仅增量
+
 	// Use tracking Anti-Windup for horizontal direction: during saturation, the integrator is used to unsaturate the output
 	// see Anti-Reset Windup for PID controllers, L.Rundqwist, 1990
 	const Vector2f acc_sp_xy_produced = Vector2f(_thr_sp) * (CONSTANTS_ONE_G / _hover_thrust);
@@ -229,12 +243,17 @@ void PositionControl::_accelerationControl()
 		z_specific_force += _acc_sp(2);
 	}
 
-	Vector3f body_z = Vector3f(-_acc_sp(0), -_acc_sp(1) , -_acc_sp(2)).normalized();
+	Vector3f body_z = Vector3f(-_acc_sp(0), -_acc_sp(1) , -z_specific_force).normalized();
 	ControlMath::limitTilt(body_z, Vector3f(0, 0, 1), _lim_tilt);
+
+	// 保存到成员变量供其他函数使用
+	_body_z = body_z;
+	_cos_ned_body = (Vector3f(0, 0, 1).dot(body_z));
+
 	// Convert to thrust assuming hover thrust produces standard gravity
-	const float thrust_ned_z = _acc_sp(2) * (_hover_thrust / CONSTANTS_ONE_G);
+	const float thrust_ned_z = _acc_sp(2) * (_hover_thrust / CONSTANTS_ONE_G) - _hover_thrust;
 	// Project thrust to planned body attitude
-	const float cos_ned_body = (Vector3f(0, 0, 1).dot(body_z));
+	const float cos_ned_body = _cos_ned_body;
 	const float collective_thrust = math::min(thrust_ned_z / cos_ned_body, -_lim_thr_min);
 	_thr_sp = body_z * collective_thrust;
 }
@@ -278,7 +297,8 @@ void PositionControl::getLocalPositionSetpoint(vehicle_local_position_setpoint_s
 	local_position_setpoint.vy = _vel_sp(1);
 	local_position_setpoint.vz = _vel_sp(2);
 	_acc_sp.copyTo(local_position_setpoint.acceleration);
-	_thr_sp.copyTo(local_position_setpoint.thrust);
+	_thr_sp.copyTo(local_position_setpoint.thrust);  // 记录含重力的总推力
+	//_thr_sp_increment.copyTo(local_position_setpoint.thrust_increment);  // 记录纯增量推力
 }
 
 void PositionControl::getAttitudeSetpoint(vehicle_attitude_setpoint_s &attitude_setpoint) const
@@ -292,6 +312,18 @@ void PositionControl::getAttitudeSetpoint(vehicle_attitude_setpoint_s &attitude_
 
 	// 使用修改后的 thrustToAttitude 函数，传入 pitch_sp
 	ControlMath::thrustToAttitude(_thr_sp, _yaw_sp, pitch_sp, attitude_setpoint);
+
+	matrix::Dcmf R_sp(attitude_setpoint.q_d);
+	matrix::Vector3f delta_thrust_body = R_sp.transpose() * _thr_sp_increment;
+
+	attitude_setpoint.thrust_body[0] = delta_thrust_body(0);
+	attitude_setpoint.thrust_body[1] = delta_thrust_body(1);
+	attitude_setpoint.thrust_body[2] = delta_thrust_body(2);
+
+	// 调试输出：检查推力数据
+	PX4_INFO("PosCtrl: increment_world[%.3f,%.3f,%.3f] -> body[%.3f,%.3f,%.3f]",
+	         (double)_thr_sp_increment(0), (double)_thr_sp_increment(1), (double)_thr_sp_increment(2),
+	         (double)delta_thrust_body(0), (double)delta_thrust_body(1), (double)delta_thrust_body(2));
 
 	// 原来的代码（注释掉）
 	/*

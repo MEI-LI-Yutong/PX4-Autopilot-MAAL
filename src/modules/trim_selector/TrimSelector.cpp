@@ -137,9 +137,9 @@ bool TrimSelector::compute_nominal_trim(float &f1, float &f2, float &f3,
     // 三个角度共用五次多项式（单位：deg）
     const float theta_deg = 1.763e-07f * v5 + 1.967e-07f * v4 + 2.233e-05f * v3 + 0.003304f * v2 + 9.515e-05f * v - 5.07e-06f;
 
-    f1 = f12;
-    f2 = f12;
-    f3 = f3_poly;
+    f1 = f12*0.8f;
+    f2 = f12*0.8f;
+    f3 = f3_poly*0.8f;
 
     theta1_deg = theta_deg;
     theta2_deg = theta_deg;

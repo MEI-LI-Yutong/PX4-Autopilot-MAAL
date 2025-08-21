@@ -241,8 +241,13 @@ private:
 	matrix::Vector3f _vel_sp; /**< desired velocity */
 	matrix::Vector3f _acc_sp; /**< desired acceleration */
 	matrix::Vector3f _thr_sp; /**< desired thrust */
+	matrix::Vector3f _thr_sp_increment; /**< desired thrust increment */
 	float _yaw_sp{}; /**< desired heading */
 	float _yawspeed_sp{}; /** desired yaw-speed */
+
+	// 用于在函数间共享的变量
+	matrix::Vector3f _body_z; /**< desired body z axis from acceleration control */
+	float _cos_ned_body{}; /**< cosine of angle between NED z and body z */
 
 	/* 订阅 theta_trim */
 	uORB::Subscription _theta_trim_sub{ORB_ID(theta_trim)};

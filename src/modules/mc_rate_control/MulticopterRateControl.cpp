@@ -182,6 +182,12 @@ MulticopterRateControl::Run()
 				_rates_setpoint(1) = PX4_ISFINITE(vehicle_rates_setpoint.pitch) ? vehicle_rates_setpoint.pitch : rates(1);
 				_rates_setpoint(2) = PX4_ISFINITE(vehicle_rates_setpoint.yaw)   ? vehicle_rates_setpoint.yaw   : rates(2);
 				_thrust_setpoint = Vector3f(vehicle_rates_setpoint.thrust_body);
+				
+				// 调试输出：检查角速率控制器接收的推力
+				PX4_INFO("RateCtrl: received thrust_body[%.3f,%.3f,%.3f]", 
+				         (double)vehicle_rates_setpoint.thrust_body[0], 
+				         (double)vehicle_rates_setpoint.thrust_body[1], 
+				         (double)vehicle_rates_setpoint.thrust_body[2]);
 			}
 		}
 
@@ -233,6 +239,13 @@ MulticopterRateControl::Run()
 			vehicle_torque_setpoint_s vehicle_torque_setpoint{};
 
 			_thrust_setpoint.copyTo(vehicle_thrust_setpoint.xyz);
+			
+			// 调试输出：角速率控制器发布的推力
+			PX4_INFO("RateCtrl: publish thrust_xyz[%.3f,%.3f,%.3f]", 
+			         (double)vehicle_thrust_setpoint.xyz[0], 
+			         (double)vehicle_thrust_setpoint.xyz[1], 
+			         (double)vehicle_thrust_setpoint.xyz[2]);
+			
 			vehicle_torque_setpoint.xyz[0] = PX4_ISFINITE(torque_setpoint(0)) ? torque_setpoint(0) : 0.f;
 			vehicle_torque_setpoint.xyz[1] = PX4_ISFINITE(torque_setpoint(1)) ? torque_setpoint(1) : 0.f;
 			vehicle_torque_setpoint.xyz[2] = PX4_ISFINITE(torque_setpoint(2)) ? torque_setpoint(2) : 0.f;
