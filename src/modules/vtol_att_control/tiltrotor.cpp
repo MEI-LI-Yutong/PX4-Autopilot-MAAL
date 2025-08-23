@@ -394,6 +394,8 @@ void Tiltrotor::fill_actuator_outputs()
 
 	} else {
 		collective_thrust_normalized_setpoint = -_vehicle_thrust_setpoint_virtual_mc->xyz[2] * _mc_throttle_weight;
+		_thrust_setpoint_0->xyz[0] = _vehicle_thrust_setpoint_virtual_mc->xyz[0] * _mc_throttle_weight;
+		_thrust_setpoint_0->xyz[1] = _vehicle_thrust_setpoint_virtual_mc->xyz[1] * _mc_throttle_weight;
 		_thrust_setpoint_0->xyz[2] = -collective_thrust_normalized_setpoint;
 	}
 

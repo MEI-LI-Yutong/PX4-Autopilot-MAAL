@@ -317,6 +317,8 @@ void Standard::fill_actuator_outputs()
 		_torque_setpoint_0->xyz[0] = _vehicle_torque_setpoint_virtual_mc->xyz[0];
 		_torque_setpoint_0->xyz[1] = _vehicle_torque_setpoint_virtual_mc->xyz[1];
 		_torque_setpoint_0->xyz[2] = _vehicle_torque_setpoint_virtual_mc->xyz[2];
+		_thrust_setpoint_0->xyz[0] = _vehicle_thrust_setpoint_virtual_mc->xyz[0];
+		_thrust_setpoint_0->xyz[1] = _vehicle_thrust_setpoint_virtual_mc->xyz[1];
 		_thrust_setpoint_0->xyz[2] = _vehicle_thrust_setpoint_virtual_mc->xyz[2];
 
 		// FW actuators:

@@ -312,6 +312,8 @@ void Tailsitter::fill_actuator_outputs()
 		}
 
 	} else {
+		_thrust_setpoint_0->xyz[0] = _vehicle_thrust_setpoint_virtual_mc->xyz[0];
+		_thrust_setpoint_0->xyz[1] = _vehicle_thrust_setpoint_virtual_mc->xyz[1];
 		_thrust_setpoint_0->xyz[2] = _vehicle_thrust_setpoint_virtual_mc->xyz[2];
 
 		// for the short period after starting the backtransition where there is no thrust published yet from the MC controller,

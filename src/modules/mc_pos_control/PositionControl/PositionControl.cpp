@@ -311,19 +311,20 @@ void PositionControl::getAttitudeSetpoint(vehicle_attitude_setpoint_s &attitude_
 	}
 
 	// 使用修改后的 thrustToAttitude 函数，传入 pitch_sp
-	ControlMath::thrustToAttitude(_thr_sp, _yaw_sp, pitch_sp, attitude_setpoint);
+	ControlMath::thrustToAttitude(_thr_sp, _thr_sp_increment, _yaw_sp, pitch_sp, attitude_setpoint);
 
-	matrix::Dcmf R_sp(attitude_setpoint.q_d);
-	matrix::Vector3f delta_thrust_body = R_sp.transpose() * _thr_sp_increment;
+	// // 在得到最终姿态后，用增量推力生成机体系推力期望
+	// matrix::Dcmf R_sp(attitude_setpoint.q_d);
+	// matrix::Vector3f delta_thrust_body = R_sp.transpose() * _thr_sp_increment;
 
-	attitude_setpoint.thrust_body[0] = delta_thrust_body(0);
-	attitude_setpoint.thrust_body[1] = delta_thrust_body(1);
-	attitude_setpoint.thrust_body[2] = delta_thrust_body(2);
+	// attitude_setpoint.thrust_body[0] = delta_thrust_body(0);
+	// attitude_setpoint.thrust_body[1] = delta_thrust_body(1);
+	// attitude_setpoint.thrust_body[2] = delta_thrust_body(2);
 
-	// 调试输出：检查推力数据
-	PX4_INFO("PosCtrl: increment_world[%.3f,%.3f,%.3f] -> body[%.3f,%.3f,%.3f]",
-	         (double)_thr_sp_increment(0), (double)_thr_sp_increment(1), (double)_thr_sp_increment(2),
-	         (double)delta_thrust_body(0), (double)delta_thrust_body(1), (double)delta_thrust_body(2));
+	// // 调试输出：检查推力数据
+	// PX4_INFO("PosCtrl: increment_world[%.3f,%.3f,%.3f] -> body[%.3f,%.3f,%.3f]",
+	//          (double)_thr_sp_increment(0), (double)_thr_sp_increment(1), (double)_thr_sp_increment(2),
+	//          (double)delta_thrust_body(0), (double)delta_thrust_body(1), (double)delta_thrust_body(2));
 
 	// 原来的代码（注释掉）
 	/*

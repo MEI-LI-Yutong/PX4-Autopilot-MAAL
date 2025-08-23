@@ -317,12 +317,12 @@ MulticopterAttitudeControl::Run()
 					_attitude_control.setAttitudeSetpoint(Quatf(vehicle_attitude_setpoint.q_d), vehicle_attitude_setpoint.yaw_sp_move_rate);
 					_thrust_setpoint_body = Vector3f(vehicle_attitude_setpoint.thrust_body);
 					_last_attitude_setpoint = vehicle_attitude_setpoint.timestamp;
-					
+
 					// 调试输出：检查姿态控制器接收的推力
-					PX4_INFO("AttCtrl: received thrust_body[%.3f,%.3f,%.3f]", 
-					         (double)vehicle_attitude_setpoint.thrust_body[0], 
-					         (double)vehicle_attitude_setpoint.thrust_body[1], 
-					         (double)vehicle_attitude_setpoint.thrust_body[2]);
+					// PX4_INFO("AttCtrl: received thrust_body[%.3f,%.3f,%.3f]",
+					//          (double)vehicle_attitude_setpoint.thrust_body[0],
+					//          (double)vehicle_attitude_setpoint.thrust_body[1],
+					//          (double)vehicle_attitude_setpoint.thrust_body[2]);
 				}
 			}
 
@@ -370,10 +370,10 @@ MulticopterAttitudeControl::Run()
 			rates_setpoint.timestamp = hrt_absolute_time();
 
 			// 调试输出：检查发布到 mc_rate_control 的推力
-			PX4_INFO("AttCtrl: publish thrust_body[%.3f,%.3f,%.3f]", 
-			         (double)rates_setpoint.thrust_body[0], 
-			         (double)rates_setpoint.thrust_body[1], 
-			         (double)rates_setpoint.thrust_body[2]);
+			// PX4_INFO("AttCtrl: publish thrust_body[%.3f,%.3f,%.3f]",
+			//          (double)rates_setpoint.thrust_body[0],
+			//          (double)rates_setpoint.thrust_body[1],
+			//          (double)rates_setpoint.thrust_body[2]);
 
 			_vehicle_rates_setpoint_pub.publish(rates_setpoint);
 

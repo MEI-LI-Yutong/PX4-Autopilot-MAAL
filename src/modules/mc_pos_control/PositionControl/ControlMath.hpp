@@ -48,11 +48,12 @@ namespace ControlMath
 /**
  * Converts thrust vector and yaw/pitch set-point to a desired attitude.
  * @param thr_sp desired 3D thrust vector
+ * @param thr_sp_increment desired 3D thrust increment vector
  * @param yaw_sp the desired yaw
  * @param pitch_sp the desired pitch
  * @param att_sp attitude setpoint to fill
  */
-void thrustToAttitude(const matrix::Vector3f &thr_sp, const float yaw_sp, const float pitch_sp, vehicle_attitude_setpoint_s &att_sp);
+void thrustToAttitude(const matrix::Vector3f &thr_sp, const matrix::Vector3f &thr_sp_increment, const float yaw_sp, const float pitch_sp, vehicle_attitude_setpoint_s &att_sp);
 
 // 原来的函数声明（注释掉）
 /*

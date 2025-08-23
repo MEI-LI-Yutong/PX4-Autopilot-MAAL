@@ -48,16 +48,45 @@ using namespace matrix;
 
 namespace ControlMath
 {
-void thrustToAttitude(const Vector3f &thr_sp, const float yaw_sp, const float pitch_sp, vehicle_attitude_setpoint_s &att_sp)
+static constexpr float MAX_ROLL = 25.0f * M_PI_F / 180.0f;
+
+void thrustToAttitude(const Vector3f &thr_sp, const Vector3f &thr_sp_increment, const float yaw_sp, const float pitch_sp, vehicle_attitude_setpoint_s &att_sp)
 {
-	bodyzToAttitude(-thr_sp, yaw_sp, pitch_sp, att_sp);
-	// 根据期望姿态对 thr_sp 做坐标转换：世界/惯性 -> 机体
-	// 使用上一步生成的期望姿态四元数
-	Dcmf R_sp(att_sp.q_d);
-	Vector3f thr_body = R_sp.transpose() * thr_sp;
-	att_sp.thrust_body[0] = thr_body(0);
-	att_sp.thrust_body[1] = thr_body(1);
-	att_sp.thrust_body[2] = thr_body(2);
+	// 1) 先得到“无 roll”的旋转矩阵（body→world），并将 thr_sp 转到机体系
+	const Eulerf eul_no_roll(0.f, pitch_sp, yaw_sp);
+	const Dcmf   R_yaw_pitch(eul_no_roll);
+	const Vector3f thr_body0 = R_yaw_pitch.transpose() * thr_sp;
+
+	// 2) 用机体 Y/Z 推力解 roll（右倾为＋），并限幅
+	float roll_cmd = atan2f(-thr_body0(1), -thr_body0(2));
+	roll_cmd = math::constrain(roll_cmd, -MAX_ROLL, MAX_ROLL);
+	roll_cmd = 0.0f;
+
+	// 3) 生成最终姿态四元数 (roll, pitch, yaw)
+	const Eulerf eul_final(roll_cmd, pitch_sp, yaw_sp);
+	const Quatf  q_sp(eul_final);
+	q_sp.copyTo(att_sp.q_d);
+
+	// 4) 使用最终姿态将 thr_sp 再次转换到机体系，得到真正机体推力
+	const Dcmf R_final(eul_final);
+	const Vector3f thrust_body = R_final.transpose() * thr_sp;
+	att_sp.thrust_body[0] = 0.1f;
+	att_sp.thrust_body[1] = 0.1f;
+	att_sp.thrust_body[2] = thrust_body(2);
+
+	// 调试输出
+	PX4_INFO("ControlMath: thr_sp[%.3f,%.3f,%.3f] -> thrust_body[%.3f,%.3f,%.3f]",
+	         (double)thr_sp(0), (double)thr_sp(1), (double)thr_sp(2),
+	         (double)thrust_body(0), (double)thrust_body(1), (double)thrust_body(2));
+	PX4_INFO("ControlMath: R_final matrix[0]=[%.3f,%.3f,%.3f]",
+	         (double)R_final(0,0), (double)R_final(0,1), (double)R_final(0,2));
+	PX4_INFO("ControlMath: R_final matrix[1]=[%.3f,%.3f,%.3f]",
+	         (double)R_final(1,0), (double)R_final(1,1), (double)R_final(1,2));
+	PX4_INFO("ControlMath: R_final matrix[2]=[%.3f,%.3f,%.3f]",
+	         (double)R_final(2,0), (double)R_final(2,1), (double)R_final(2,2));
+
+	// 注意：这里会覆盖位置控制器设置的增量推力
+	// 如果你想保持位置控制器的增量推力，请注释掉上面的赋值
 
         // 原来的实现（直接拷贝到 thrust_body）保留在下方注释
         // att_sp.thrust_body[0] = thr_sp(0);
@@ -95,24 +124,38 @@ void limitTilt(Vector3f &body_unit, const Vector3f &world_unit, const float max_
 	body_unit = cosf(angle) * world_unit + sinf(angle) * rejection.unit();
 }
 
-void bodyzToAttitude(Vector3f body_z, const float yaw_sp, const float pitch_sp, vehicle_attitude_setpoint_s &att_sp)
-{
-	// 定义期望的机体 Z 轴方向 d = -normalize(body_z)
-	Vector3f d = -body_z;
-	if (d.norm_squared() < FLT_EPSILON) {
-		d = Vector3f(0.f, 0.f, 1.f); // 默认向上
-	} else {
-		d.normalize();
-	}
+// void bodyzToAttitude(Vector3f body_z, const float yaw_sp, const float pitch_sp, vehicle_attitude_setpoint_s &att_sp)
+// {
+// 	// 定义期望的机体 Z 轴方向 d = -normalize(body_z)
+// 	Vector3f d = -body_z;
+// 	if (d.norm_squared() < FLT_EPSILON) {
+// 		d = Vector3f(0.f, 0.f, 1.f); // 默认向上
+// 	} else {
+// 		d.normalize();
+// 	}
+// 	// /* 1) 用期望 yaw、pitch 先建立参考坐标系（无 roll） */
+// 	// Dcmf R_yaw_pitch(Eulerf(0.f, pitch_sp, yaw_sp));   // R = Rz(yaw) · Ry(pitch)
 
-		// 固定 roll = 0°
-	float roll_sp = 0.0f;
+// 	// /* 2) 把期望机体 Z 轴旋回参考系下 */
+// 	// Vector3f d_local = R_yaw_pitch.transpose() * d;
+// 	// d_local.normalize();                               // 数值安全
 
-	// 构造最终姿态：R_sp = Rz(yaw_sp) * Ry(pitch_sp) * Rx(roll_sp)
-	const Eulerf euler_final(roll_sp, pitch_sp, yaw_sp);
-	const Quatf q_sp{euler_final};
-	q_sp.copyTo(att_sp.q_d);
-}
+// 	// /* 3) 根据几何关系解 roll。d_local ≈ [0, -sinR, cosR]ᵀ */
+// 	// float roll_sp = atan2f(-d_local(1), d_local(2));
+
+// 	// /* 4) 限幅 */
+// 	// roll_sp = math::constrain(roll_sp, -M_PI_F / 6.f, M_PI_F / 6.f);
+
+// 		// 固定 roll = 0°
+// 	float roll_sp = 0.0f;
+
+
+// 	// 构造最终姿态：R_sp = Rz(yaw_sp) * Ry(pitch_sp) * Rx(roll_sp)
+// 	const Eulerf euler_final(roll_sp, pitch_sp, 0.7f);
+// 	Dcmf R_sp(euler_final);
+// 	const Quatf q_sp{euler_final};
+// 	q_sp.copyTo(att_sp.q_d);
+// }
 
 Vector2f constrainXY(const Vector2f &v0, const Vector2f &v1, const float &max)
 {
