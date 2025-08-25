@@ -33,6 +33,8 @@
 
 #include "ActuatorEffectivenessMCTilt.hpp"
 
+#include <lib/mathlib/mathlib.h>
+
 using namespace matrix;
 
 ActuatorEffectivenessMCTilt::ActuatorEffectivenessMCTilt(ModuleParams *parent)
@@ -73,6 +75,39 @@ ActuatorEffectivenessMCTilt::getEffectivenessMatrix(Configuration &configuration
 		}
 	}
 
+	// Scheme A: add small-angle Fx derivative for each tilt column
+	EffectivenessMatrix &mat = configuration.effectiveness_matrices[configuration.selected_matrix];
+	const auto &geom = _mc_rotors.geometry();
+	const float u_nom = math::constrain(_param_ca_tl_nom_u.get(), 0.f, 1.f);
+	const float u_nom_sq = u_nom * u_nom;
+
+	for (int tilt_i = 0; tilt_i < _tilts.count(); ++tilt_i) {
+		float thrust_sum_nom = 0.f;
+		for (int r = 0; r < geom.num_rotors; ++r) {
+			if (geom.rotors[r].tilt_index == tilt_i) {
+				thrust_sum_nom += geom.rotors[r].thrust_coef * u_nom_sq; // CT * u_nom^2
+			}
+		}
+
+		if (thrust_sum_nom < FLT_EPSILON) {
+			continue;
+		}
+
+		const float raw_min = _tilts.config(tilt_i).min_angle;
+		const float raw_max = _tilts.config(tilt_i).max_angle;
+		const float eff_min = math::max(raw_min, -TILT_LINEARIZATION_LIMIT_RAD);
+		const float eff_max = math::min(raw_max,  TILT_LINEARIZATION_LIMIT_RAD);
+		const float eff_range = eff_max - eff_min;
+		if (eff_range < 1e-5f) { continue; }
+
+		const float dtheta_ds = 0.5f * eff_range;
+		const float dFx_ds = thrust_sum_nom * dtheta_ds; // small-angle derivative
+		const int col = _first_tilt_idx + tilt_i;
+		if (col < NUM_ACTUATORS) {
+			mat(3, col) = dFx_ds; // Fx row index 3
+		}
+	}
+
 	return (rotors_added_successfully && tilts_added_successfully);
 }
 
@@ -87,6 +122,23 @@ void ActuatorEffectivenessMCTilt::updateSetpoint(const matrix::Vector<float, NUM
 	bool yaw_saturated_negative = true;
 
 	for (int i = 0; i < _tilts.count(); ++i) {
+
+		// Scheme A runtime angle clamp (±10 deg) to keep within linearization domain
+		const int col = _first_tilt_idx + i;
+		const float min_a = _tilts.config(i).min_angle;
+		const float max_a = _tilts.config(i).max_angle;
+		const float range_a = max_a - min_a;
+		if (range_a > 1e-6f) {
+			float s = actuator_sp(col);
+			s = math::constrain(s, -1.f, 1.f);
+			float angle = min_a + (s + 1.f) * 0.5f * range_a;
+			float limited_angle = math::constrain(angle, -TILT_LINEARIZATION_LIMIT_RAD, TILT_LINEARIZATION_LIMIT_RAD);
+			if (fabsf(limited_angle - angle) > 1e-6f) {
+				float new_s = 2.f * (limited_angle - min_a) / range_a - 1.f;
+				new_s = math::constrain(new_s, -1.f, 1.f);
+				actuator_sp(col) = new_s;
+			}
+		}
 
 		// custom yaw saturation logic: only declare yaw saturated if all tilts are at the negative or positive yawing limit
 		if (_tilts.getYawTorqueOfTilt(i) > FLT_EPSILON) {

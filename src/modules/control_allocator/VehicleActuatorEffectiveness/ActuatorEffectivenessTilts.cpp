@@ -80,6 +80,23 @@ void ActuatorEffectivenessTilts::updateParams()
 		_params[i].min_angle = math::radians(_params[i].min_angle);
 		_params[i].max_angle = math::radians(_params[i].max_angle);
 
+		// // Scheme A: enforce small-angle linearization range for tilts (±10°).
+		// // This clamps the configured physical min/max angles so the allocator always
+		// // works within a domain where sin(theta)≈theta & cos(theta)≈1 hold well.
+		// // (Future Scheme B can remove/parameterize this.)
+		// constexpr float SMALL_ANGLE_LIMIT = 10.f * M_PI_F / 180.f; // 10 degrees in radians
+		// if (_params[i].min_angle < -SMALL_ANGLE_LIMIT) {
+		// 	_params[i].min_angle = -SMALL_ANGLE_LIMIT;
+		// }
+		// if (_params[i].max_angle > SMALL_ANGLE_LIMIT) {
+		// 	_params[i].max_angle = SMALL_ANGLE_LIMIT;
+		// }
+		// // Ensure ordering (in case original config was inside but reversed somehow)
+		// if (_params[i].min_angle > _params[i].max_angle) {
+		// 	_params[i].min_angle = -SMALL_ANGLE_LIMIT;
+		// 	_params[i].max_angle = SMALL_ANGLE_LIMIT;
+		// }
+
 		_torque[i].setZero();
 	}
 }

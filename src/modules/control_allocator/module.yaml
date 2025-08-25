@@ -413,6 +413,22 @@ parameters:
             instance_start: 0
             default: 0
 
+        CA_TL_NOM_U:
+            description:
+                short: Nominal motor command for tilt Fx linearization
+                long: |
+                  Used to approximate the nominal thrust of rotors associated with a tilt servo when
+                  computing the small-angle forward force derivative (Fx) contributed by the tilt.
+                  T_nom = CT * (CA_TL_NOM_U)^2.
+                  Only used in Scheme A (small-angle linearization). Set to 0 to disable forward
+                  force contribution (effective derivative becomes 0). Typical value 0.4-0.6.
+            type: float
+            decimal: 2
+            increment: 0.05
+            min: 0.0
+            max: 1.0
+            default: 0.50
+
         # helicopter
         CA_SP0_COUNT:
             description:

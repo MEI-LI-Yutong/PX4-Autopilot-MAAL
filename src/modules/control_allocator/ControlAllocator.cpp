@@ -373,6 +373,18 @@ ControlAllocator::Run()
 		}
 	}
 
+	// Check for utrim updates
+	utrim_s utrim_data;
+	if (_utrim_sub.update(&utrim_data)) {
+		_utrim_data = utrim_data;
+		_utrim_valid = utrim_data.valid;
+		
+		if (_utrim_valid) {
+			// Update actuator effectiveness matrix when new utrim data arrives
+			update_effectiveness_matrix_if_needed(EffectivenessUpdateReason::MOTOR_ACTIVATION_UPDATE);
+		}
+	}
+
 	// Guard against too small (< 0.2ms) and too large (> 20ms) dt's.
 	const hrt_abstime now = hrt_absolute_time();
 	const float dt = math::constrain(((now - _last_run) / 1e6f), 0.0002f, 0.02f);
@@ -433,6 +445,11 @@ ControlAllocator::Run()
 			_actuator_effectiveness->allocateAuxilaryControls(dt, i, _control_allocation[i]->_actuator_sp); //flaps and spoilers
 			_actuator_effectiveness->updateSetpoint(c[i], i, _control_allocation[i]->_actuator_sp,
 								_control_allocation[i]->getActuatorMin(), _control_allocation[i]->getActuatorMax());
+
+			// Apply utrim corrections if available
+			if (_utrim_valid && _actuator_effectiveness != nullptr) {
+				applyUtrimCorrections(i);
+			}
 
 			if (_has_slew_rate) {
 				_control_allocation[i]->applySlewRateLimit(dt);
@@ -861,6 +878,43 @@ as inputs and outputs actuator setpoint messages.
 	PRINT_MODULE_USAGE_DEFAULT_COMMANDS();
 
 	return 0;
+}
+
+void
+ControlAllocator::applyUtrimCorrections(int matrix_index)
+{
+	if (!_utrim_valid || matrix_index < 0 || matrix_index >= _num_control_allocation) {
+		return;
+	}
+
+	// Get current actuator setpoints
+	ActuatorVector &actuator_sp = _control_allocation[matrix_index]->_actuator_sp;
+	
+	// Apply utrim corrections based on the normalized values
+	// The utrim message contains normalized values for motors (index 0-2 for forces, 3-5 for tilts)
+	int actuator_idx = 0;
+	
+	// Apply corrections to motors (first _num_actuators[0] actuators)
+	for (int i = 0; i < _num_actuators[0] && i < 3 && actuator_idx < NUM_ACTUATORS; i++) {
+		if (_control_allocation_selection_indexes[actuator_idx] == matrix_index) {
+			// Apply force correction from utrim (normalized values 0-2 are force corrections)
+			float correction = _utrim_data.normalized_values[i];
+			// Apply correction as additive offset (could be multiplicative depending on requirements)
+			actuator_sp(actuator_idx) += correction * 0.1f; // Scale factor to limit correction magnitude
+		}
+		actuator_idx++;
+	}
+	
+	// Apply corrections to servos/tilts (next _num_actuators[1] actuators) 
+	for (int i = 0; i < _num_actuators[1] && i < 3 && actuator_idx < NUM_ACTUATORS; i++) {
+		if (_control_allocation_selection_indexes[actuator_idx] == matrix_index) {
+			// Apply tilt correction from utrim (normalized values 3-5 are tilt corrections)
+			float correction = _utrim_data.normalized_values[3 + i];
+			// Apply correction as additive offset
+			actuator_sp(actuator_idx) += correction * 0.05f; // Smaller scale factor for servo corrections
+		}
+		actuator_idx++;
+	}
 }
 
 /**
