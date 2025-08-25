@@ -252,6 +252,28 @@ void TrimSelector::Run()
 		utrim.polynomial_values[4] = s * th2_nom; // θ2 [deg]
 		utrim.polynomial_values[5] = s * th3_nom; // θ3 [deg]
 
+		// 添加归一化计算
+		const float motor_coeff = 34.024f;
+		const float motor_offset = 767.4f;
+
+		// 前三个量（f1,f2,f3 推力值）转换为[0-1]范围（电机相关）
+		for (int i = 0; i < 3; ++i) {
+			float thrust_value = utrim.polynomial_values[i];  // f1,f2,f3 推力值
+			// 从推力计算电机信号 [0-100]
+			float motor_signal = (thrust_value/CONSTANTS_ONE_G*1000.0f + motor_offset) / motor_coeff;
+			// 限制在 [0-100] 范围内
+			motor_signal = math::constrain(motor_signal, 0.0f, 100.0f);
+			// 归一化到 [0-1] 范围
+			utrim.normalized_values[i] = motor_signal / 100.0f;
+		}
+
+		// 后三个量（theta1,theta2,theta3 角度）转换为[-1,1]范围（舵机相关）
+		for (int i = 3; i < 6; ++i) {
+			float angle_deg = utrim.polynomial_values[i];  // theta1,theta2,theta3 角度值（度）
+			// 角度转换为[-1,1]范围: angle / 45°
+			utrim.normalized_values[i] = math::constrain(angle_deg / 45.0f, -1.0f, 1.0f);
+		}
+
 		_utrim_pub.publish(utrim);
 
 		// 同步发布 theta_trim（俯仰角，带 ramp）
