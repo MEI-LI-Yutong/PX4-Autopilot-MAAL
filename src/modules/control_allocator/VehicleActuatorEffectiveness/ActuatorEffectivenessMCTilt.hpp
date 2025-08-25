@@ -76,8 +76,8 @@ protected:
 
 	YawTiltSaturationFlags _yaw_tilt_saturation_flags{};
 
-	// ==== Scheme A: small-angle linearization additions ====
-	static constexpr float TILT_LINEARIZATION_LIMIT_RAD = 10.f * M_PI_F / 180.f; // ±10 deg
+	// ==== Scheme A: linearization angle limit (expanded to ±30 deg) ====
+	static constexpr float TILT_LINEARIZATION_LIMIT_RAD = 30.f * M_PI_F / 180.f; // ±30 deg
 
 	DEFINE_PARAMETERS(
 		(ParamFloat<px4::params::CA_TL_NOM_U>) _param_ca_tl_nom_u
