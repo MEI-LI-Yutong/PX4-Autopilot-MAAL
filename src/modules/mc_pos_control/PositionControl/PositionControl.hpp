@@ -182,8 +182,9 @@ public:
 	 * This attitude setpoint was generated from the resulting acceleration setpoint after position and velocity control.
 	 * It needs to be executed by the attitude controller to achieve velocity and position tracking.
 	 * @param attitude_setpoint reference to struct to fill up
+	 * @param pitch_sp pitch setpoint from theta_trim in radians
 	 */
-	void getAttitudeSetpoint(vehicle_attitude_setpoint_s &attitude_setpoint) const;
+	void getAttitudeSetpoint(vehicle_attitude_setpoint_s &attitude_setpoint, float pitch_sp = 0.0f) const;
 
 	/**
 	 * All setpoints are set to NAN (uncontrolled). Timestampt zero.
