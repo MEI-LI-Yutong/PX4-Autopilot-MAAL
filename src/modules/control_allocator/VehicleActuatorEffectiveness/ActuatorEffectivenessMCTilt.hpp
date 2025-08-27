@@ -38,6 +38,7 @@
 #include "ActuatorEffectivenessTilts.hpp"
 #include <uORB/Subscription.hpp>
 #include <uORB/topics/vehicle_thrust_setpoint.h>
+#include <drivers/drv_hrt.h>
 
 class ActuatorEffectivenessMCTilt : public ModuleParams, public ActuatorEffectiveness
 {
@@ -78,17 +79,41 @@ protected:
 
 	YawTiltSaturationFlags _yaw_tilt_saturation_flags{};
 	
-	// Collective tilt control
+	// Collective tilt control - rate limited state machine
+	enum class RampState {
+		NONE = 0,
+		RAMP_TO_ZERO
+	};
+
 	uORB::Subscription _vt_setpoint_sub{ORB_ID(vehicle_thrust_setpoint)};
-	float _collective_tilt_angle{0.f};
-	bool _collective_tilt_valid{false};
-	bool _collective_was_clipped{false};
+	
+	// Current collective tilt state
+	float _collective_tilt_angle{0.f};		// Current angle in radians
+	float _collective_tilt_target{0.f};		// Target angle in radians
+	bool _collective_tilt_valid{false};		// Whether incoming command is valid
+	bool _collective_was_clipped{false};		// Whether collective was clipped this frame
+	
+	// State machine variables  
+	RampState _ramp_state{RampState::NONE};		// Current ramp state
+	hrt_abstime _last_valid_command_time{0};	// Last time we received valid command
+	hrt_abstime _last_update_time{0};		// Last time updateSetpoint was called
+	
+	// Rate limiting constants
+	static constexpr float COLLECTIVE_TILT_RATE_MAX_RAD_S = 1.2f;	   // Normal rate limit: 1.2 rad/s
+	static constexpr float COLLECTIVE_TILT_RATE_RETURN_RAD_S = 1.5f;   // Return-to-zero rate: 1.5 rad/s
+	static constexpr hrt_abstime COLLECTIVE_TIMEOUT_US = 200000;	   // 200ms timeout
 
 private:
 	/**
-	 * Update collective tilt angle from vehicle thrust setpoint
+	 * Update collective tilt angle from vehicle thrust setpoint and handle state machine
 	 */
 	void updateCollectiveTiltAngle();
+
+	/**
+	 * Update collective tilt angle using rate limiting based on current state
+	 * @param dt time step in seconds
+	 */
+	void updateCollectiveTiltWithRateLimit(float dt);
 
 	/**
 	 * Calculate yaw saturation flags based on yaw-only actuator values
@@ -102,7 +127,7 @@ private:
 		const matrix::Vector<float, NUM_ACTUATORS> &actuator_max);
 
 	/**
-	 * Apply collective tilt control to forward-tilting servos
+	 * Apply collective tilt control to forward-tilting servos with yaw priority
 	 * @param actuator_sp actuator setpoints to modify
 	 * @param yaw_only_values base actuator values before collective tilt
 	 * @param tilt_count actual number of tilts to process
