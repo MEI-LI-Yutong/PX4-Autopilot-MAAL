@@ -126,6 +126,7 @@ private:
 
 	float _battery_status_scale{0.0f};
 	matrix::Vector3f _thrust_setpoint{};
+	float _tilt_extra_angle{0.0f};
 
 	float _energy_integration_time{0.0f};
 	float _control_energy[4] {};

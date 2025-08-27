@@ -316,6 +316,7 @@ MulticopterAttitudeControl::Run()
 
 					_attitude_control.setAttitudeSetpoint(Quatf(vehicle_attitude_setpoint.q_d), vehicle_attitude_setpoint.yaw_sp_move_rate);
 					_thrust_setpoint_body = Vector3f(vehicle_attitude_setpoint.thrust_body);
+					_tilt_extra_angle = vehicle_attitude_setpoint.tilt_extra_angle;
 					_last_attitude_setpoint = vehicle_attitude_setpoint.timestamp;
 				}
 			}
@@ -361,6 +362,7 @@ MulticopterAttitudeControl::Run()
 			rates_setpoint.pitch = rates_sp(1);
 			rates_setpoint.yaw = rates_sp(2);
 			_thrust_setpoint_body.copyTo(rates_setpoint.thrust_body);
+			rates_setpoint.tilt_extra_angle = _tilt_extra_angle;
 			rates_setpoint.timestamp = hrt_absolute_time();
 
 			_vehicle_rates_setpoint_pub.publish(rates_setpoint);

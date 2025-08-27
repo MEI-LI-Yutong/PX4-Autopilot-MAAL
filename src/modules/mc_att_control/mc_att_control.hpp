@@ -121,6 +121,7 @@ private:
 	perf_counter_t  _loop_perf;             /**< loop duration performance counter */
 
 	matrix::Vector3f _thrust_setpoint_body; /**< body frame 3D thrust vector */
+	float _tilt_extra_angle{0.0f}; /**< extra tilt angle for forward thrust */
 
 	float _hover_thrust_estimate{NAN};
 	SlewRate<float> _hover_thrust_slew_rate{.5f};
