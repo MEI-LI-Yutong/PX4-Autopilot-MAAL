@@ -105,3 +105,4 @@ param set-default VT_FWD_THRUST_EN 4
 param set-default VT_FWD_THRUST_SC 0.6
 param set-default VT_TILT_TRANS 0.6
 param set-default VT_TYPE 1
+param set-default VT_TILT_MC 0.5
