@@ -36,6 +36,8 @@
 #include "control_allocation/actuator_effectiveness/ActuatorEffectiveness.hpp"
 #include "ActuatorEffectivenessRotors.hpp"
 #include "ActuatorEffectivenessTilts.hpp"
+#include <uORB/Subscription.hpp>
+#include <uORB/topics/vehicle_thrust_setpoint.h>
 
 class ActuatorEffectivenessMCTilt : public ModuleParams, public ActuatorEffectiveness
 {
@@ -75,4 +77,10 @@ protected:
 	};
 
 	YawTiltSaturationFlags _yaw_tilt_saturation_flags{};
+	
+	// Collective tilt control
+	uORB::Subscription _vt_setpoint_sub{ORB_ID(vehicle_thrust_setpoint)};
+	float _collective_tilt_angle{0.f};
+	bool _collective_tilt_valid{false};
+	bool _collective_was_clipped{false};
 };

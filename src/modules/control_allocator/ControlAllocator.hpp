@@ -206,6 +206,7 @@ private:
 	matrix::Vector3f _torque_sp;
 	matrix::Vector3f _thrust_sp;
 	float _tilt_extra_angle{0.f};
+	float _last_tilt_extra_angle{NAN};
 	bool _publish_controls{true};
 
 	// Utrim data

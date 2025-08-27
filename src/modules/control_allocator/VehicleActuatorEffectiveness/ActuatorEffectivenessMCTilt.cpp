@@ -81,31 +81,84 @@ void ActuatorEffectivenessMCTilt::updateSetpoint(const matrix::Vector<float, NUM
 		const matrix::Vector<float, NUM_ACTUATORS> &actuator_max)
 {
 	actuator_sp += _tilt_offsets;
-	// TODO: dynamic matrix update
 
+	// Read vehicle thrust setpoint for collective tilt control
+	vehicle_thrust_setpoint_s vt;
+	if (_vt_setpoint_sub.update(&vt)) {
+		if (PX4_ISFINITE(vt.tilt_extra_angle)) {
+			_collective_tilt_angle = vt.tilt_extra_angle;
+			_collective_tilt_valid = true;
+		} else {
+			_collective_tilt_valid = false;
+		}
+	}
+
+	// Save yaw-only values before adding collective tilt
+	float yaw_only_values[_tilts.count()];
+	for (int i = 0; i < _tilts.count(); ++i) {
+		yaw_only_values[i] = actuator_sp(_first_tilt_idx + i);
+	}
+
+	// Calculate yaw saturation based on yaw-only values (not affected by collective)
 	bool yaw_saturated_positive = true;
 	bool yaw_saturated_negative = true;
 
 	for (int i = 0; i < _tilts.count(); ++i) {
-
 		// custom yaw saturation logic: only declare yaw saturated if all tilts are at the negative or positive yawing limit
 		if (_tilts.getYawTorqueOfTilt(i) > FLT_EPSILON) {
 
-			if (yaw_saturated_positive && actuator_sp(i + _first_tilt_idx) < actuator_max(i + _first_tilt_idx) - FLT_EPSILON) {
+			if (yaw_saturated_positive && yaw_only_values[i] < actuator_max(i + _first_tilt_idx) - FLT_EPSILON) {
 				yaw_saturated_positive = false;
 			}
 
-			if (yaw_saturated_negative && actuator_sp(i + _first_tilt_idx) > actuator_min(i + _first_tilt_idx) + FLT_EPSILON) {
+			if (yaw_saturated_negative && yaw_only_values[i] > actuator_min(i + _first_tilt_idx) + FLT_EPSILON) {
 				yaw_saturated_negative = false;
 			}
 
 		} else if (_tilts.getYawTorqueOfTilt(i) < -FLT_EPSILON) {
-			if (yaw_saturated_negative && actuator_sp(i + _first_tilt_idx) < actuator_max(i + _first_tilt_idx) - FLT_EPSILON) {
+			if (yaw_saturated_negative && yaw_only_values[i] < actuator_max(i + _first_tilt_idx) - FLT_EPSILON) {
 				yaw_saturated_negative = false;
 			}
 
-			if (yaw_saturated_positive && actuator_sp(i + _first_tilt_idx) > actuator_min(i + _first_tilt_idx) + FLT_EPSILON) {
+			if (yaw_saturated_positive && yaw_only_values[i] > actuator_min(i + _first_tilt_idx) + FLT_EPSILON) {
 				yaw_saturated_positive = false;
+			}
+		}
+	}
+
+	// Apply collective tilt if valid
+	_collective_was_clipped = false;
+	if (_collective_tilt_valid) {
+		for (int i = 0; i < _tilts.count(); ++i) {
+			// Only apply collective tilt to forward tilting servos
+			if (_tilts.config(i).tilt_direction == ActuatorEffectivenessTilts::TiltDirection::TowardsFront) {
+				int col = i + _first_tilt_idx;
+				float min_a = _tilts.config(i).min_angle;
+				float max_a = _tilts.config(i).max_angle;
+				
+				// Constrain angle to servo limits
+				float angle = math::constrain(_collective_tilt_angle, min_a, max_a);
+				
+				// Normalize to [-1, 1] servo space
+				float s_coll = 2.0f * (angle - min_a) / (max_a - min_a) - 1.0f;
+				s_coll = math::constrain(s_coll, -1.0f, 1.0f);
+				
+				// Calculate available margins around yaw base value
+				float yaw_base = yaw_only_values[i];
+				float margin_pos = actuator_max(col) - yaw_base;
+				float margin_neg = yaw_base - actuator_min(col);
+				
+				// Clamp collective command to available margins
+				float s_coll_clamped = math::constrain(s_coll, -margin_neg, margin_pos);
+				if (fabsf(s_coll_clamped - s_coll) > FLT_EPSILON) {
+					_collective_was_clipped = true;
+				}
+				
+				// Apply collective tilt command
+				actuator_sp(col) = yaw_base + s_coll_clamped;
+				
+				// Final safety clamp
+				actuator_sp(col) = math::constrain(actuator_sp(col), actuator_min(col), actuator_max(col));
 			}
 		}
 	}
