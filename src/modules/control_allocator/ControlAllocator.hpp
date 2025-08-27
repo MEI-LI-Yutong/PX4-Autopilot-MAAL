@@ -107,6 +107,12 @@ public:
 	/** @see ModuleBase::print_status() */
 	int print_status() override;
 
+	/**
+	 * Get the current tilt extra angle
+	 * @return tilt extra angle in radians
+	 */
+	float getTiltExtraAngle() const { return _tilt_extra_angle; }
+
 	void Run() override;
 
 	bool init();
@@ -199,6 +205,7 @@ private:
 
 	matrix::Vector3f _torque_sp;
 	matrix::Vector3f _thrust_sp;
+	float _tilt_extra_angle{0.f};
 	bool _publish_controls{true};
 
 	// Utrim data

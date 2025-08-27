@@ -404,6 +404,13 @@ ControlAllocator::Run()
 
 	if (_vehicle_thrust_setpoint_sub.update(&vehicle_thrust_setpoint)) {
 		_thrust_sp = matrix::Vector3f(vehicle_thrust_setpoint.xyz);
+		_tilt_extra_angle = vehicle_thrust_setpoint.tilt_extra_angle;
+		
+		// Debug output to verify tilt_extra_angle transmission
+		if (fabsf(_tilt_extra_angle) > 0.001f) {
+			PX4_DEBUG("ControlAllocator: Received tilt_extra_angle = %.6f rad (%.2f deg)", 
+				(double)_tilt_extra_angle, (double)math::degrees(_tilt_extra_angle));
+		}
 	}
 
 	if (do_update) {

@@ -60,11 +60,15 @@ void thrustToAttitude(const Vector3f &thr_sp, const float yaw_sp, const float pi
 
 	// 将世界坐标系的推力转换到机体坐标系
 	const Vector3f thrust_body = R_sp.transpose() * thr_sp;
-
+	float tilt_extra_angle = atan2f(thrust_body(0), fabsf(thrust_body(2)));
+	tilt_extra_angle = math::constrain(tilt_extra_angle, -M_PI_F/6.0f, M_PI_F/6.0f);
+	// float T_total = fabsf(thrust_body(2)) / cosf(tilt_extra_angle);
+	float T_total = -thrust_body.length();
 	// 设置机体坐标系推力
-	att_sp.thrust_body[0] = thrust_body(0);
-	att_sp.thrust_body[1] = thrust_body(1);
-	att_sp.thrust_body[2] = thrust_body(2);
+	// att_sp.thrust_body[0] = thrust_body(0);
+	// att_sp.thrust_body[1] = thrust_body(1);
+	att_sp.thrust_body[2] = -T_total;
+	att_sp.tilt_extra_angle = tilt_extra_angle;
 }
 
 void limitTilt(Vector3f &body_unit, const Vector3f &world_unit, const float max_angle)

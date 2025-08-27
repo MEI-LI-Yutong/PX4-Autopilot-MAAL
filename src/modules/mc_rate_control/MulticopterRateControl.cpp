@@ -182,6 +182,7 @@ MulticopterRateControl::Run()
 				_rates_setpoint(1) = PX4_ISFINITE(vehicle_rates_setpoint.pitch) ? vehicle_rates_setpoint.pitch : rates(1);
 				_rates_setpoint(2) = PX4_ISFINITE(vehicle_rates_setpoint.yaw)   ? vehicle_rates_setpoint.yaw   : rates(2);
 				_thrust_setpoint = Vector3f(vehicle_rates_setpoint.thrust_body);
+				_tilt_extra_angle = vehicle_rates_setpoint.tilt_extra_angle;
 			}
 		}
 
@@ -255,6 +256,7 @@ MulticopterRateControl::Run()
 				}
 			}
 
+			vehicle_thrust_setpoint.tilt_extra_angle = _tilt_extra_angle;
 			vehicle_thrust_setpoint.timestamp_sample = angular_velocity.timestamp_sample;
 			vehicle_thrust_setpoint.timestamp = hrt_absolute_time();
 			_vehicle_thrust_setpoint_pub.publish(vehicle_thrust_setpoint);
