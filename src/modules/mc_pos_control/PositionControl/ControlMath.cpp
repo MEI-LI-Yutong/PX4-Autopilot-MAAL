@@ -145,8 +145,8 @@ void bodyzToAttitude(Vector3f body_z_des, const float yaw_sp, const float pitch_
 	/* 2) 在已定 yaw+pitch 坐标系里解 roll */
 	Dcmf R_yaw_pitch(Eulerf(0.f, pitch_sp, yaw_sp));      // R = Rz*yaw · Ry*pitch
 	Vector3f d_local = R_yaw_pitch.transpose() * body_z_des;
-	float roll_sp = atan2f(d_local(1), d_local(2));
-	// roll_sp = matrix::wrap_pi(roll_sp);
+	float roll_sp = atan2f(-d_local(1), d_local(2));
+	roll_sp = 0.0f;
 	roll_sp = math::constrain(roll_sp, -M_PI_F/6.0f, M_PI_F/6.0f);
 
 	// 构建最终的旋转矩阵
