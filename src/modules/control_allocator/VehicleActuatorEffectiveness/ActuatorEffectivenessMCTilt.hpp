@@ -83,4 +83,33 @@ protected:
 	float _collective_tilt_angle{0.f};
 	bool _collective_tilt_valid{false};
 	bool _collective_was_clipped{false};
+
+private:
+	/**
+	 * Update collective tilt angle from vehicle thrust setpoint
+	 */
+	void updateCollectiveTiltAngle();
+
+	/**
+	 * Calculate yaw saturation flags based on yaw-only actuator values
+	 * @param yaw_only_values actuator values before collective tilt is applied
+	 * @param tilt_count actual number of tilts to process
+	 * @param actuator_min minimum actuator limits
+	 * @param actuator_max maximum actuator limits
+	 */
+	void calculateYawSaturationFlags(const float yaw_only_values[], int tilt_count,
+		const matrix::Vector<float, NUM_ACTUATORS> &actuator_min,
+		const matrix::Vector<float, NUM_ACTUATORS> &actuator_max);
+
+	/**
+	 * Apply collective tilt control to forward-tilting servos
+	 * @param actuator_sp actuator setpoints to modify
+	 * @param yaw_only_values base actuator values before collective tilt
+	 * @param tilt_count actual number of tilts to process
+	 * @param actuator_min minimum actuator limits
+	 * @param actuator_max maximum actuator limits
+	 */
+	void applyCollectiveTilt(ActuatorVector &actuator_sp, const float yaw_only_values[], int tilt_count,
+		const matrix::Vector<float, NUM_ACTUATORS> &actuator_min,
+		const matrix::Vector<float, NUM_ACTUATORS> &actuator_max);
 };

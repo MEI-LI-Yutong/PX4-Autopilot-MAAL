@@ -62,7 +62,7 @@ void thrustToAttitude(const Vector3f &thr_sp, const float yaw_sp, const float pi
 	const Vector3f thrust_body = R_sp.transpose() * thr_sp;
 	float tilt_extra_angle = atan2f(thrust_body(0), fabsf(thrust_body(2)));
 	tilt_extra_angle = math::constrain(tilt_extra_angle, -M_PI_F/6.0f, M_PI_F/6.0f);
-	
+
 	// Apply rate limit: max 180°/s (π rad/s)
 	static float tilt_extra_angle_prev = 0.0f;
 	const float tilt_rate_max = M_PI_F; // π rad/s = 180°/s
@@ -71,9 +71,9 @@ void thrustToAttitude(const Vector3f &thr_sp, const float yaw_sp, const float pi
 	const float tilt_change_limited = math::constrain(tilt_change, -tilt_change_max, tilt_change_max);
 	tilt_extra_angle = tilt_extra_angle_prev + tilt_change_limited;
 	tilt_extra_angle_prev = tilt_extra_angle;
-	
+
 	// float T_total = fabsf(thrust_body(2)) / cosf(tilt_extra_angle);
-	float T_total = -thrust_body.length();
+	float T_total = thrust_body.length();
 	// 设置机体坐标系推力
 	// att_sp.thrust_body[0] = thrust_body(0);
 	// att_sp.thrust_body[1] = thrust_body(1);
