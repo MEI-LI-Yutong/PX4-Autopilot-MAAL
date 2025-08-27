@@ -184,7 +184,7 @@ public:
 	 * @param attitude_setpoint reference to struct to fill up
 	 * @param pitch_sp pitch setpoint from theta_trim in radians
 	 */
-	void getAttitudeSetpoint(vehicle_attitude_setpoint_s &attitude_setpoint, float pitch_sp = 0.0f) const;
+	void getAttitudeSetpoint(vehicle_attitude_setpoint_s &attitude_setpoint, float pitch_sp = 0.0f, float dt = 0.01f) const;
 
 	/**
 	 * All setpoints are set to NAN (uncontrolled). Timestampt zero.

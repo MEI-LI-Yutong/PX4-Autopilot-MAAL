@@ -55,7 +55,7 @@ TEST(PositionControlTest, EmptySetpoint)
 	EXPECT_EQ(Vector3f(output_setpoint.thrust), Vector3f(0, 0, 0));
 
 	vehicle_attitude_setpoint_s attitude{};
-	position_control.getAttitudeSetpoint(attitude);
+	position_control.getAttitudeSetpoint(attitude, 0.0f, 0.01f);
 	Eulerf euler_att(Quatf(attitude.q_d));
 	EXPECT_FLOAT_EQ(euler_att.phi(), 0.f);
 	EXPECT_FLOAT_EQ(euler_att.theta(), 0.f);
@@ -86,7 +86,7 @@ public:
 		_position_control.setInputSetpoint(_input_setpoint);
 		const bool ret = _position_control.update(.1f);
 		_position_control.getLocalPositionSetpoint(_output_setpoint);
-		_position_control.getAttitudeSetpoint(_attitude);
+		_position_control.getAttitudeSetpoint(_attitude, 0.0f, 0.1f);
 		return ret;
 	}
 

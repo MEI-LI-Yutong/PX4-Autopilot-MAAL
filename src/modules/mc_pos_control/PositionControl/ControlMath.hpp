@@ -52,7 +52,7 @@ namespace ControlMath
  * @param pitch_sp the desired pitch from theta_trim
  * @param att_sp attitude setpoint to fill
  */
-void thrustToAttitude(const matrix::Vector3f &thr_sp, const float yaw_sp, const float pitch_sp, vehicle_attitude_setpoint_s &att_sp);
+void thrustToAttitude(const matrix::Vector3f &thr_sp, const float yaw_sp, const float pitch_sp, vehicle_attitude_setpoint_s &att_sp, const float dt);
 
 /**
  * Limits the tilt angle between two unit vectors
