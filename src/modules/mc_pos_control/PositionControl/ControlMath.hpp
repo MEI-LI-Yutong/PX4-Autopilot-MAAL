@@ -51,8 +51,10 @@ namespace ControlMath
  * @param yaw_sp the desired yaw
  * @param pitch_sp the desired pitch from theta_trim
  * @param att_sp attitude setpoint to fill
+ * @param dt time step for rate limiting
+ * @param tilt_prev reference to previous tilt angle for rate limiting
  */
-void thrustToAttitude(const matrix::Vector3f &thr_sp, const float yaw_sp, const float pitch_sp, vehicle_attitude_setpoint_s &att_sp, const float dt);
+void thrustToAttitude(const matrix::Vector3f &thr_sp, const float yaw_sp, const float pitch_sp, vehicle_attitude_setpoint_s &att_sp, const float dt, float &tilt_prev);
 
 /**
  * Limits the tilt angle between two unit vectors
@@ -68,8 +70,9 @@ void limitTilt(matrix::Vector3f &body_unit, const matrix::Vector3f &world_unit, 
  * @param yaw_sp the desired yaw setpoint
  * @param pitch_sp the desired pitch from theta_trim
  * @param att_sp attitude setpoint to fill
+ * @return roll_sp the calculated roll setpoint in radians
  */
-void bodyzToAttitude(matrix::Vector3f body_z, const float yaw_sp, const float pitch_sp, vehicle_attitude_setpoint_s &att_sp);
+float bodyzToAttitude(matrix::Vector3f body_z, const float yaw_sp, const float pitch_sp, vehicle_attitude_setpoint_s &att_sp);
 
 /**
  * Outputs the sum of two vectors but respecting the limits and priority.

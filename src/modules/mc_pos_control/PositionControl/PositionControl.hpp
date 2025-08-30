@@ -161,8 +161,13 @@ public:
 	 * Set the integral term in xy to 0.
 	 * @see _vel_int
 	 */
-	void resetIntegral() { _vel_int.setZero(); }
+	void resetIntegral() { _vel_int.setZero(); _tilt_prev = 0.0f; }
 	void resetIntegralXY() { _vel_int.xy() = matrix::Vector2f(); }
+
+	/**
+	 * Reset the tilt previous value for rate limiting
+	 */
+	void resetTiltPrev() { _tilt_prev = 0.0f; }
 
 	/**
 	 * If set, the tilt setpoint is computed by assuming no vertical acceleration
@@ -226,6 +231,7 @@ private:
 	matrix::Vector3f _vel_dot; /**< velocity derivative (replacement for acceleration estimate) */
 	matrix::Vector3f _vel_int; /**< integral term of the velocity controller */
 	float _yaw{}; /**< current heading */
+	mutable float _tilt_prev{}; /**< previous tilt angle for rate limiting */
 
 	// Setpoints
 	matrix::Vector3f _pos_sp; /**< desired position */

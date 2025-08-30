@@ -120,8 +120,13 @@ private:
 		(ParamInt<px4::params::TS_RAMP_EN>)      _param_ts_ramp_en        // 斜坡开关（1 启用）
 	)
 
-		// Ramp state
+	// Ramp state
 	float _s{0.f};                // 当前 ramp 因子 [0..1]
 	float _s_target{0.f};         // 目标 ramp 因子
 	hrt_abstime _last_run{0};     // 上次运行时间
+
+	// Low-pass filter state for fc = 0.5 Hz
+	bool _lp_inited{false};       // 滤波器初始化标志
+	float _utrim_lp[6]{};         // polynomial_values 的 LPF 状态
+	float _utrim_norm_lp[6]{};    // normalized_values 的 LPF 状态
 };

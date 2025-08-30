@@ -373,17 +373,30 @@ ControlAllocator::Run()
 		}
 	}
 
-	// Check for utrim updates
-	utrim_s utrim_data;
-	if (_utrim_sub.update(&utrim_data)) {
-		_utrim_data = utrim_data;
-		_utrim_valid = utrim_data.valid;
-		
-		if (_utrim_valid) {
-			// Update actuator effectiveness matrix when new utrim data arrives
-			update_effectiveness_matrix_if_needed(EffectivenessUpdateReason::MOTOR_ACTIVATION_UPDATE);
-		}
-	}
+	// Check for utrim updates - commented out since we get tilt_extra_angle from mc_rate_control via vehicle_thrust_setpoint
+	// utrim_s utrim_data;
+	// if (_utrim_sub.update(&utrim_data)) {
+	//	// _utrim_data = utrim_data;
+	//	// _utrim_valid = utrim_data.valid;
+	//	
+	//	// Extract tilt_angle from utrim and feed into existing tilt_extra_angle flow
+	//	if (utrim_data.valid && PX4_ISFINITE(utrim_data.tilt_angle)) {
+	//		float new_tilt_angle = utrim_data.tilt_angle;
+	//		if (!PX4_ISFINITE(_tilt_extra_angle) || fabsf(new_tilt_angle - _tilt_extra_angle) > 0.002f) {
+	//			_tilt_extra_angle = new_tilt_angle;
+	//			_last_tilt_extra_angle = new_tilt_angle;
+	//			// Trigger control allocation update for tilt angle change
+	//			// (same logic as vehicle_thrust_setpoint.tilt_extra_angle)
+	//		}
+	//	} else {
+	//		_tilt_extra_angle = 0.0f;
+	//	}
+	//	
+	//	// if (_utrim_valid) {
+	//	//	// Update actuator effectiveness matrix when new utrim data arrives
+	//	//	update_effectiveness_matrix_if_needed(EffectivenessUpdateReason::MOTOR_ACTIVATION_UPDATE);
+	//	// }
+	// }
 
 	// Guard against too small (< 0.2ms) and too large (> 20ms) dt's.
 	const hrt_abstime now = hrt_absolute_time();
@@ -459,9 +472,9 @@ ControlAllocator::Run()
 								_control_allocation[i]->getActuatorMin(), _control_allocation[i]->getActuatorMax());
 
 			// Apply utrim corrections if available
-			if (_utrim_valid && _actuator_effectiveness != nullptr) {
-				applyUtrimCorrections(i);
-			}
+			// if (_utrim_valid && _actuator_effectiveness != nullptr) {
+			//	applyUtrimCorrections(i);
+			// }
 
 			if (_has_slew_rate) {
 				_control_allocation[i]->applySlewRateLimit(dt);
@@ -895,6 +908,10 @@ as inputs and outputs actuator setpoint messages.
 void
 ControlAllocator::applyUtrimCorrections(int matrix_index)
 {
+	// COMMENTED OUT: utrim corrections no longer applied to preserve yaw control authority
+	// and avoid conflicts with collective tilt control
+	
+	/*
 	if (!_utrim_valid || matrix_index < 0 || matrix_index >= _num_control_allocation) {
 		return;
 	}
@@ -927,6 +944,7 @@ ControlAllocator::applyUtrimCorrections(int matrix_index)
 		}
 		actuator_idx++;
 	}
+	*/
 }
 
 /**

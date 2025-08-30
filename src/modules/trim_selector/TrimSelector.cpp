@@ -58,8 +58,8 @@ TrimSelector::~TrimSelector() = default;
 
 bool TrimSelector::init()
 {
-    ScheduleOnInterval(50_ms); // 20 Hz
-    PX4_INFO("Trim Selector initialized at 20 Hz (with takeoff/landing ramp)");
+	ScheduleOnInterval(100_ms); // 10 Hz
+	PX4_INFO("Trim Selector initialized at 10 Hz (with takeoff/landing ramp)");
 	return true;
 }
 
@@ -78,76 +78,76 @@ bool TrimSelector::compute_nominal_trim(float &f1, float &f2, float &f3,
                                         float &theta1_deg, float &theta2_deg, float &theta3_deg,
                                         float &horizontal_velocity_magnitude, bool &data_valid)
 {
-    trajectory_setpoint_s traj{};
-    // 优先读取本周期更新的轨迹设定；若无更新则使用上一次的轨迹设定
-    bool has_traj = _trajectory_setpoint_sub.update(&traj) || _trajectory_setpoint_sub.copy(&traj);
+	trajectory_setpoint_s traj{};
+	// 优先读取本周期更新的轨迹设定；若无更新则使用上一次的轨迹设定
+	bool has_traj = _trajectory_setpoint_sub.update(&traj) || _trajectory_setpoint_sub.copy(&traj);
 
-    // 轨迹前馈水平速度幅值
-    float v_ff = 0.f;
-    if (has_traj && PX4_ISFINITE(traj.velocity[0]) && PX4_ISFINITE(traj.velocity[1])) {
-        matrix::Vector2f vxy(traj.velocity);
-        v_ff = sqrtf(vxy.norm_squared());
-    }
+	// 轨迹前馈水平速度幅值
+	float v_ff = 0.f;
+	if (has_traj && PX4_ISFINITE(traj.velocity[0]) && PX4_ISFINITE(traj.velocity[1])) {
+		matrix::Vector2f vxy(traj.velocity);
+		v_ff = sqrtf(vxy.norm_squared());
+	}
 
-    // 在起飞/降落阶段强制使用 v=0 来计算 utrim
-    vehicle_status_s vs{};
-    vehicle_control_mode_s vcm{};
-    vehicle_land_detected_s vld{};
-    manual_control_setpoint_s msp{};
+	// 在起飞/降落阶段强制使用 v=0 来计算 utrim
+	vehicle_status_s vs{};
+	vehicle_control_mode_s vcm{};
+	vehicle_land_detected_s vld{};
+	manual_control_setpoint_s msp{};
 
-    _vehicle_status_sub.copy(&vs);
-    _vehicle_control_mode_sub.copy(&vcm);
-    _vehicle_land_detected_sub.copy(&vld);
-    _manual_sp_sub.copy(&msp);
+	_vehicle_status_sub.copy(&vs);
+	_vehicle_control_mode_sub.copy(&vcm);
+	_vehicle_land_detected_sub.copy(&vld);
+	_manual_sp_sub.copy(&msp);
 
-    const bool landed = vld.landed || vld.ground_contact;
+	const bool landed = vld.landed || vld.ground_contact;
 
-    const bool auto_takeoff =
-        (vs.nav_state == vehicle_status_s::NAVIGATION_STATE_AUTO_TAKEOFF) ||
-        (vs.nav_state == vehicle_status_s::NAVIGATION_STATE_AUTO_MISSION && landed);
+	const bool auto_takeoff =
+		(vs.nav_state == vehicle_status_s::NAVIGATION_STATE_AUTO_TAKEOFF) ||
+		(vs.nav_state == vehicle_status_s::NAVIGATION_STATE_AUTO_MISSION && landed);
 
-    const bool auto_landing =
-        (vs.nav_state == vehicle_status_s::NAVIGATION_STATE_AUTO_LAND) ||
-        (vs.nav_state == vehicle_status_s::NAVIGATION_STATE_AUTO_RTL);
+	const bool auto_landing =
+		(vs.nav_state == vehicle_status_s::NAVIGATION_STATE_AUTO_LAND) ||
+		(vs.nav_state == vehicle_status_s::NAVIGATION_STATE_AUTO_RTL);
 
-    const bool is_auto = vcm.flag_control_auto_enabled;
-    const float thr_tko = math::constrain(_param_ts_thr_tko.get(), 0.f, 1.f);
-    const bool throttle_valid = PX4_ISFINITE(msp.throttle);
+	const bool is_auto = vcm.flag_control_auto_enabled;
+	const float thr_tko = math::constrain(_param_ts_thr_tko.get(), 0.f, 1.f);
+	const bool throttle_valid = PX4_ISFINITE(msp.throttle);
 
-    const bool manual_takeoff = (!is_auto) && landed && throttle_valid && (msp.throttle > thr_tko);
-    const bool manual_landing = (!is_auto) && (landed || (throttle_valid && (msp.throttle < 0.1f)));
+	const bool manual_takeoff = (!is_auto) && landed && throttle_valid && (msp.throttle > thr_tko);
+	const bool manual_landing = (!is_auto) && (landed || (throttle_valid && (msp.throttle < 0.1f)));
 
-    if (auto_takeoff || manual_takeoff || auto_landing || manual_landing) {
-        v_ff = 0.f;
-    }
+	if (auto_takeoff || manual_takeoff || auto_landing || manual_landing) {
+		v_ff = 0.f;
+	}
 
-    horizontal_velocity_magnitude = v_ff;
+	horizontal_velocity_magnitude = v_ff;
 
-    // 使用提供的多项式计算名义配平（单位与原定义一致：f[N]，theta[deg]）
-    const float v = v_ff;
-    const float v2 = v * v;
-    const float v3 = v2 * v;
-    const float v4 = v2 * v2;
-    const float v5 = v4 * v;
+	// 使用提供的多项式计算名义配平（单位与原定义一致：f[N]，theta[deg]）
+	const float v = v_ff;
+	const float v2 = v * v;
+	const float v3 = v2 * v;
+	const float v4 = v2 * v2;
+	const float v5 = v4 * v;
 
-    // f1, f2 共用三次多项式
-    const float f12 = 6.216e-07f * v3 - 0.00878f * v2 + 7.304e-06f * v + 9.705f;
-    // f3 的四次多项式
-    const float f3_poly = -2.04e-07f * v4 + 4.487e-06f * v3 - 0.009367f * v2 + 6.474e-05f * v + 9.028f;
-    // 三个角度共用五次多项式（单位：deg）
-    const float theta_deg = 1.763e-07f * v5 + 1.967e-07f * v4 + 2.233e-05f * v3 + 0.003304f * v2 + 9.515e-05f * v - 5.07e-06f;
+	// f1, f2 共用三次多项式
+	const float f12 = 6.216e-07f * v3 - 0.00878f * v2 + 7.304e-06f * v + 9.705f;
+	// f3 的四次多项式
+	const float f3_poly = -2.04e-07f * v4 + 4.487e-06f * v3 - 0.009367f * v2 + 6.474e-05f * v + 9.028f;
+	// 三个角度共用五次多项式（单位：deg）
+	const float theta_deg = 1.763e-07f * v5 + 1.967e-07f * v4 + 2.233e-05f * v3 + 0.003304f * v2 + 9.515e-05f * v - 5.07e-06f;
 
-    f1 = f12;
-    f2 = f12;
-    f3 = f3_poly;
+	f1 = f12;
+	f2 = f12;
+	f3 = f3_poly;
 
-    theta1_deg = theta_deg;
-    theta2_deg = theta_deg;
-    theta3_deg = theta_deg;
+	theta1_deg = theta_deg;
+	theta2_deg = theta_deg;
+	theta3_deg = theta_deg;
 
-    // 始终认为数据有效，保证控制分配在起飞/降落阶段也使用该配平
-    data_valid = true;
-    return data_valid;
+	// 始终认为数据有效，保证控制分配在起飞/降落阶段也使用该配平
+	data_valid = true;
+	return data_valid;
 }
 
 void TrimSelector::update_takeoff_land_ramp(float dt)
@@ -193,22 +193,22 @@ void TrimSelector::update_takeoff_land_ramp(float dt)
 		_s_target = 0.f; // 地面待机：不开启名义配平
 	} else if (auto_takeoff || manual_takeoff) {
 		_s_target = 1.f; // 起飞：拉满名义配平
-    	} else if (auto_landing || manual_landing) {
+	} else if (auto_landing || manual_landing) {
 		_s_target = math::constrain(_param_ts_s_land.get(), 0.f, 1.f); // 降落阶段减到 s_land
 	} else {
 		_s_target = 1.f; // 正常飞行保持 1
 	}
 
-    // 一阶滤波 ramp（时间常数）
-    const float tau_up = math::max(_param_ts_ramp_t_up.get(), 0.05f);
-    const float tau_dn = math::max(_param_ts_ramp_t_dn.get(), 0.05f);
+	// 一阶滤波 ramp（时间常数）
+	const float tau_up = math::max(_param_ts_ramp_t_up.get(), 0.05f);
+	const float tau_dn = math::max(_param_ts_ramp_t_dn.get(), 0.05f);
 
-    const bool rising = (_s_target > _s);
-    const float tau = rising ? tau_up : tau_dn;
-    const float alpha = dt / (tau + dt);
+	const bool rising = (_s_target > _s);
+	const float tau = rising ? tau_up : tau_dn;
+	const float alpha = dt / (tau + dt);
 
-    _s += alpha * (_s_target - _s);
-    _s = math::constrain(_s, 0.f, 1.f);
+	_s += alpha * (_s_target - _s);
+	_s = math::constrain(_s, 0.f, 1.f);
 }
 
 void TrimSelector::Run()
@@ -233,45 +233,77 @@ void TrimSelector::Run()
 	bool data_valid=false;
 	compute_nominal_trim(f1_nom, f2_nom, f3_nom, th1_nom, th2_nom, th3_nom, vxy_mag, data_valid);
 
-    	// 应用 ramp：实际输出 = s * 名义（对 s 使用 smoothstep 以获得更平滑的端点）
+	// 应用 ramp：实际输出 = s * 名义（对 s 使用 smoothstep 以获得更平滑的端点）
 	const float s_raw = _s;
 	const float s = (3.f * s_raw * s_raw) - (2.f * s_raw * s_raw * s_raw); // smoothstep(s_raw)
 
-	// 限频发布：20Hz (50ms间隔)
+	// 计算原始值（应用 ramp 后）
+	float poly_raw[6] = {
+		s * f1_nom,  // f1 [N]
+		s * f2_nom,  // f2 [N]
+		s * f3_nom,  // f3 [N]
+		s * th1_nom, // θ1 [deg]
+		s * th2_nom, // θ2 [deg]
+		s * th3_nom  // θ3 [deg]
+	};
+
+	// 计算原始归一化值
+	float norm_raw[6];
+	
+	// 添加归一化计算
+	const float motor_coeff = 34.024f;
+	const float motor_offset = 767.4f;
+
+	// 前三个量（f1,f2,f3 推力值）转换为[0-1]范围（电机相关）
+	for (int i = 0; i < 3; ++i) {
+		float thrust_value = poly_raw[i];  // f1,f2,f3 推力值
+		// 从推力计算电机信号 [0-100]
+		float motor_signal = (thrust_value/CONSTANTS_ONE_G*1000.0f + motor_offset) / motor_coeff;
+		// 限制在 [0-100] 范围内
+		motor_signal = math::constrain(motor_signal, 0.0f, 100.0f);
+		// 归一化到 [0-1] 范围
+		norm_raw[i] = motor_signal / 100.0f;
+	}
+
+	// 后三个量（theta1,theta2,theta3 角度）转换为[-1,1]范围（舵机相关）
+	for (int i = 3; i < 6; ++i) {
+		float angle_deg = poly_raw[i];  // theta1,theta2,theta3 角度值（度）
+		// 角度转换为[-1,1]范围: angle / 45°
+		norm_raw[i] = math::constrain(angle_deg / 45.0f, -1.0f, 1.0f);
+	}
+
+	// 一阶低通滤波处理（fc = 0.5 Hz）
+	const float fc = 0.5f;  // 截止频率 0.5 Hz
+	const float tau = 1.0f / (2.0f * M_PI_F * fc);  // τ = 1 / (2π fc)
+	const float alpha = dt / (tau + dt);  // α = dt / (τ + dt)
+
+	if (!_lp_inited) {
+		// 冷启动：直接将滤波状态置为当前值，避免瞬态尖峰
+		for (int i = 0; i < 6; ++i) {
+			_utrim_lp[i] = poly_raw[i];
+			_utrim_norm_lp[i] = norm_raw[i];
+		}
+		_lp_inited = true;
+	} else {
+		// 一阶低通滤波：y += α (x - y)
+		for (int i = 0; i < 6; ++i) {
+			_utrim_lp[i] += alpha * (poly_raw[i] - _utrim_lp[i]);
+			_utrim_norm_lp[i] += alpha * (norm_raw[i] - _utrim_norm_lp[i]);
+		}
+	}
+
+	// 限频发布：10Hz (100ms间隔)
 	static hrt_abstime last_publish_time = 0;
-	if (now - last_publish_time >= 50_ms) {
+	if (now - last_publish_time >= 100_ms) {
 		utrim_s utrim{};
 		utrim.timestamp = now;
 		utrim.horizontal_velocity = vxy_mag;
 		utrim.valid = data_valid; // 表示名义值的来源（轨迹有效性），而不是 ramp 状态
 
-		utrim.polynomial_values[0] = s * f1_nom; // f1 [N]
-		utrim.polynomial_values[1] = s * f2_nom; // f2 [N]
-		utrim.polynomial_values[2] = s * f3_nom; // f3 [N]
-		utrim.polynomial_values[3] = s * th1_nom; // θ1 [deg]
-		utrim.polynomial_values[4] = s * th2_nom; // θ2 [deg]
-		utrim.polynomial_values[5] = s * th3_nom; // θ3 [deg]
-
-		// 添加归一化计算
-		const float motor_coeff = 34.024f;
-		const float motor_offset = 767.4f;
-
-		// 前三个量（f1,f2,f3 推力值）转换为[0-1]范围（电机相关）
-		for (int i = 0; i < 3; ++i) {
-			float thrust_value = utrim.polynomial_values[i];  // f1,f2,f3 推力值
-			// 从推力计算电机信号 [0-100]
-			float motor_signal = (thrust_value/CONSTANTS_ONE_G*1000.0f + motor_offset) / motor_coeff;
-			// 限制在 [0-100] 范围内
-			motor_signal = math::constrain(motor_signal, 0.0f, 100.0f);
-			// 归一化到 [0-1] 范围
-			utrim.normalized_values[i] = motor_signal / 100.0f;
-		}
-
-		// 后三个量（theta1,theta2,theta3 角度）转换为[-1,1]范围（舵机相关）
-		for (int i = 3; i < 6; ++i) {
-			float angle_deg = utrim.polynomial_values[i];  // theta1,theta2,theta3 角度值（度）
-			// 角度转换为[-1,1]范围: angle / 45°
-			utrim.normalized_values[i] = math::constrain(angle_deg / 45.0f, -1.0f, 1.0f);
+		// 使用滤波后的值发布
+		for (int i = 0; i < 6; ++i) {
+			utrim.polynomial_values[i] = _utrim_lp[i];
+			utrim.normalized_values[i] = _utrim_norm_lp[i];
 		}
 
 		_utrim_pub.publish(utrim);
@@ -294,8 +326,8 @@ void TrimSelector::Run()
 	if (now - last_log > 1000_ms) {
 		PX4_DEBUG("TrimSelector: s=%.2f -> f=[%.2f %.2f %.2f]N, th=[%.1f %.1f %.1f]deg, vxy=%.2f, valid=%s",
 		         (double)s,
-		         (double)utrim.polynomial_values[0], (double)utrim.polynomial_values[1], (double)utrim.polynomial_values[2],
-		         (double)utrim.polynomial_values[3], (double)utrim.polynomial_values[4], (double)utrim.polynomial_values[5],
+		         (double)_utrim_lp[0], (double)_utrim_lp[1], (double)_utrim_lp[2],
+		         (double)_utrim_lp[3], (double)_utrim_lp[4], (double)_utrim_lp[5],
 		         (double)vxy_mag, data_valid ? "true":"false");
 		last_log = now;
 	}
@@ -311,12 +343,14 @@ int TrimSelector::print_usage(const char *reason)
 	PRINT_MODULE_DESCRIPTION(
 		R"DESCR_STR(
 ### 描述
-Trim Selector 模块发布 utrim（名义配平）和 theta_trim，并加入“起飞/降落斜坡（ramp）”。
+Trim Selector 模块发布 utrim（名义配平）和 theta_trim，并加入"起飞/降落斜坡（ramp）"。
 - 地面：s≈0，utrim≈0，不会 arm 就起飞
 - 起飞（自动/手动触发）：s 从 0 平滑到 1
 - 降落：s 从 1 平滑到 TS_S_LAND（或 0）
 
 utrim 内容为 [f1 f2 f3 θ1 θ2 θ3]，单位分别为 [N] 与 [deg]。
+
+低通滤波：对发布的 utrim 消息应用 0.5Hz 一阶低通滤波，运行频率 10Hz。
 )DESCR_STR");
 
 	PRINT_MODULE_USAGE_NAME("trim_selector", "controller");

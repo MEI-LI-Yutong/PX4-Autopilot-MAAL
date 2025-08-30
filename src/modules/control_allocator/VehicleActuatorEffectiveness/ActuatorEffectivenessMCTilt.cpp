@@ -272,11 +272,9 @@ void ActuatorEffectivenessMCTilt::applyCollectiveTilt(ActuatorVector &actuator_s
 			continue;
 		}
 
-		// Constrain angle to servo limits
-		const float constrained_angle = math::constrain(_collective_tilt_angle, min_angle, max_angle);
-
-		// Normalize to [-1, 1] servo space
-		float collective_normalized = 2.0f * (constrained_angle - min_angle) / (max_angle - min_angle) - 1.0f;
+		// 直接将增量角度归一化（相对于舵机范围的一半）
+		// _collective_tilt_angle 是相对于无倾转状态（中位）的增量角度
+		float collective_normalized = _collective_tilt_angle / ((max_angle - min_angle) / 2.0f);
 		collective_normalized = math::constrain(collective_normalized, -1.0f, 1.0f);
 
 		// Calculate available margins around yaw base value (yaw priority allocation)

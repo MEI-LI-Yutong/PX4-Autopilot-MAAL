@@ -50,27 +50,30 @@ namespace ControlMath
 // 	att_sp.thrust_body[2] = -thr_sp.length();
 // }
 
-void thrustToAttitude(const Vector3f &thr_sp, const float yaw_sp, const float pitch_sp, vehicle_attitude_setpoint_s &att_sp, const float dt)
+void thrustToAttitude(const Vector3f &thr_sp, const float yaw_sp, const float pitch_sp, vehicle_attitude_setpoint_s &att_sp, const float dt, float &tilt_prev)
 {
-	bodyzToAttitude(-thr_sp, yaw_sp, pitch_sp, att_sp);
+	float roll_sp = bodyzToAttitude(-thr_sp, yaw_sp, pitch_sp, att_sp);
 
 	// 从姿态四元数中重构旋转矩阵
 	Quatf q_sp(att_sp.q_d[0], att_sp.q_d[1], att_sp.q_d[2], att_sp.q_d[3]);
 	Dcmf R_sp(q_sp);
 
+	// 使用从bodyzToAttitude函数中计算的roll_sp调整thr_sp(2)
+	Vector3f thr_sp_adjusted = thr_sp;
+	thr_sp_adjusted(2) = thr_sp(2) / cosf(roll_sp);
+
 	// 将世界坐标系的推力转换到机体坐标系
-	const Vector3f thrust_body = R_sp.transpose() * thr_sp;
+	const Vector3f thrust_body = R_sp.transpose() * thr_sp_adjusted;
 	float tilt_extra_angle = atan2f(thrust_body(0), fabsf(thrust_body(2)));
 	tilt_extra_angle = math::constrain(tilt_extra_angle, -M_PI_F/6.0f, M_PI_F/6.0f);
 
 	// Apply rate limit: max 180°/s (π rad/s)
-	static float tilt_extra_angle_prev = 0.0f;
 	const float tilt_rate_max = M_PI_F; // π rad/s = 180°/s
 	const float tilt_change_max = tilt_rate_max * dt;
-	const float tilt_change = tilt_extra_angle - tilt_extra_angle_prev;
+	const float tilt_change = tilt_extra_angle - tilt_prev;
 	const float tilt_change_limited = math::constrain(tilt_change, -tilt_change_max, tilt_change_max);
-	tilt_extra_angle = tilt_extra_angle_prev + tilt_change_limited;
-	tilt_extra_angle_prev = tilt_extra_angle;
+	tilt_extra_angle = tilt_prev + tilt_change_limited;
+	tilt_prev = tilt_extra_angle;
 
 	// float T_total = fabsf(thrust_body(2)) / cosf(tilt_extra_angle);
 	float T_total = thrust_body.length();
@@ -144,7 +147,7 @@ void limitTilt(Vector3f &body_unit, const Vector3f &world_unit, const float max_
 // 	q_sp.copyTo(att_sp.q_d);
 // }
 
-void bodyzToAttitude(Vector3f body_z_des, const float yaw_sp, const float pitch_sp, vehicle_attitude_setpoint_s &att_sp)
+float bodyzToAttitude(Vector3f body_z_des, const float yaw_sp, const float pitch_sp, vehicle_attitude_setpoint_s &att_sp)
 {
 	// zero vector, no direction, set safe level value
 	if (body_z_des.norm_squared() < FLT_EPSILON) {
@@ -161,7 +164,7 @@ void bodyzToAttitude(Vector3f body_z_des, const float yaw_sp, const float pitch_
 	Vector3f d_local = R_yaw_pitch.transpose() * body_z_des;
 	float roll_sp = atan2f(-d_local(1), d_local(2));
 	// roll_sp = matrix::wrap_pi(roll_sp);
-	roll_sp = math::constrain(roll_sp, -M_PI_F/6.0f, M_PI_F/6.0f);
+	roll_sp = math::constrain(roll_sp, -20.0f * M_PI_F / 180.0f, 20.0f * M_PI_F / 180.0f);
 
 	// 构建最终的旋转矩阵
 	Dcmf R_sp(Eulerf(roll_sp, pitch_sp, yaw_sp));
@@ -169,6 +172,8 @@ void bodyzToAttitude(Vector3f body_z_des, const float yaw_sp, const float pitch_
 	// copy quaternion setpoint to attitude setpoint topic
 	const Quatf q_sp{R_sp};
 	q_sp.copyTo(att_sp.q_d);
+
+	return roll_sp;
 }
 
 Vector2f constrainXY(const Vector2f &v0, const Vector2f &v1, const float &max)
