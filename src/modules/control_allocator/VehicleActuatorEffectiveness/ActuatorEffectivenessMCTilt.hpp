@@ -38,6 +38,7 @@
 #include "ActuatorEffectivenessTilts.hpp"
 #include <uORB/Subscription.hpp>
 #include <uORB/topics/vehicle_thrust_setpoint.h>
+#include <uORB/topics/utrim.h>
 #include <drivers/drv_hrt.h>
 
 class ActuatorEffectivenessMCTilt : public ModuleParams, public ActuatorEffectiveness
@@ -66,19 +67,25 @@ public:
 
 	void getUnallocatedControl(int matrix_index, control_allocator_status_s &status) override;
 
+	// 动态更新标志（供 ControlAllocator 跳过 100ms 限制）
+	bool dynamicUpdatePending() const override { return _dynamic_update_pending; }
+
+	// 供 ControlAllocator 定期调用以检查 utrim 更新
+	void checkForDynamicUpdates();
+
 protected:
-	ActuatorVector _tilt_offsets;
 	ActuatorEffectivenessRotors _mc_rotors;
 	ActuatorEffectivenessTilts _tilts;
+	ActuatorVector _tilt_offsets;
 	int _first_tilt_idx{0};
 
 	struct YawTiltSaturationFlags {
-		bool tilt_yaw_pos;
-		bool tilt_yaw_neg;
+		bool tilt_yaw_pos{false};
+		bool tilt_yaw_neg{false};
 	};
 
 	YawTiltSaturationFlags _yaw_tilt_saturation_flags{};
-	
+
 	// Collective tilt control - rate limited state machine
 	enum class RampState {
 		NONE = 0,
@@ -86,24 +93,36 @@ protected:
 	};
 
 	uORB::Subscription _vt_setpoint_sub{ORB_ID(vehicle_thrust_setpoint)};
-	
+
 	// Current collective tilt state
 	float _collective_tilt_angle{0.f};		// Current angle in radians
 	float _collective_tilt_target{0.f};		// Target angle in radians
 	bool _collective_tilt_valid{false};		// Whether incoming command is valid
 	bool _collective_was_clipped{false};		// Whether collective was clipped this frame
-	
-	// State machine variables  
+
+	// State machine variables
 	RampState _ramp_state{RampState::NONE};		// Current ramp state
 	hrt_abstime _last_valid_command_time{0};	// Last time we received valid command
 	hrt_abstime _last_update_time{0};		// Last time updateSetpoint was called
-	
+
 	// Rate limiting constants
 	static constexpr float COLLECTIVE_TILT_RATE_MAX_RAD_S = 1.2f;	   // Normal rate limit: 1.2 rad/s
 	static constexpr float COLLECTIVE_TILT_RATE_RETURN_RAD_S = 1.5f;   // Return-to-zero rate: 1.5 rad/s
 	static constexpr hrt_abstime COLLECTIVE_TIMEOUT_US = 200000;	   // 200ms timeout
 
+	// utrim & dynamic axis support for Fx thrust
+	uORB::Subscription _utrim_sub{ORB_ID(utrim)};
+	bool _dynamic_update_pending{false};
+	hrt_abstime _last_dynamic_update{0};
+	static constexpr hrt_abstime MIN_DYNAMIC_INTERVAL_US = 30000; // 30ms 节流
+	float _last_collective_norm{NAN};
+	bool _config_phase{true}; // 首次 CONFIGURATION_UPDATE 后保持一次竖直轴向
+
 private:
+	// 新增私有成员
+	utrim_s _last_utrim{};   // 缓存最近一次 utrim
+	bool    _have_utrim{false};
+
 	/**
 	 * Update collective tilt angle from vehicle thrust setpoint and handle state machine
 	 */
@@ -137,4 +156,22 @@ private:
 	void applyCollectiveTilt(ActuatorVector &actuator_sp, const float yaw_only_values[], int tilt_count,
 		const matrix::Vector<float, NUM_ACTUATORS> &actuator_min,
 		const matrix::Vector<float, NUM_ACTUATORS> &actuator_max);
+
+	/**
+	 * Handle utrim message and update collective norm for dynamic axis updates
+	 * @return true if utrim was processed and may trigger update
+	 */
+	bool handleUtrimMessage();
+
+	/**
+	 * Update rotor axis configuration from collective norm value
+	 * @param collective_norm normalized collective tilt value [-1,1]
+	 */
+	void updateRotorAxisFromCollective(float collective_norm);
+
+	/**
+	 * Build actuator trim and control trim vectors from utrim data
+	 * @param configuration effectiveness configuration to modify
+	 */
+	void buildActuatorTrimAndControlTrim(Configuration &configuration);
 };

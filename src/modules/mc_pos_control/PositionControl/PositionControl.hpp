@@ -44,6 +44,8 @@
 #include <uORB/topics/trajectory_setpoint.h>
 #include <uORB/topics/vehicle_attitude_setpoint.h>
 #include <uORB/topics/vehicle_local_position_setpoint.h>
+#include <uORB/topics/vehicle_thrust_setpoint.h>
+#include <uORB/Publication.hpp>
 
 struct PositionControlStates {
 	matrix::Vector3f position;

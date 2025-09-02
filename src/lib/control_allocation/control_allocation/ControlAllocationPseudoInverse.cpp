@@ -44,10 +44,11 @@
 void
 ControlAllocationPseudoInverse::setEffectivenessMatrix(
 	const matrix::Matrix<float, ControlAllocation::NUM_AXES, ControlAllocation::NUM_ACTUATORS> &effectiveness,
-	const ActuatorVector &actuator_trim, const ActuatorVector &linearization_point, int num_actuators,
+	const ActuatorVector &actuator_trim, const ActuatorVector &linearization_point,
+	const matrix::Vector<float, NUM_AXES> &control_trim, int num_actuators,
 	bool update_normalization_scale)
 {
-	ControlAllocation::setEffectivenessMatrix(effectiveness, actuator_trim, linearization_point, num_actuators,
+	ControlAllocation::setEffectivenessMatrix(effectiveness, actuator_trim, linearization_point, control_trim, num_actuators,
 			update_normalization_scale);
 	_mix_update_needed = true;
 	_normalization_needs_update = update_normalization_scale;

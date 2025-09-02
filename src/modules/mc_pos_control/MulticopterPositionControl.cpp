@@ -608,9 +608,9 @@ void MulticopterPositionControl::Run()
 			local_pos_sp.timestamp = hrt_absolute_time();
 			_local_pos_sp_pub.publish(local_pos_sp);
 
-			// Publish attitude setpoint output
+			// Publish attitude setpoint output using decoupled thrust-to-attitude logic
 			vehicle_attitude_setpoint_s attitude_setpoint{};
-			_control.getAttitudeSetpoint(attitude_setpoint, 0.0f, dt);
+			_control.getAttitudeSetpoint(attitude_setpoint, _pitch_sp, dt);
 			attitude_setpoint.timestamp = hrt_absolute_time();
 			_vehicle_attitude_setpoint_pub.publish(attitude_setpoint);
 

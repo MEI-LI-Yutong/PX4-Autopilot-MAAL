@@ -42,6 +42,8 @@
 
 #include <matrix/matrix/math.hpp>
 #include <uORB/topics/vehicle_attitude_setpoint.h>
+#include <uORB/topics/vehicle_thrust_setpoint.h>
+#include <uORB/Publication.hpp>
 
 namespace ControlMath
 {
@@ -55,6 +57,28 @@ namespace ControlMath
  * @param tilt_prev reference to previous tilt angle for rate limiting
  */
 void thrustToAttitude(const matrix::Vector3f &thr_sp, const float yaw_sp, const float pitch_sp, vehicle_attitude_setpoint_s &att_sp, const float dt, float &tilt_prev);
+
+/**
+ * Decoupled thrust-to-attitude: generates attitude from (Fy, Fz) only, 
+ * and publishes 3D body thrust to vehicle_thrust_setpoint.
+ * Fx is NOT encoded in attitude - it will be handled by control allocator.
+ * This is the new decoupled version that replaces the old thrustToAttitude logic.
+ * 
+ * @param thr_sp 3D thrust vector in world NED frame [N]
+ * @param yaw_sp desired yaw setpoint [rad]
+ * @param pitch_sp fixed pitch angle (from trim selector) [rad] 
+ * @param att_sp attitude setpoint to fill (no tilt_extra_angle)
+ * @param dt time step for rate limiting
+ * @param tilt_prev reference to previous tilt angle for rate limiting
+ * @param thrust_pub publisher for vehicle_thrust_setpoint (optional, can be nullptr)
+ */
+void thrustToAttitudeDecoupled(const matrix::Vector3f &thr_sp, 
+                               const float yaw_sp, 
+                               const float pitch_sp, 
+                               vehicle_attitude_setpoint_s &att_sp, 
+                               const float dt, 
+                               float &tilt_prev,
+                               uORB::Publication<vehicle_thrust_setpoint_s> *thrust_pub = nullptr);
 
 /**
  * Limits the tilt angle between two unit vectors
@@ -120,4 +144,26 @@ void addIfNotNanVector3f(matrix::Vector3f &setpoint, const matrix::Vector3f &add
  * @param vector possibly containing NAN elements
  */
 void setZeroIfNanVector3f(matrix::Vector3f &vector);
+
+/**
+ * Decoupled thrust-to-attitude: generates attitude from (Fy, Fz) only, 
+ * and converts 3D world thrust to body thrust for direct control allocation.
+ * Fx is NOT encoded in attitude - it will be handled by control allocator.
+ * 
+ * @param F_world 3D thrust vector in world NED frame [N]
+ * @param yaw_sp desired yaw setpoint [rad]
+ * @param pitch_fixed fixed pitch angle (from trim selector) [rad] 
+ * @param fy_for_roll Fy component used for roll calculation (typically 0) [N]
+ * @param roll_limit_rad maximum allowed roll angle [rad]
+ * @param att_sp attitude setpoint to fill (no tilt_extra_angle)
+ * @param F_body_out output body-frame thrust vector [N]
+ * @return true if calculation successful
+ */
+bool thrustToAttitudeDecoupled(const matrix::Vector3f &F_world,
+                               float yaw_sp,
+                               float pitch_fixed,
+                               float fy_for_roll,
+                               float roll_limit_rad,
+                               vehicle_attitude_setpoint_s &att_sp,
+                               matrix::Vector3f &F_body_out);
 }

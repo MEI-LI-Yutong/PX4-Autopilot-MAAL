@@ -54,9 +54,10 @@ public:
 	virtual ~ControlAllocationPseudoInverse() = default;
 
 	void allocate() override;
-	void setEffectivenessMatrix(const matrix::Matrix<float, NUM_AXES, NUM_ACTUATORS> &effectiveness,
-				    const ActuatorVector &actuator_trim, const ActuatorVector &linearization_point, int num_actuators,
-				    bool update_normalization_scale) override;
+		void setEffectivenessMatrix(const matrix::Matrix<float, NUM_AXES, NUM_ACTUATORS> &effectiveness,
+			    const ActuatorVector &actuator_trim, const ActuatorVector &linearization_point,
+			    const matrix::Vector<float, NUM_AXES> &control_trim, int num_actuators,
+			    bool update_normalization_scale) override;
 	void setMetricAllocation(bool metric_allocation) { _metric_allocation = metric_allocation; }
 
 protected:

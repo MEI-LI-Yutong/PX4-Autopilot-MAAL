@@ -110,10 +110,16 @@ public:
 	/**
 	 * Set the control effectiveness matrix
 	 *
-	 * @param B Effectiveness matrix
+	 * @param effectiveness Effectiveness matrix
+	 * @param actuator_trim Neutral actuator values (baseline)
+	 * @param linearization_point Linearization point for the matrix
+	 * @param control_trim Baseline control values (E * actuator_trim)
+	 * @param num_actuators Number of actuators
+	 * @param update_normalization_scale Whether to update normalization scaling
 	 */
 	virtual void setEffectivenessMatrix(const matrix::Matrix<float, NUM_AXES, NUM_ACTUATORS> &effectiveness,
-					    const ActuatorVector &actuator_trim, const ActuatorVector &linearization_point, int num_actuators,
+					    const ActuatorVector &actuator_trim, const ActuatorVector &linearization_point,
+					    const matrix::Vector<float, NUM_AXES> &control_trim, int num_actuators,
 					    bool update_normalization_scale);
 
 	/**
@@ -233,14 +239,15 @@ protected:
 
 	matrix::Matrix<float, NUM_AXES, NUM_ACTUATORS> _effectiveness;  ///< Effectiveness matrix
 	matrix::Vector<float, NUM_AXES> _control_allocation_scale;  	///< Scaling applied during allocation
-	matrix::Vector<float, NUM_ACTUATORS> _actuator_trim; 	///< Neutral actuator values
+	matrix::Vector<float, NUM_ACTUATORS> _actuator_trim; 	///< Neutral actuator values (baseline)
+	matrix::Vector<float, NUM_ACTUATORS> _linearization_point; 	///< Linearization point for the matrix
 	matrix::Vector<float, NUM_ACTUATORS> _actuator_min; 	///< Minimum actuator values
 	matrix::Vector<float, NUM_ACTUATORS> _actuator_max; 	///< Maximum actuator values
 	matrix::Vector<float, NUM_ACTUATORS> _actuator_slew_rate_limit; 	///< Slew rate limit
 	matrix::Vector<float, NUM_ACTUATORS> _prev_actuator_sp;  	///< Previous actuator setpoint
 	matrix::Vector<float, NUM_ACTUATORS> _actuator_sp;  	///< Actuator setpoint
 	matrix::Vector<float, NUM_AXES> _control_sp;   		///< Control setpoint
-	matrix::Vector<float, NUM_AXES> _control_trim; 		///< Control at trim actuator values
+	matrix::Vector<float, NUM_AXES> _control_trim; 		///< Baseline control values (E * actuator_trim)
 	int _num_actuators{0};
 	bool _normalize_rpy{false};				///< if true, normalize roll, pitch and yaw columns
 	bool _had_actuator_failure{false};

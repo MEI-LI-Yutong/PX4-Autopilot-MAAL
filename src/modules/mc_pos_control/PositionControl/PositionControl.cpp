@@ -41,6 +41,7 @@
 #include <mathlib/mathlib.h>
 #include <px4_platform_common/defines.h>
 #include <geo/geo.h>
+#include <uORB/topics/vehicle_thrust_setpoint.h>
 
 using namespace matrix;
 
@@ -265,6 +266,7 @@ void PositionControl::getLocalPositionSetpoint(vehicle_local_position_setpoint_s
 
 void PositionControl::getAttitudeSetpoint(vehicle_attitude_setpoint_s &attitude_setpoint, float pitch_sp, float dt) const
 {
+	// Use new decoupled logic: Fx handled by geometry, attitude only from (Fy=0, Fz)
 	ControlMath::thrustToAttitude(_thr_sp, _yaw_sp, pitch_sp, attitude_setpoint, dt, _tilt_prev);
 	attitude_setpoint.yaw_sp_move_rate = _yawspeed_sp;
 }

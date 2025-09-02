@@ -39,6 +39,7 @@
 #include <px4_platform_common/defines.h>
 #include <float.h>
 #include <mathlib/mathlib.h>
+#include <drivers/drv_hrt.h>
 
 using namespace matrix;
 
@@ -52,7 +53,7 @@ namespace ControlMath
 
 void thrustToAttitude(const Vector3f &thr_sp, const float yaw_sp, const float pitch_sp, vehicle_attitude_setpoint_s &att_sp, const float dt, float &tilt_prev)
 {
-	float roll_sp = bodyzToAttitude(-thr_sp, yaw_sp, pitch_sp, att_sp);
+	bodyzToAttitude(-thr_sp, yaw_sp, pitch_sp, att_sp);
 
 	// 从姿态四元数中重构旋转矩阵
 	Quatf q_sp(att_sp.q_d[0], att_sp.q_d[1], att_sp.q_d[2], att_sp.q_d[3]);
@@ -60,7 +61,6 @@ void thrustToAttitude(const Vector3f &thr_sp, const float yaw_sp, const float pi
 
 	// 使用从bodyzToAttitude函数中计算的roll_sp调整thr_sp(2)
 	Vector3f thr_sp_adjusted = thr_sp;
-	thr_sp_adjusted(2) = thr_sp(2) / cosf(roll_sp);
 
 	// 将世界坐标系的推力转换到机体坐标系
 	const Vector3f thrust_body = R_sp.transpose() * thr_sp_adjusted;
@@ -76,11 +76,11 @@ void thrustToAttitude(const Vector3f &thr_sp, const float yaw_sp, const float pi
 	tilt_prev = tilt_extra_angle;
 
 	// float T_total = fabsf(thrust_body(2)) / cosf(tilt_extra_angle);
-	float T_total = thrust_body.length();
+	// float T_total = thrust_body.length();
 	// 设置机体坐标系推力
-	// att_sp.thrust_body[0] = thrust_body(0);
+	att_sp.thrust_body[0] = thrust_body(0);
 	// att_sp.thrust_body[1] = thrust_body(1);
-	att_sp.thrust_body[2] = -T_total;
+	att_sp.thrust_body[2] = thrust_body(2);
 	att_sp.tilt_extra_angle = tilt_extra_angle;
 }
 
@@ -313,6 +313,83 @@ void setZeroIfNanVector3f(Vector3f &vector)
 {
 	// Adding zero vector overwrites elements that are NaN with zero
 	addIfNotNanVector3f(vector, Vector3f());
+}
+
+bool thrustToAttitudeDecoupled(const Vector3f &F_world,
+                               float yaw_sp,
+                               float pitch_fixed,
+                               float fy_for_roll,
+                               float roll_limit_rad,
+                               vehicle_attitude_setpoint_s &att_sp,
+                               Vector3f &F_body_out)
+{
+	// 1. Create thrust vector for attitude calculation using only (0, Fy, Fz)
+	Vector3f thr_for_att(0.f, fy_for_roll, F_world(2));
+
+	if (thr_for_att.norm_squared() < 1e-6f) {
+		thr_for_att = Vector3f(0.f, 0.f, 1.f); // avoid zero vector
+	}
+
+	// 2. Desired body Z-axis direction (world frame): body_z_des_world = -normalize(thr_for_att)
+	Vector3f body_z_des_world = -thr_for_att.normalized();
+
+	// 3. Build yaw + pitch fixed attitude matrix
+	Dcmf R_yaw_pitch(Eulerf(0.f, pitch_fixed, yaw_sp));
+
+	// 4. Transform to "yaw+pitch pre-aligned" coordinate system to solve for roll
+	Vector3f d_local = R_yaw_pitch.transpose() * body_z_des_world;
+
+	// 5. Roll calculation: rotate around body X-axis to align Z-axis with body_z_des_world
+	float roll_sp = atan2f(-d_local(1), d_local(2));
+	if (PX4_ISFINITE(roll_limit_rad) && roll_limit_rad > 0.f) {
+		roll_sp = math::constrain(roll_sp, -roll_limit_rad, roll_limit_rad);
+	}
+
+	// 6. Final attitude matrix
+	Dcmf R_sp(Eulerf(roll_sp, pitch_fixed, yaw_sp));
+	Quatf q_sp{R_sp};
+	q_sp.copyTo(att_sp.q_d);
+
+	// 7. Fill attitude setpoint structure
+	att_sp.yaw_sp_move_rate = 0.f; // will be set by upper layer
+	att_sp.thrust_body[0] = NAN;   // not used (use vehicle_thrust_setpoint instead)
+	att_sp.thrust_body[1] = NAN;
+	att_sp.thrust_body[2] = NAN;
+	att_sp.tilt_extra_angle = 0.f;
+	att_sp.reset_integral = false;
+	att_sp.fw_control_yaw_wheel = false;
+
+	// 8. Transform world thrust to body frame: F_body = R_sp^T * F_world
+	F_body_out = R_sp.transpose() * F_world;
+
+	return true;
+}
+
+void thrustToAttitudeDecoupled(const Vector3f &thr_sp,
+                               const float yaw_sp,
+                               const float pitch_sp,
+                               vehicle_attitude_setpoint_s &att_sp,
+                               const float dt,
+                               float &tilt_prev,
+                               uORB::Publication<vehicle_thrust_setpoint_s> *thrust_pub)
+{
+	// Use decoupled approach: Fx handled by geometry, attitude only uses (Fy=0, Fz)
+	float fy_for_roll = 0.f; // First phase: no lateral control
+	float roll_limit = math::radians(20.f); // Roll limit
+	Vector3f F_body;
+
+	// Call the decoupled algorithm
+	thrustToAttitudeDecoupled(thr_sp, yaw_sp, pitch_sp, fy_for_roll, roll_limit, att_sp, F_body);
+
+	// Publish 3D body thrust if publisher provided
+	if (thrust_pub != nullptr) {
+		vehicle_thrust_setpoint_s thrust_setpoint{};
+		thrust_setpoint.timestamp = hrt_absolute_time();
+		thrust_setpoint.xyz[0] = F_body(0);
+		thrust_setpoint.xyz[1] = F_body(1);
+		thrust_setpoint.xyz[2] = F_body(2);
+		thrust_pub->publish(thrust_setpoint);
+	}
 }
 
 } // ControlMath

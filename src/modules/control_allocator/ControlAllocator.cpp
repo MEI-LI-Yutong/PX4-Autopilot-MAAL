@@ -60,6 +60,7 @@ ControlAllocator::ControlAllocator() :
 	_actuator_motors_pub.advertise();
 	_actuator_servos_pub.advertise();
 	_actuator_servos_trim_pub.advertise();
+	_control_allocator_debug_pub.advertise();
 
 	for (int i = 0; i < MAX_NUM_MOTORS; ++i) {
 		char buffer[17];
@@ -373,30 +374,12 @@ ControlAllocator::Run()
 		}
 	}
 
-	// Check for utrim updates - commented out since we get tilt_extra_angle from mc_rate_control via vehicle_thrust_setpoint
-	// utrim_s utrim_data;
-	// if (_utrim_sub.update(&utrim_data)) {
-	//	// _utrim_data = utrim_data;
-	//	// _utrim_valid = utrim_data.valid;
-	//	
-	//	// Extract tilt_angle from utrim and feed into existing tilt_extra_angle flow
-	//	if (utrim_data.valid && PX4_ISFINITE(utrim_data.tilt_angle)) {
-	//		float new_tilt_angle = utrim_data.tilt_angle;
-	//		if (!PX4_ISFINITE(_tilt_extra_angle) || fabsf(new_tilt_angle - _tilt_extra_angle) > 0.002f) {
-	//			_tilt_extra_angle = new_tilt_angle;
-	//			_last_tilt_extra_angle = new_tilt_angle;
-	//			// Trigger control allocation update for tilt angle change
-	//			// (same logic as vehicle_thrust_setpoint.tilt_extra_angle)
-	//		}
-	//	} else {
-	//		_tilt_extra_angle = 0.0f;
-	//	}
-	//	
-	//	// if (_utrim_valid) {
-	//	//	// Update actuator effectiveness matrix when new utrim data arrives
-	//	//	update_effectiveness_matrix_if_needed(EffectivenessUpdateReason::MOTOR_ACTIVATION_UPDATE);
-	//	// }
-	// }
+	// Check for utrim updates
+	utrim_s utrim_data;
+	if (_utrim_sub.update(&utrim_data)) {
+		_utrim_data = utrim_data;
+		_utrim_valid = utrim_data.valid;
+	}
 
 	// Guard against too small (< 0.2ms) and too large (> 20ms) dt's.
 	const hrt_abstime now = hrt_absolute_time();
@@ -417,7 +400,7 @@ ControlAllocator::Run()
 
 	if (_vehicle_thrust_setpoint_sub.update(&vehicle_thrust_setpoint)) {
 		_thrust_sp = matrix::Vector3f(vehicle_thrust_setpoint.xyz);
-		
+
 		// Check for tilt angle changes and trigger update if needed
 		if (PX4_ISFINITE(vehicle_thrust_setpoint.tilt_extra_angle)) {
 			float new_angle = vehicle_thrust_setpoint.tilt_extra_angle;
@@ -435,6 +418,9 @@ ControlAllocator::Run()
 		_last_run = now;
 
 		check_for_motor_failures();
+
+		// Check for dynamic updates before effectiveness matrix update
+		_actuator_effectiveness->checkForDynamicUpdates();
 
 		update_effectiveness_matrix_if_needed(EffectivenessUpdateReason::NO_EXTERNAL_UPDATE);
 
@@ -487,6 +473,9 @@ ControlAllocator::Run()
 	// Publish actuator setpoint and allocator status
 	publish_actuator_controls();
 
+	// Publish debug information (utrim and du)
+	publish_control_allocator_debug();
+
 	// Publish status at limited rate, as it's somewhat expensive and we use it for slower dynamics
 	// (i.e. anti-integrator windup)
 	if (now - _last_status_pub >= 5_ms) {
@@ -507,8 +496,14 @@ ControlAllocator::update_effectiveness_matrix_if_needed(EffectivenessUpdateReaso
 {
 	ActuatorEffectiveness::Configuration config{};
 
+	// Check for dynamic updates before rate limiting
+	if (reason == EffectivenessUpdateReason::NO_EXTERNAL_UPDATE) {
+		_actuator_effectiveness->checkForDynamicUpdates();
+	}
+
 	if (reason == EffectivenessUpdateReason::NO_EXTERNAL_UPDATE
-	    && hrt_elapsed_time(&_last_effectiveness_update) < 100_ms) { // rate-limit updates
+	    && hrt_elapsed_time(&_last_effectiveness_update) < 100_ms
+	    && !_actuator_effectiveness->dynamicUpdatePending()) { // rate-limit updates
 		return;
 	}
 
@@ -624,10 +619,10 @@ ControlAllocator::update_effectiveness_matrix_if_needed(EffectivenessUpdateReaso
 				}
 			}
 
-			// Assign control effectiveness matrix
+						// Assign control effectiveness matrix
 			int total_num_actuators = config.num_actuators_matrix[i];
 			_control_allocation[i]->setEffectivenessMatrix(config.effectiveness_matrices[i], config.trim[i],
-					config.linearization_point[i], total_num_actuators, reason == EffectivenessUpdateReason::CONFIGURATION_UPDATE);
+							config.linearization_point[i], config.control_trim[i], total_num_actuators, reason == EffectivenessUpdateReason::CONFIGURATION_UPDATE);
 		}
 
 		trims.timestamp = hrt_absolute_time();
@@ -910,7 +905,7 @@ ControlAllocator::applyUtrimCorrections(int matrix_index)
 {
 	// COMMENTED OUT: utrim corrections no longer applied to preserve yaw control authority
 	// and avoid conflicts with collective tilt control
-	
+
 	/*
 	if (!_utrim_valid || matrix_index < 0 || matrix_index >= _num_control_allocation) {
 		return;
@@ -918,11 +913,11 @@ ControlAllocator::applyUtrimCorrections(int matrix_index)
 
 	// Get current actuator setpoints
 	ActuatorVector &actuator_sp = _control_allocation[matrix_index]->_actuator_sp;
-	
+
 	// Apply utrim corrections based on the normalized values
 	// The utrim message contains normalized values for motors (index 0-2 for forces, 3-5 for tilts)
 	int actuator_idx = 0;
-	
+
 	// Apply corrections to motors (first _num_actuators[0] actuators)
 	for (int i = 0; i < _num_actuators[0] && i < 3 && actuator_idx < NUM_ACTUATORS; i++) {
 		if (_control_allocation_selection_indexes[actuator_idx] == matrix_index) {
@@ -933,8 +928,8 @@ ControlAllocator::applyUtrimCorrections(int matrix_index)
 		}
 		actuator_idx++;
 	}
-	
-	// Apply corrections to servos/tilts (next _num_actuators[1] actuators) 
+
+	// Apply corrections to servos/tilts (next _num_actuators[1] actuators)
 	for (int i = 0; i < _num_actuators[1] && i < 3 && actuator_idx < NUM_ACTUATORS; i++) {
 		if (_control_allocation_selection_indexes[actuator_idx] == matrix_index) {
 			// Apply tilt correction from utrim (normalized values 3-5 are tilt corrections)
@@ -945,6 +940,60 @@ ControlAllocator::applyUtrimCorrections(int matrix_index)
 		actuator_idx++;
 	}
 	*/
+}
+
+void
+ControlAllocator::publish_control_allocator_debug()
+{
+	control_allocator_debug_s debug{};
+	debug.timestamp = hrt_absolute_time();
+
+	// Fill utrim data
+	debug.utrim_valid = _utrim_valid;
+	if (_utrim_valid) {
+		debug.horizontal_velocity = _utrim_data.horizontal_velocity;
+
+		// Copy polynomial and normalized values
+		for (int i = 0; i < 6; i++) {
+			debug.polynomial_values[i] = _utrim_data.polynomial_values[i];
+			debug.normalized_values[i] = _utrim_data.normalized_values[i];
+		}
+	} else {
+		debug.horizontal_velocity = NAN;
+		for (int i = 0; i < 6; i++) {
+			debug.polynomial_values[i] = NAN;
+			debug.normalized_values[i] = NAN;
+		}
+	}
+
+	// Fill control setpoints
+	debug.torque_sp[0] = _torque_sp(0);
+	debug.torque_sp[1] = _torque_sp(1);
+	debug.torque_sp[2] = _torque_sp(2);
+	debug.thrust_sp[0] = _thrust_sp(0);
+	debug.thrust_sp[1] = _thrust_sp(1);
+	debug.thrust_sp[2] = _thrust_sp(2);
+
+	// Fill actuator setpoint data and calculate du
+	if (_num_control_allocation > 0) {
+		const matrix::Vector<float, NUM_ACTUATORS> &current_actuator_sp = _control_allocation[0]->getActuatorSetpoint();
+		const matrix::Vector<float, NUM_ACTUATORS> &previous_actuator_sp = _control_allocation[0]->_prev_actuator_sp;
+
+		for (int i = 0; i < NUM_ACTUATORS; i++) {
+			debug.actuator_sp_current[i] = current_actuator_sp(i);
+			debug.actuator_sp_previous[i] = previous_actuator_sp(i);
+			debug.actuator_du[i] = current_actuator_sp(i) - previous_actuator_sp(i);  // du = current - previous
+		}
+	} else {
+		// No control allocation available, fill with NaN
+		for (int i = 0; i < 16; i++) {
+			debug.actuator_sp_current[i] = NAN;
+			debug.actuator_sp_previous[i] = NAN;
+			debug.actuator_du[i] = NAN;
+		}
+	}
+
+	_control_allocator_debug_pub.publish(debug);
 }
 
 /**

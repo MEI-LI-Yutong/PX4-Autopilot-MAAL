@@ -51,16 +51,15 @@ ControlAllocation::ControlAllocation()
 void
 ControlAllocation::setEffectivenessMatrix(
 	const matrix::Matrix<float, ControlAllocation::NUM_AXES, ControlAllocation::NUM_ACTUATORS> &effectiveness,
-	const ActuatorVector &actuator_trim, const ActuatorVector &linearization_point, int num_actuators,
+	const ActuatorVector &actuator_trim, const ActuatorVector &linearization_point,
+	const matrix::Vector<float, NUM_AXES> &control_trim, int num_actuators,
 	bool update_normalization_scale)
 {
 	_effectiveness = effectiveness;
-	ActuatorVector linearization_point_clipped = linearization_point;
-	clipActuatorSetpoint(linearization_point_clipped);
-	_actuator_trim = actuator_trim + linearization_point_clipped;
-	clipActuatorSetpoint(_actuator_trim);
+	_actuator_trim = actuator_trim;
+	_linearization_point = linearization_point;
+	_control_trim = control_trim;
 	_num_actuators = num_actuators;
-	_control_trim = _effectiveness * linearization_point_clipped;
 }
 
 void

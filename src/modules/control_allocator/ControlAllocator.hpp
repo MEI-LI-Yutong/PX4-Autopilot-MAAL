@@ -72,6 +72,7 @@
 #include <uORB/topics/actuator_servos.h>
 #include <uORB/topics/actuator_servos_trim.h>
 #include <uORB/topics/control_allocator_status.h>
+#include <uORB/topics/control_allocator_debug.h>
 #include <uORB/topics/parameter_update.h>
 #include <uORB/topics/vehicle_control_mode.h>
 #include <uORB/topics/vehicle_torque_setpoint.h>
@@ -145,6 +146,8 @@ private:
 
 	void publish_actuator_controls();
 
+	void publish_control_allocator_debug();
+
 	void applyUtrimCorrections(int matrix_index);
 
 	AllocationMethod _allocation_method_id{AllocationMethod::NONE};
@@ -195,6 +198,7 @@ private:
 	uORB::Publication<actuator_motors_s>	_actuator_motors_pub{ORB_ID(actuator_motors)};
 	uORB::Publication<actuator_servos_s>	_actuator_servos_pub{ORB_ID(actuator_servos)};
 	uORB::Publication<actuator_servos_trim_s>	_actuator_servos_trim_pub{ORB_ID(actuator_servos_trim)};
+	uORB::Publication<control_allocator_debug_s>	_control_allocator_debug_pub{ORB_ID(control_allocator_debug)};
 
 	uORB::SubscriptionInterval _parameter_update_sub{ORB_ID(parameter_update), 1_s};
 

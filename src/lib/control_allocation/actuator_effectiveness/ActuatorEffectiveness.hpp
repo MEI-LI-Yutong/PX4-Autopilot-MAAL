@@ -118,6 +118,9 @@ public:
 
 		ActuatorVector linearization_point[MAX_NUM_MATRICES];
 
+		// New: per-matrix baseline control (E * actuator_trim)
+		matrix::Vector<float, NUM_AXES> control_trim[MAX_NUM_MATRICES];
+
 		int selected_matrix;
 
 		uint8_t matrix_selection_indexes[NUM_ACTUATORS * MAX_NUM_MATRICES];
@@ -210,6 +213,16 @@ public:
 	 * Can be implemented for every type separately. If not implemented then the effectivenes matrix is used instead.
 	 */
 	virtual void getUnallocatedControl(int matrix_index, control_allocator_status_s &status) {}
+
+	/**
+	 * Check if a dynamic update is pending that bypasses the normal rate limiting
+	 */
+	virtual bool dynamicUpdatePending() const { return false; }
+
+	/**
+	 * Check for dynamic updates (called by ControlAllocator before rate limiting check)
+	 */
+	virtual void checkForDynamicUpdates() {}
 
 	/**
 	 * Stops motors which are masked by stoppable_motors_mask and whose demanded thrust is zero
