@@ -78,7 +78,7 @@ protected:
 	};
 
 	YawTiltSaturationFlags _yaw_tilt_saturation_flags{};
-	
+
 	// Collective tilt control - rate limited state machine
 	enum class RampState {
 		NONE = 0,
@@ -86,18 +86,20 @@ protected:
 	};
 
 	uORB::Subscription _vt_setpoint_sub{ORB_ID(vehicle_thrust_setpoint)};
-	
+
 	// Current collective tilt state
 	float _collective_tilt_angle{0.f};		// Current angle in radians
 	float _collective_tilt_target{0.f};		// Target angle in radians
+	float _collective_tilt_base{0.f};		// Base angle (for incremental control)
 	bool _collective_tilt_valid{false};		// Whether incoming command is valid
 	bool _collective_was_clipped{false};		// Whether collective was clipped this frame
-	
-	// State machine variables  
+	bool _incremental_mode{true};			// Use incremental tilt control
+
+	// State machine variables
 	RampState _ramp_state{RampState::NONE};		// Current ramp state
 	hrt_abstime _last_valid_command_time{0};	// Last time we received valid command
 	hrt_abstime _last_update_time{0};		// Last time updateSetpoint was called
-	
+
 	// Rate limiting constants
 	static constexpr float COLLECTIVE_TILT_RATE_MAX_RAD_S = 1.2f;	   // Normal rate limit: 1.2 rad/s
 	static constexpr float COLLECTIVE_TILT_RATE_RETURN_RAD_S = 1.5f;   // Return-to-zero rate: 1.5 rad/s
@@ -137,4 +139,13 @@ private:
 	void applyCollectiveTilt(ActuatorVector &actuator_sp, const float yaw_only_values[], int tilt_count,
 		const matrix::Vector<float, NUM_ACTUATORS> &actuator_min,
 		const matrix::Vector<float, NUM_ACTUATORS> &actuator_max);
+
+	/**
+	 * Normalize angle to servo limits and convert to actuator space
+	 * @param angle_rad angle in radians
+	 * @param min_angle_rad minimum servo angle in radians
+	 * @param max_angle_rad maximum servo angle in radians
+	 * @return normalized actuator value [-1, 1]
+	 */
+	float normalizeAngleToActuator(float angle_rad, float min_angle_rad, float max_angle_rad) const;
 };

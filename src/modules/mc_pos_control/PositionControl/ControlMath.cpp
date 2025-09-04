@@ -72,8 +72,8 @@ void thrustToAttitude(const Vector3f &thr_sp, const float yaw_sp, const float pi
 	tilt_extra_angle = tilt_extra_angle_prev + tilt_change_limited;
 	tilt_extra_angle_prev = tilt_extra_angle;
 
-	// float T_total = fabsf(thrust_body(2)) / cosf(tilt_extra_angle);
-	float T_total = thrust_body.length();
+	float T_total = fabsf(thrust_body(2)) / cosf(tilt_extra_angle);
+	// float T_total = thrust_body.length();
 	// 设置机体坐标系推力
 	// att_sp.thrust_body[0] = thrust_body(0);
 	// att_sp.thrust_body[1] = thrust_body(1);
@@ -151,7 +151,7 @@ void bodyzToAttitude(Vector3f body_z_des, const float yaw_sp, const float pitch_
 		body_z_des(2) = 1.f;
 	}
 
-	body_z_des.normalize();
+	// body_z_des.normalize();
 
 	/* 根据 yaw_sp，pitch_sp，将世界坐标系的 thr_sp 旋转到机体坐标系 */
 	/* roll 先假设为 0，将力转换方向，得到机体坐标系的力期望 */

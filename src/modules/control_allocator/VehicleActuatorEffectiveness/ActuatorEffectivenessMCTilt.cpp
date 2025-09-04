@@ -140,7 +140,14 @@ void ActuatorEffectivenessMCTilt::updateCollectiveTiltAngle()
 	if (_vt_setpoint_sub.update(&vt)) {
 		if (vt.tilt_extra_angle_valid && PX4_ISFINITE(vt.tilt_extra_angle)) {
 			// 有效角度命令
-			_collective_tilt_target = vt.tilt_extra_angle;
+			if (_incremental_mode) {
+				// 增量模式：目标角度 = 基准角度 + 增量角度
+				_collective_tilt_target = _collective_tilt_base + vt.tilt_extra_angle;
+			} else {
+				// 绝对模式：直接设置目标角度
+				_collective_tilt_target = vt.tilt_extra_angle;
+			}
+
 			_collective_tilt_valid  = true;
 			_last_valid_command_time = now;
 
@@ -152,13 +159,13 @@ void ActuatorEffectivenessMCTilt::updateCollectiveTiltAngle()
 		} else if (!vt.tilt_extra_angle_valid) {
 			// 显式禁用：立即启动回零（若当前不为 0）
 			_collective_tilt_valid = false;
-			_collective_tilt_target = 0.f;
+			_collective_tilt_target = _collective_tilt_base; // 回到基准位置
 			_last_valid_command_time = now;
 
-			if (fabsf(_collective_tilt_angle) > 1e-3f) {
+			if (fabsf(_collective_tilt_angle - _collective_tilt_base) > 1e-3f) {
 				_ramp_state = RampState::RAMP_TO_ZERO;
 			} else {
-				_collective_tilt_angle = 0.f;
+				_collective_tilt_angle = _collective_tilt_base;
 				_ramp_state = RampState::NONE;
 			}
 		}
@@ -167,12 +174,12 @@ void ActuatorEffectivenessMCTilt::updateCollectiveTiltAngle()
 	// 超时：上一次有效命令后超过阈值，自动禁用并回零
 	if (_collective_tilt_valid && (now - _last_valid_command_time > COLLECTIVE_TIMEOUT_US)) {
 		_collective_tilt_valid = false;
-		_collective_tilt_target = 0.f;
+		_collective_tilt_target = _collective_tilt_base; // 回到基准位置
 
-		if (fabsf(_collective_tilt_angle) > 1e-3f) {
+		if (fabsf(_collective_tilt_angle - _collective_tilt_base) > 1e-3f) {
 			_ramp_state = RampState::RAMP_TO_ZERO;
 		} else {
-			_collective_tilt_angle = 0.f;
+			_collective_tilt_angle = _collective_tilt_base;
 			_ramp_state = RampState::NONE;
 		}
 	}
@@ -184,11 +191,12 @@ void ActuatorEffectivenessMCTilt::updateCollectiveTiltWithRateLimit(float dt)
 		return;
 	}
 
-	// Choose rate limit based on current state
+		// Choose rate limit based on current state
 	float rate_limit;
-	if (_ramp_state == RampState::RAMP_TO_ZERO || 
-	    (fabsf(_collective_tilt_target) < FLT_EPSILON && fabsf(_collective_tilt_angle) > FLT_EPSILON)) {
-		rate_limit = COLLECTIVE_TILT_RATE_RETURN_RAD_S; // Faster return to zero
+	if (_ramp_state == RampState::RAMP_TO_ZERO ||
+	    (fabsf(_collective_tilt_target - _collective_tilt_base) < FLT_EPSILON &&
+	     fabsf(_collective_tilt_angle - _collective_tilt_base) > FLT_EPSILON)) {
+		rate_limit = COLLECTIVE_TILT_RATE_RETURN_RAD_S; // Faster return to base
 	} else {
 		rate_limit = COLLECTIVE_TILT_RATE_MAX_RAD_S;    // Normal rate limit
 	}
@@ -197,12 +205,12 @@ void ActuatorEffectivenessMCTilt::updateCollectiveTiltWithRateLimit(float dt)
 	const float max_change = rate_limit * dt;
 	const float angle_error = _collective_tilt_target - _collective_tilt_angle;
 	const float angle_change = math::constrain(angle_error, -max_change, max_change);
-	
+
 	_collective_tilt_angle += angle_change;
 
-	// Check if ramping to zero is complete
-	if (_ramp_state == RampState::RAMP_TO_ZERO && fabsf(_collective_tilt_angle) < 0.01f) {
-		_collective_tilt_angle = 0.0f;
+	// Check if ramping to base is complete
+	if (_ramp_state == RampState::RAMP_TO_ZERO && fabsf(_collective_tilt_angle - _collective_tilt_base) < 0.01f) {
+		_collective_tilt_angle = _collective_tilt_base;
 		_collective_tilt_valid = false;
 		_ramp_state = RampState::NONE;
 	}
@@ -219,7 +227,7 @@ void ActuatorEffectivenessMCTilt::calculateYawSaturationFlags(const float yaw_on
 		const int actuator_idx = i + _first_tilt_idx;
 		const float yaw_torque = _tilts.getYawTorqueOfTilt(i);
 
-		// Custom yaw saturation logic: only declare yaw saturated if all tilts 
+		// Custom yaw saturation logic: only declare yaw saturated if all tilts
 		// are at the negative or positive yawing limit
 		if (yaw_torque > FLT_EPSILON) {
 			if (yaw_saturated_positive && yaw_only_values[i] < actuator_max(actuator_idx) - FLT_EPSILON) {
@@ -272,12 +280,8 @@ void ActuatorEffectivenessMCTilt::applyCollectiveTilt(ActuatorVector &actuator_s
 			continue;
 		}
 
-		// Constrain angle to servo limits
-		const float constrained_angle = math::constrain(_collective_tilt_angle, min_angle, max_angle);
-
-		// Normalize to [-1, 1] servo space
-		float collective_normalized = 2.0f * (constrained_angle - min_angle) / (max_angle - min_angle) - 1.0f;
-		collective_normalized = math::constrain(collective_normalized, -1.0f, 1.0f);
+		// Use the new normalization function
+		float collective_normalized = normalizeAngleToActuator(_collective_tilt_angle, min_angle, max_angle);
 
 		// Calculate available margins around yaw base value (yaw priority allocation)
 		const float yaw_base = yaw_only_values[i];
@@ -295,7 +299,24 @@ void ActuatorEffectivenessMCTilt::applyCollectiveTilt(ActuatorVector &actuator_s
 		actuator_sp(actuator_idx) = yaw_base + collective_clamped;
 
 		// Final safety clamp
-		actuator_sp(actuator_idx) = math::constrain(actuator_sp(actuator_idx), 
+		actuator_sp(actuator_idx) = math::constrain(actuator_sp(actuator_idx),
 			actuator_min(actuator_idx), actuator_max(actuator_idx));
 	}
+}
+
+float ActuatorEffectivenessMCTilt::normalizeAngleToActuator(float angle_rad, float min_angle_rad, float max_angle_rad) const
+{
+	// Avoid division by zero
+	if (fabsf(max_angle_rad - min_angle_rad) < FLT_EPSILON) {
+		return 0.0f;
+	}
+
+	// Constrain angle to servo limits
+	const float constrained_angle = math::constrain(angle_rad, min_angle_rad, max_angle_rad);
+
+	// Normalize to [-1, 1] actuator space
+	float normalized = 2.0f * (constrained_angle - min_angle_rad) / (max_angle_rad - min_angle_rad) - 1.0f;
+
+	// Final constraint to ensure [-1, 1] range
+	return math::constrain(normalized, -1.0f, 1.0f);
 }
