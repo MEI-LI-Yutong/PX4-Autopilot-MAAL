@@ -72,12 +72,12 @@ void thrustToAttitude(const Vector3f &thr_sp, const float yaw_sp, const float pi
 	tilt_extra_angle = tilt_extra_angle_prev + tilt_change_limited;
 	tilt_extra_angle_prev = tilt_extra_angle;
 
-	float T_total = fabsf(thrust_body(2)) / cosf(tilt_extra_angle);
+	// float T_total = fabsf(thrust_body(2)) / cosf(tilt_extra_angle);
 	// float T_total = thrust_body.length();
 	// 设置机体坐标系推力
-	// att_sp.thrust_body[0] = thrust_body(0);
-	// att_sp.thrust_body[1] = thrust_body(1);
-	att_sp.thrust_body[2] = -T_total;
+	att_sp.thrust_body[0] = thrust_body(0);
+	att_sp.thrust_body[1] = 0;
+	att_sp.thrust_body[2] = -fabsf(thrust_body(2));
 	att_sp.tilt_extra_angle = tilt_extra_angle;
 }
 

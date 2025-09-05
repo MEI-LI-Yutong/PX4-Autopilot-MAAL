@@ -38,6 +38,7 @@
 #include "ActuatorEffectivenessTilts.hpp"
 #include <uORB/Subscription.hpp>
 #include <uORB/topics/vehicle_thrust_setpoint.h>
+#include <uORB/topics/tail_tilt_setpoint.h>
 #include <drivers/drv_hrt.h>
 
 class ActuatorEffectivenessMCTilt : public ModuleParams, public ActuatorEffectiveness
@@ -148,4 +149,27 @@ private:
 	 * @return normalized actuator value [-1, 1]
 	 */
 	float normalizeAngleToActuator(float angle_rad, float min_angle_rad, float max_angle_rad) const;
+
+	/* ============ Linear small-disturbance Fx + Yaw (Energy-Optimal) ============ */
+private:
+	static constexpr bool ENABLE_LINEAR_FX_YAW_ENERGY = true;
+	static constexpr bool ENABLE_EXTERNAL_TAIL_TILT = true;   // 需要自定义 tail_tilt_setpoint 话题
+
+	static constexpr float MAX_LINEAR_TILT_RAD = 0.30f;       // 线性近似角限
+	static constexpr float TAIL_Y_EPS = 0.05f;                // |y|<阈值视为尾部
+	static constexpr float EPS_F = 1e-6f;
+
+	float _fx_residual{0.f};
+
+	// 外部尾舵订阅
+	uORB::Subscription _tail_tilt_setpoint_sub; // 延迟绑定
+	bool _tail_tilt_sub_initialized{false};
+	float _last_tail_tilt_norm{NAN};
+	hrt_abstime _last_tail_tilt_ts{0};
+
+	enum class Group : uint8_t { None=0, FrontLeft, FrontRight, Tail };
+
+	float angleToServoNormalized(int tilt_index, float theta) const;
+	bool readExternalTailTilt(float &theta_tail_out, int tail_tilt_index);
+	void lazyInitTailTiltSubscription();
 };

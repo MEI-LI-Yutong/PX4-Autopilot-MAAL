@@ -406,16 +406,16 @@ ControlAllocator::Run()
 		_thrust_sp = matrix::Vector3f(vehicle_thrust_setpoint.xyz);
 		
 		// Check for tilt angle changes and trigger update if needed
-		if (PX4_ISFINITE(vehicle_thrust_setpoint.tilt_extra_angle)) {
-			float new_angle = vehicle_thrust_setpoint.tilt_extra_angle;
-			if (!PX4_ISFINITE(_last_tilt_extra_angle) || fabsf(new_angle - _last_tilt_extra_angle) > 0.002f) {
-				do_update = true;
-			}
-			_tilt_extra_angle = new_angle;
-			_last_tilt_extra_angle = new_angle;
-		} else {
-			_tilt_extra_angle = 0.0f;
-		}
+		// if (PX4_ISFINITE(vehicle_thrust_setpoint.tilt_extra_angle)) {
+		// 	float new_angle = vehicle_thrust_setpoint.tilt_extra_angle;
+		// 	if (!PX4_ISFINITE(_last_tilt_extra_angle) || fabsf(new_angle - _last_tilt_extra_angle) > 0.002f) {
+		// 		do_update = true;
+		// 	}
+		// 	_tilt_extra_angle = new_angle;
+		// 	_last_tilt_extra_angle = new_angle;
+		// } else {
+		// 	_tilt_extra_angle = 0.0f;
+		// }
 	}
 
 	if (do_update) {

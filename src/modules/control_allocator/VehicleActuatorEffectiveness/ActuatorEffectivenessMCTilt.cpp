@@ -81,44 +81,224 @@ void ActuatorEffectivenessMCTilt::updateSetpoint(const matrix::Vector<float, NUM
 		int matrix_index, ActuatorVector &actuator_sp, const matrix::Vector<float, NUM_ACTUATORS> &actuator_min,
 		const matrix::Vector<float, NUM_ACTUATORS> &actuator_max)
 {
-	// 1) 只处理主矩阵
-	if (matrix_index != 0) {
-		return;
-	}
-
-	// 2) 计算 dt
-	const hrt_abstime now = hrt_absolute_time();
-	float dt = 0.01f; // fallback
-	if (_last_update_time > 0) {
-		dt = math::constrain((now - _last_update_time) * 1e-6f, 0.001f, 0.1f);
-	}
-	_last_update_time = now;
-
-	// 3) 加 offset（在 yaw 分配基础上对齐"竖直=0"）
 	actuator_sp += _tilt_offsets;
+	_fx_residual = 0.f;
 
-	// 4) 更新来自消息的 collective（状态机：valid=true / valid=false / 超时）
-	updateCollectiveTiltAngle();
+	if (matrix_index == 0 && ENABLE_LINEAR_FX_YAW_ENERGY && _tilts.count() > 0) {
+		// lazyInitTailTiltSubscription();
 
-	// 5) 速率限制（跟随或回零）
-	updateCollectiveTiltWithRateLimit(dt);
+		const auto &geom = _mc_rotors.geometry();
 
-	// 6) 保存 yaw-only 值（collective 未叠加前）
-	const int tilt_count = _tilts.count();
-	float yaw_only_values[ActuatorEffectivenessTilts::MAX_COUNT] {};
-	for (int i = 0; i < tilt_count; ++i) {
-		yaw_only_values[i] = actuator_sp(_first_tilt_idx + i);
+		float f_fl = 0.f, f_fr = 0.f, f_tail = 0.f;
+		float y_fl_mean = 0.f, y_fr_mean = 0.f;
+		int fl_cnt=0, fr_cnt=0, tail_cnt=0;
+
+		int tilt_idx_fl = -1, tilt_idx_fr = -1, tilt_idx_tail = -1;
+
+		static constexpr int MAX_R = ActuatorEffectivenessRotors::NUM_ROTORS_MAX;
+		Group motor_group[MAX_R];
+		for (int i=0;i<MAX_R;i++) motor_group[i]=Group::None;
+
+		// 收集当前各倾转电机的近似推力 f_i = ct_i * u_i
+		for (int m=0; m<geom.num_rotors; ++m) {
+			const auto &r = geom.rotors[m];
+			if (r.tilt_index < 0 || r.tilt_index >= _tilts.count()) {
+				continue;
+			}
+			const float u = actuator_sp(m);      // 归一化输出 (已含 offset 后的 raw motor setpoint)
+			const float ct = r.thrust_coef;
+			const float fi = ct * u;
+			const float y  = r.position(1);
+
+			if (fabsf(y) < TAIL_Y_EPS) {
+				f_tail += fi;
+				tail_cnt++;
+				if (tilt_idx_tail<0) tilt_idx_tail = r.tilt_index;
+				motor_group[m]=Group::Tail;
+
+			} else if (y > 0.f) {
+				f_fl += fi;
+				y_fl_mean += y;
+				fl_cnt++;
+				if (tilt_idx_fl<0) tilt_idx_fl = r.tilt_index;
+				motor_group[m]=Group::FrontLeft;
+
+			} else {
+				f_fr += fi;
+				y_fr_mean += y;
+				fr_cnt++;
+				if (tilt_idx_fr<0) tilt_idx_fr = r.tilt_index;
+				motor_group[m]=Group::FrontRight;
+			}
+		}
+
+		if (fl_cnt>0) y_fl_mean/=fl_cnt;
+		if (fr_cnt>0) y_fr_mean/=fr_cnt;
+
+		const float Fx_cmd = control_sp(3);
+		const float Mz_cmd = control_sp(2);
+
+		// 至少需要前左右用于 yaw + Fx
+		bool geometry_ok = (fl_cnt>0 && fr_cnt>0 && (fabsf(f_fl)>EPS_F || fabsf(f_fr)>EPS_F));
+
+		float theta_fl = 0.f, theta_fr = 0.f, theta_tail = 0.f;
+
+		if (geometry_ok && (fabsf(Fx_cmd)>1e-7f || fabsf(Mz_cmd)>1e-7f)) {
+
+			// 外部尾舵：如果有效则固定尾舵角 => 2x2 解，仅前左右未知
+			bool tail_fixed_external=false;
+			// if (ENABLE_EXTERNAL_TAIL_TILT && tail_cnt>0 && tilt_idx_tail>=0) {
+			// 	float ext;
+			// 	if (readExternalTailTilt(ext, tilt_idx_tail)) {
+			// 		theta_tail = ext;
+			// 		tail_fixed_external = true;
+			// 	}
+			// }
+
+			if (!tail_fixed_external) {
+				// 能耗最优 α_i = f_i => A_i = f_i
+				// 通用公式：
+				// S_A = fL+fR+fT; S_Ay = yL fL + yR fR; S_Ay2 = yL^2 fL + yR^2 fR
+				// λ1 = (-Fx S_Ay2 - Mz S_Ay)/D
+				// λ2 = ( Fx S_Ay + Mz S_A )/D
+				// θ_T = -λ1
+				// θ_L = -(λ1 + λ2 yL)
+				// θ_R = -(λ1 + λ2 yR)
+				float fL = f_fl;
+				float fR = f_fr;
+				float fT = f_tail;
+				float yL = (fl_cnt>0)? y_fl_mean : 0.f;
+				float yR = (fr_cnt>0)? y_fr_mean : 0.f;
+
+				// 若无尾部 (tail_cnt==0) => fT=0，公式仍可用；注意 S_A 包含 fT
+				const float S_A  = fL + fR + fT;
+				const float S_Ay = yL * fL + yR * fR;
+				const float S_Ay2= yL * yL * fL + yR * yR * fR;
+				const float D = S_A * S_Ay2 - S_Ay * S_Ay;
+
+				if (fabsf(D) > 1e-9f && S_A > EPS_F) {
+					float lambda1 = (-Fx_cmd * S_Ay2 - Mz_cmd * S_Ay)/D;
+					float lambda2 = ( Fx_cmd * S_Ay  + Mz_cmd * S_A )/D;
+
+					if (fT > EPS_F) {
+						theta_tail = -lambda1;
+					} else {
+						theta_tail = 0.f;
+					}
+					theta_fl  = -(lambda1 + lambda2 * yL);
+					theta_fr  = -(lambda1 + lambda2 * yR);
+
+				} else {
+					// 退化（例如 y 对称但推力≈0），简化：不考虑尾部，使用 yaw 差动 + 公共
+					float pair_sum = fL + fR;
+					if (pair_sum > EPS_F) {
+						// 公共前向
+						float delta_common = Fx_cmd / pair_sum;
+						// 差动 yaw 近似
+						float y_mean_abs = 0.5f*(fabsf(yL)+fabsf(yR));
+						float delta_yaw = 0.f;
+						if (y_mean_abs>EPS_F) {
+							float f_equiv = 0.5f*pair_sum;
+							delta_yaw = - Mz_cmd / (2.f * y_mean_abs * f_equiv);
+						}
+						theta_fl = delta_common + delta_yaw;
+						theta_fr = delta_common - delta_yaw;
+					}
+					theta_tail = 0.f;
+				}
+
+			} else {
+				// 外部尾舵固定：解 2x2
+				// 约束:
+				// fL θL + fR θR = Fx_cmd - fT θT_fixed
+				// yL fL θL + yR fR θR = -Mz_cmd
+				float fL=f_fl, fR=f_fr;
+				float yL=y_fl_mean, yR=y_fr_mean;
+				float B1 = Fx_cmd - f_tail * theta_tail;
+				float B2 = -Mz_cmd;
+				float det = fL * fR * (yL - yR);
+				if (fabsf(det) > 1e-9f && fabsf(fL)>EPS_F && fabsf(fR)>EPS_F) {
+					theta_fl = ( B1 * yR * fR - B2 * fR ) / det;
+					theta_fr = (-B1 * yL * fL + B2 * fL ) / det;
+				} else {
+					theta_fl = theta_fr = 0.f;
+				}
+			}
+
+			// 限幅
+			auto limit = [&](float &a){ a = math::constrain(a, -MAX_LINEAR_TILT_RAD, MAX_LINEAR_TILT_RAD); };
+			limit(theta_fl); limit(theta_fr); limit(theta_tail);
+
+			// 实际 Fx (线性)
+			float Fx_real = f_fl * theta_fl + f_fr * theta_fr + f_tail * theta_tail;
+			_fx_residual = Fx_cmd - Fx_real;
+
+			// 映射舵机
+			auto setServo = [&](int tilt_index, float theta){
+				if (tilt_index<0 || tilt_index>=_tilts.count()) return;
+				float s = angleToServoNormalized(tilt_index, theta);
+				actuator_sp(_first_tilt_idx + tilt_index) = s;
+			};
+			setServo(tilt_idx_fl, theta_fl);
+			setServo(tilt_idx_fr, theta_fr);
+			setServo(tilt_idx_tail, theta_tail);
+
+			// 每组垂直补偿
+			for (int m=0; m<geom.num_rotors; ++m) {
+				if (motor_group[m] == Group::None) continue;
+				float theta_g = 0.f;
+				switch (motor_group[m]) {
+				case Group::FrontLeft:  theta_g = theta_fl; break;
+				case Group::FrontRight: theta_g = theta_fr; break;
+				case Group::Tail:       theta_g = theta_tail; break;
+				default: break;
+				}
+				float scale = 1.f + 0.5f * theta_g * theta_g;
+				float cmd = actuator_sp(m) * scale;
+				cmd = math::constrain(cmd, actuator_min(m), actuator_max(m));
+				actuator_sp(m) = cmd;
+			}
+		}
 	}
 
-	// 7) 计算 yaw 饱和（基于 yaw-only）
-	calculateYawSaturationFlags(yaw_only_values, tilt_count, actuator_min, actuator_max);
+	bool yaw_saturated_positive = true;
+	bool yaw_saturated_negative = true;
 
-	// 8) 叠加 collective（yaw 优先裁剪）
-	applyCollectiveTilt(actuator_sp, yaw_only_values, tilt_count, actuator_min, actuator_max);
+	for (int i = 0; i < _tilts.count(); ++i) {
+		const int actuator_idx = i + _first_tilt_idx;
+		const float yaw_torque = _tilts.getYawTorqueOfTilt(i);
+
+		// Custom yaw saturation logic: only declare yaw saturated if all tilts
+		// are at the negative or positive yawing limit
+		if (yaw_torque > FLT_EPSILON) {
+			if (yaw_saturated_positive && actuator_sp(actuator_idx) < actuator_max(actuator_idx) - FLT_EPSILON) {
+				yaw_saturated_positive = false;
+			}
+
+			if (yaw_saturated_negative && actuator_sp(actuator_idx) > actuator_min(actuator_idx) + FLT_EPSILON) {
+				yaw_saturated_negative = false;
+			}
+
+		} else if (yaw_torque < -FLT_EPSILON) {
+			if (yaw_saturated_negative && actuator_sp(actuator_idx) < actuator_max(actuator_idx) - FLT_EPSILON) {
+				yaw_saturated_negative = false;
+			}
+
+			if (yaw_saturated_positive && actuator_sp(actuator_idx) > actuator_min(actuator_idx) + FLT_EPSILON) {
+				yaw_saturated_positive = false;
+			}
+		}
+	}
+
+	_yaw_tilt_saturation_flags.tilt_yaw_neg = yaw_saturated_negative;
+	_yaw_tilt_saturation_flags.tilt_yaw_pos = yaw_saturated_positive;
 }
 
 void ActuatorEffectivenessMCTilt::getUnallocatedControl(int matrix_index, control_allocator_status_s &status)
 {
+	if (ENABLE_LINEAR_FX_YAW_ENERGY && matrix_index==0) {
+		status.unallocated_thrust[0] += _fx_residual;
+	}
 	// Note: the values '-1', '1' and '0' are just to indicate a negative,
 	// positive or no saturation to the rate controller. The actual magnitude is not used.
 	if (_yaw_tilt_saturation_flags.tilt_yaw_pos) {
@@ -138,37 +318,37 @@ void ActuatorEffectivenessMCTilt::updateCollectiveTiltAngle()
 	const hrt_abstime now = hrt_absolute_time();
 
 	if (_vt_setpoint_sub.update(&vt)) {
-		if (vt.tilt_extra_angle_valid && PX4_ISFINITE(vt.tilt_extra_angle)) {
-			// 有效角度命令
-			if (_incremental_mode) {
-				// 增量模式：目标角度 = 基准角度 + 增量角度
-				_collective_tilt_target = _collective_tilt_base + vt.tilt_extra_angle;
-			} else {
-				// 绝对模式：直接设置目标角度
-				_collective_tilt_target = vt.tilt_extra_angle;
-			}
-
-			_collective_tilt_valid  = true;
-			_last_valid_command_time = now;
-
-			// 如在回零阶段，打断回零
-			if (_ramp_state == RampState::RAMP_TO_ZERO) {
-				_ramp_state = RampState::NONE;
-			}
-
-		} else if (!vt.tilt_extra_angle_valid) {
-			// 显式禁用：立即启动回零（若当前不为 0）
-			_collective_tilt_valid = false;
-			_collective_tilt_target = _collective_tilt_base; // 回到基准位置
-			_last_valid_command_time = now;
-
-			if (fabsf(_collective_tilt_angle - _collective_tilt_base) > 1e-3f) {
-				_ramp_state = RampState::RAMP_TO_ZERO;
-			} else {
-				_collective_tilt_angle = _collective_tilt_base;
-				_ramp_state = RampState::NONE;
-			}
-		}
+		// if (vt.tilt_extra_angle_valid && PX4_ISFINITE(vt.tilt_extra_angle)) {
+		// 	// 有效角度命令
+		// 	if (_incremental_mode) {
+		// 		// 增量模式：目标角度 = 基准角度 + 增量角度
+		// 		_collective_tilt_target = _collective_tilt_base + vt.tilt_extra_angle;
+		// 	} else {
+		// 		// 绝对模式：直接设置目标角度
+		// 		_collective_tilt_target = vt.tilt_extra_angle;
+		// 	}
+		// 
+		// 	_collective_tilt_valid  = true;
+		// 	_last_valid_command_time = now;
+		// 
+		// 	// 如在回零阶段，打断回零
+		// 	if (_ramp_state == RampState::RAMP_TO_ZERO) {
+		// 		_ramp_state = RampState::NONE;
+		// 	}
+		// 
+		// } else if (!vt.tilt_extra_angle_valid) {
+		// 	// 显式禁用：立即启动回零（若当前不为 0）
+		// 	_collective_tilt_valid = false;
+		// 	_collective_tilt_target = _collective_tilt_base; // 回到基准位置
+		// 	_last_valid_command_time = now;
+		// 
+		// 	if (fabsf(_collective_tilt_angle - _collective_tilt_base) > 1e-3f) {
+		// 		_ramp_state = RampState::RAMP_TO_ZERO;
+		// 	} else {
+		// 		_collective_tilt_angle = _collective_tilt_base;
+		// 		_ramp_state = RampState::NONE;
+		// 	}
+		// }
 	}
 
 	// 超时：上一次有效命令后超过阈值，自动禁用并回零
@@ -319,4 +499,44 @@ float ActuatorEffectivenessMCTilt::normalizeAngleToActuator(float angle_rad, flo
 
 	// Final constraint to ensure [-1, 1] range
 	return math::constrain(normalized, -1.0f, 1.0f);
+}
+
+float ActuatorEffectivenessMCTilt::angleToServoNormalized(int tilt_index, float theta) const
+{
+	if (tilt_index<0 || tilt_index>=_tilts.count()) return 0.f;
+	const auto &cfg = _tilts.config(tilt_index);
+	float min_a = cfg.min_angle;
+	float max_a = cfg.max_angle;
+	float delta = max_a - min_a;
+	if (delta < 1e-5f) return 0.f;
+	float t = math::constrain(theta, min_a, max_a);
+	float s = 2.f * (t - min_a)/delta - 1.f;
+	return math::constrain(s, -1.f, 1.f);
+}
+
+void ActuatorEffectivenessMCTilt::lazyInitTailTiltSubscription()
+{
+	if (!ENABLE_EXTERNAL_TAIL_TILT || _tail_tilt_sub_initialized) return;
+	// 需要你已添加 tail_tilt_setpoint.msg
+	_tail_tilt_setpoint_sub = uORB::Subscription{ORB_ID(tail_tilt_setpoint)};
+	_tail_tilt_sub_initialized = true;
+}
+
+bool ActuatorEffectivenessMCTilt::readExternalTailTilt(float &theta_tail_out, int tail_tilt_index)
+{
+	if (!ENABLE_EXTERNAL_TAIL_TILT || !_tail_tilt_sub_initialized) return false;
+
+	tail_tilt_setpoint_s msg{};
+	if (_tail_tilt_setpoint_sub.copy(&msg)) {
+		_last_tail_tilt_ts = msg.timestamp;
+		_last_tail_tilt_norm = msg.normalized_setpoint;
+	}
+	if (!PX4_ISFINITE(_last_tail_tilt_norm)) return false;
+	float nz = math::constrain(_last_tail_tilt_norm, 0.f, 1.f);
+
+	if (tail_tilt_index<0 || tail_tilt_index>=_tilts.count()) return false;
+	const auto &cfg = _tilts.config(tail_tilt_index);
+	float theta = cfg.min_angle + nz*(cfg.max_angle - cfg.min_angle);
+	theta_tail_out = math::constrain(theta, -MAX_LINEAR_TILT_RAD, MAX_LINEAR_TILT_RAD);
+	return true;
 }
