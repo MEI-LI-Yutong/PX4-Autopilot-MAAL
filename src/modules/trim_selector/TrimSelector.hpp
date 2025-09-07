@@ -131,7 +131,7 @@ private:
 	hrt_abstime _last_run{0};     // 上次运行时间
 
 	// 阵风估计相关
-	static constexpr float GUST_FILTER_TC = 1.0f;    // 1Hz 低通滤波时间常数
+	static constexpr float GUST_FILTER_TC = 0.318f;     // 0.5Hz 低通滤波时间常数
 	static constexpr float GUST_K_MIN = 3.0f;        // k映射最小阈值 (m/s)
 	static constexpr float GUST_K_MAX = 10.0f;       // k映射最大阈值 (m/s)
 	float _gust_raw{0.0f};        // 原始阵风值

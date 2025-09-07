@@ -233,7 +233,7 @@ void TrimSelector::update_gust_estimation(float dt)
 		_gust_raw = math::max(0.0f, raw_gust);
 	}
 
-	// 1Hz一阶低通滤波
+	// 0.5Hz一阶低通滤波
 	if (dt > 1e-6f) {
 		const float alpha = dt / (GUST_FILTER_TC + dt);
 		_gust_filt += alpha * (_gust_raw - _gust_filt);
