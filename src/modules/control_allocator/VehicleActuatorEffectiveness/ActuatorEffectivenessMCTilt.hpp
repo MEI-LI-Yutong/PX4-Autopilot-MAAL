@@ -43,6 +43,9 @@ public:
     ActuatorEffectivenessMCTilt(ModuleParams *parent);
     virtual ~ActuatorEffectivenessMCTilt() = default;
 
+    // 新增：设置抗风滑移系数 k ∈ [0,1]
+    void setAntiWindBlendK(float k) { _antiwind_blend_k = math::constrain(k, 0.f, 1.f); }
+
     bool getEffectivenessMatrix(Configuration &configuration, EffectivenessUpdateReason external_update) override;
 
     void getDesiredAllocationMethod(AllocationMethod allocation_method_out[MAX_NUM_MATRICES]) const override
@@ -86,6 +89,9 @@ private:
 
     // Fx 残差（用于上报到 control_allocator_status）
     float _fx_residual{0.f};
+
+    // 抗风滑移系数 k ∈ [0,1]（来自 TrimSelector）
+    float _antiwind_blend_k{0.5f};
 
     // 角度 <-> 归一化映射
     float angleToServoNormalized(int tilt_index, float theta) const;

@@ -194,6 +194,10 @@ void ActuatorEffectivenessMCTilt::updateSetpoint(const matrix::Vector<float, NUM
                     const float ratio = (f_tail / f_front_total);
                     float psi = -ratio * phi;
 
+                    // 应用抗风滑移系数 k：按 k 缩放 phi 和 psi
+                    phi *= _antiwind_blend_k;
+                    psi *= _antiwind_blend_k;
+
                     // 前排左右还需满足各自角域：a_fl_cur+psi ∈ [min_fl,max_fl]，a_fr_cur+psi 同理
                     float psi_min = math::max(min_fl - a_fl_cur, min_fr - a_fr_cur);
                     float psi_max = math::min(max_fl - a_fl_cur, max_fr - a_fr_cur);

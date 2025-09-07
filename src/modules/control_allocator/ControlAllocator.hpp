@@ -78,6 +78,7 @@
 #include <uORB/topics/vehicle_thrust_setpoint.h>
 #include <uORB/topics/vehicle_status.h>
 #include <uORB/topics/failure_detector_status.h>
+#include <uORB/topics/trim_selector_status.h>
 
 class ControlAllocator : public ModuleBase<ControlAllocator>, public ModuleParams, public px4::ScheduledWorkItem
 {
@@ -192,10 +193,12 @@ private:
 	uORB::Subscription _vehicle_status_sub{ORB_ID(vehicle_status)};
 	uORB::Subscription _vehicle_control_mode_sub{ORB_ID(vehicle_control_mode)};
 	uORB::Subscription _failure_detector_status_sub{ORB_ID(failure_detector_status)};
+	uORB::Subscription _trim_selector_status_sub{ORB_ID(trim_selector_status)};
 
 	matrix::Vector3f _torque_sp;
 	matrix::Vector3f _thrust_sp;
 	bool _publish_controls{true};
+	float _antiwind_blend_k{0.5f};
 
 	// Reflects motor failures that are currently handled, not motor failures that are reported.
 	// For example, the system might report two motor failures, but only the first one is handled by CA

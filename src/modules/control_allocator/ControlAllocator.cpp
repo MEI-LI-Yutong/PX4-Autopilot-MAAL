@@ -329,6 +329,12 @@ ControlAllocator::Run()
 		}
 	}
 
+	// 更新抗风滑移系数 k
+	trim_selector_status_s trim_status{};
+	if (_trim_selector_status_sub.update(&trim_status)) {
+		_antiwind_blend_k = math::constrain(trim_status.k, 0.f, 1.f);
+	}
+
 	if (_num_control_allocation == 0 || _actuator_effectiveness == nullptr) {
 		return;
 	}
@@ -427,6 +433,12 @@ ControlAllocator::Run()
 		for (int i = 0; i < _num_control_allocation; ++i) {
 
 			_control_allocation[i]->setControlSetpoint(c[i]);
+
+			// 把 k 传给 MCTilt（如果当前效果实现是 MCTilt）
+			if (_effectiveness_source_id == EffectivenessSource::MULTIROTOR_WITH_TILT) {
+				ActuatorEffectivenessMCTilt *mct = static_cast<ActuatorEffectivenessMCTilt *>(_actuator_effectiveness);
+				mct->setAntiWindBlendK(_antiwind_blend_k);
+			}
 
 			// Do allocation
 			_control_allocation[i]->allocate();

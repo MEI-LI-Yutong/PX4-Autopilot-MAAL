@@ -214,6 +214,7 @@ set(msg_files
 	TimesyncStatus.msg
 	TrajectorySetpoint6dof.msg
 	TransponderReport.msg
+	trim_selector_status.msg
 	TuneControl.msg
 	UavcanParameterRequest.msg
 	UavcanParameterValue.msg

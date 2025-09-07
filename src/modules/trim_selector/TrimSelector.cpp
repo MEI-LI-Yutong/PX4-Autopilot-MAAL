@@ -39,6 +39,7 @@
 #include <uORB/topics/airspeed_validated.h>
 #include <uORB/topics/vehicle_local_position.h>
 #include <uORB/topics/wind.h>
+#include <uORB/topics/trim_selector_status.h>
 #include <lib/perf/perf_counter.h>
 #include <logger/messages.h>
 
@@ -211,6 +212,38 @@ void TrimSelector::update_takeoff_land_ramp(float dt)
     _s = math::constrain(_s, 0.f, 1.f);
 }
 
+void TrimSelector::update_gust_estimation(float dt)
+{
+	// 获取空速数据
+	airspeed_validated_s airspeed{};
+	_airspeed_validated_sub.copy(&airspeed);
+
+	// 获取地面速度数据
+	vehicle_local_position_s lpos{};
+	_vehicle_local_position_sub.copy(&lpos);
+
+	// 计算原始阵风值：gust = true_airspeed - horizontal_groundspeed
+	_gust_raw = 0.0f;
+	
+	if (PX4_ISFINITE(airspeed.true_airspeed_m_s) && PX4_ISFINITE(lpos.vx) && PX4_ISFINITE(lpos.vy)) {
+		const float horizontal_groundspeed = sqrtf(lpos.vx * lpos.vx + lpos.vy * lpos.vy);
+		const float raw_gust = airspeed.true_airspeed_m_s - horizontal_groundspeed;
+		
+		// 负数截为0
+		_gust_raw = math::max(0.0f, raw_gust);
+	}
+
+	// 1Hz一阶低通滤波
+	if (dt > 1e-6f) {
+		const float alpha = dt / (GUST_FILTER_TC + dt);
+		_gust_filt += alpha * (_gust_raw - _gust_filt);
+	}
+
+	// 按阈值线性映射到 k ∈ [0,1]
+	// k = constrain((gust_filt - 3) / (10 - 3), 0, 1)
+	_antiwind_k = math::constrain((_gust_filt - GUST_K_MIN) / (GUST_K_MAX - GUST_K_MIN), 0.0f, 1.0f);
+}
+
 void TrimSelector::Run()
 {
 	parameters_update();
@@ -225,6 +258,9 @@ void TrimSelector::Run()
 
 	// 更新 ramp
 	update_takeoff_land_ramp(dt);
+
+	// 更新阵风估计
+	update_gust_estimation(dt);
 
 	// 计算名义配平（不含 ramp）
 	float f1_nom=0.f, f2_nom=0.f, f3_nom=0.f;
@@ -284,6 +320,14 @@ void TrimSelector::Run()
 		theta_trim.pitch_angle = 0.0f;
 
 		_theta_trim_pub.publish(theta_trim);
+
+		// 发布 trim_selector_status（阵风和抗风滑移系数）
+		trim_selector_status_s trim_status{};
+		trim_status.timestamp = now;
+		trim_status.gust_raw = _gust_raw;
+		trim_status.gust_filt = _gust_filt;
+		trim_status.k = _antiwind_k;
+		_trim_selector_status_pub.publish(trim_status);
 
 		last_publish_time = now;
 	}

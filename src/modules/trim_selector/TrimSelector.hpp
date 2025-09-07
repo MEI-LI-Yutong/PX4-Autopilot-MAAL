@@ -57,6 +57,7 @@
 #include <uORB/topics/vehicle_local_position.h>
 #include <uORB/topics/log_message.h>
 #include <uORB/topics/wind.h>
+#include <uORB/topics/trim_selector_status.h>
 
 using namespace time_literals;
 
@@ -85,6 +86,9 @@ private:
 	// 起飞/降落斜坡更新
 	void update_takeoff_land_ramp(float dt);
 
+	// 更新阵风估计和抗风滑移系数
+	void update_gust_estimation(float dt);
+
 	// 计算名义配平（不含 ramp），返回是否有有效轨迹数据
 	bool compute_nominal_trim(float &f1, float &f2, float &f3,
 	                          float &theta1_deg, float &theta2_deg, float &theta3_deg,
@@ -95,6 +99,7 @@ private:
 	uORB::Publication<utrim_s> _utrim_pub{ORB_ID(utrim)};
 	uORB::Publication<log_message_s> _log_message_pub{ORB_ID(log_message)};
 	uORB::Publication<wind_s> _wind_pub{ORB_ID(wind)};
+	uORB::Publication<trim_selector_status_s> _trim_selector_status_pub{ORB_ID(trim_selector_status)};
 
 	// Subscriptions
 	uORB::Subscription _trajectory_setpoint_sub{ORB_ID(trajectory_setpoint)};
@@ -120,8 +125,16 @@ private:
 		(ParamInt<px4::params::TS_RAMP_EN>)      _param_ts_ramp_en        // 斜坡开关（1 启用）
 	)
 
-		// Ramp state
+	// Ramp state
 	float _s{0.f};                // 当前 ramp 因子 [0..1]
 	float _s_target{0.f};         // 目标 ramp 因子
 	hrt_abstime _last_run{0};     // 上次运行时间
+
+	// 阵风估计相关
+	static constexpr float GUST_FILTER_TC = 1.0f;    // 1Hz 低通滤波时间常数
+	static constexpr float GUST_K_MIN = 3.0f;        // k映射最小阈值 (m/s)
+	static constexpr float GUST_K_MAX = 10.0f;       // k映射最大阈值 (m/s)
+	float _gust_raw{0.0f};        // 原始阵风值
+	float _gust_filt{0.0f};       // 滤波后阵风值
+	float _antiwind_k{0.0f};      // 抗风滑移系数 [0,1]
 };
