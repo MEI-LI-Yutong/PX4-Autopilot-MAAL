@@ -224,11 +224,11 @@ void TrimSelector::update_gust_estimation(float dt)
 
 	// 计算原始阵风值：gust = true_airspeed - horizontal_groundspeed
 	_gust_raw = 0.0f;
-	
+
 	if (PX4_ISFINITE(airspeed.true_airspeed_m_s) && PX4_ISFINITE(lpos.vx) && PX4_ISFINITE(lpos.vy)) {
 		const float horizontal_groundspeed = sqrtf(lpos.vx * lpos.vx + lpos.vy * lpos.vy);
 		const float raw_gust = airspeed.true_airspeed_m_s - horizontal_groundspeed;
-		
+
 		// 负数截为0
 		_gust_raw = math::max(0.0f, raw_gust);
 	}
@@ -319,7 +319,7 @@ void TrimSelector::Run()
 		// 根据抗风系数 k 切换俯仰期望（单位：deg）
 		// k=0: theta_trim=0°, k=1: theta_trim=5°
 		theta_trim.pitch_angle = _antiwind_k * 5.0f;
-
+		theta_trim.pitch_angle = 0.0f;
 		_theta_trim_pub.publish(theta_trim);
 
 		// 发布 trim_selector_status（阵风和抗风滑移系数）
