@@ -285,7 +285,7 @@ void TrimSelector::Run()
 		theta_trim.timestamp = now;
 
 		// 固定发布 0 度（单位：deg）
-		theta_trim.pitch_angle = 0.0f;
+		theta_trim.pitch_angle = 5.0f;
 
 		_theta_trim_pub.publish(theta_trim);
 
