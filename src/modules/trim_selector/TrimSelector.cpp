@@ -316,8 +316,9 @@ void TrimSelector::Run()
 		theta_trim_s theta_trim{};
 		theta_trim.timestamp = now;
 
-		// 固定发布 0 度（单位：deg）
-		theta_trim.pitch_angle = 0.0f;
+		// 根据抗风系数 k 切换俯仰期望（单位：deg）
+		// k=0: theta_trim=0°, k=1: theta_trim=5°
+		theta_trim.pitch_angle = _antiwind_k * 5.0f;
 
 		_theta_trim_pub.publish(theta_trim);
 
