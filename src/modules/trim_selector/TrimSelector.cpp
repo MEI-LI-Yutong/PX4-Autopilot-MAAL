@@ -251,9 +251,18 @@ void TrimSelector::Run()
 	float vxy_mag=0.f;
 	bool data_valid=false;
 	compute_nominal_trim(f1_nom, f2_nom, f3_nom, th1_nom, th2_nom, th3_nom, vxy_mag, data_valid);
-	
+
+	// 获取轨迹设定点
+	trajectory_setpoint_s trajectory_setpoint{};
+	_trajectory_setpoint_sub.copy(&trajectory_setpoint);
+
+	// 计算水平速度大小
+	float horizontal_velocity_magnitude = sqrtf(
+		matrix::Vector2f(trajectory_setpoint.velocity).norm_squared()
+	);
+
 	// 获取前馈速度用于俯仰角判断
-	float v_ff = vxy_mag;
+	float v_ff = horizontal_velocity_magnitude;
 
     	// 应用 ramp：实际输出 = s * 名义（对 s 使用 smoothstep 以获得更平滑的端点）
 	const float s_raw = _s;
@@ -312,16 +321,8 @@ void TrimSelector::Run()
 		// 调试输出：打印发布的俯仰角期望和水平速度
 		static uint64_t last_debug_time = 0;
 		if (now - last_debug_time > 1000_ms) {
-			// 获取数据源信息用于调试输出
-			position_setpoint_triplet_s pos_sp_triplet{};
-			bool has_nav_data = _position_setpoint_triplet_sub.copy(&pos_sp_triplet) &&
-			                   pos_sp_triplet.current.valid &&
-			                   PX4_ISFINITE(pos_sp_triplet.current.vx) &&
-			                   PX4_ISFINITE(pos_sp_triplet.current.vy);
-
-			const char* data_source = has_nav_data ? "NAV" : "TRAJ";
-			PX4_INFO("TRIM_SELECTOR: v_ff = %.2f m/s (%s), theta_trim.pitch_angle = %.2f deg",
-			         (double)v_ff, data_source, (double)theta_trim.pitch_angle);
+			PX4_INFO("TRIM_SELECTOR: v_ff = %.2f m/s (TRAJ_MAIN), theta_trim.pitch_angle = %.2f deg",
+			         (double)v_ff, (double)theta_trim.pitch_angle);
 			last_debug_time = now;
 		}
 
