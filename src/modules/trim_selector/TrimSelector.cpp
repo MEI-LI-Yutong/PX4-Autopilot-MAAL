@@ -39,6 +39,7 @@
 #include <uORB/topics/airspeed_validated.h>
 #include <uORB/topics/vehicle_local_position.h>
 #include <uORB/topics/wind.h>
+#include <uORB/topics/trim_selector_status.h>
 #include <lib/perf/perf_counter.h>
 #include <logger/messages.h>
 
@@ -226,6 +227,9 @@ void TrimSelector::Run()
 	// 更新 ramp
 	update_takeoff_land_ramp(dt);
 
+	// 更新阵风估计
+	update_gust_estimation(dt);
+
 	// 计算名义配平（不含 ramp）
 	float f1_nom=0.f, f2_nom=0.f, f3_nom=0.f;
 	float th1_nom=0.f, th2_nom=0.f, th3_nom=0.f;
@@ -284,6 +288,14 @@ void TrimSelector::Run()
 		theta_trim.pitch_angle = 0.0f;
 
 		_theta_trim_pub.publish(theta_trim);
+
+		// 发布阵风估计状态
+		trim_selector_status_s trim_status{};
+		trim_status.timestamp = now;
+		trim_status.gust_raw = _gust_raw;
+		trim_status.gust_filt = _gust_filt;
+		trim_status.k = _antiwind_k;
+		_trim_selector_status_pub.publish(trim_status);
 
 		last_publish_time = now;
 	}
@@ -350,6 +362,41 @@ int TrimSelector::task_spawn(int argc, char *argv[])
 
 	PX4_ERR("Trim Selector start failed");
 	return PX4_ERROR;
+}
+
+void TrimSelector::update_gust_estimation(float dt)
+{
+	// 获取空速数据
+	airspeed_validated_s airspeed{};
+	if (!_airspeed_validated_sub.copy(&airspeed) || !PX4_ISFINITE(airspeed.true_airspeed_m_s)) {
+		return; // 空速无效时不更新
+	}
+
+	// 获取本地位置数据
+	vehicle_local_position_s pos{};
+	if (!_vehicle_local_position_sub.copy(&pos) || !pos.xy_valid) {
+		return; // 位置无效时不更新
+	}
+
+	// 计算水平地速
+	const float vx = pos.vx;
+	const float vy = pos.vy;
+	const float horizontal_groundspeed = sqrtf(vx * vx + vy * vy);
+
+	// 原始阵风估计：gust = true_airspeed - horizontal_groundspeed
+	// 只考虑正值阵风（逆风时空速大于地速）
+	const float raw_gust = airspeed.true_airspeed_m_s - horizontal_groundspeed;
+	_gust_raw = math::max(0.0f, raw_gust);
+
+	// 0.5Hz低通滤波（时间常数τ = 0.318s）
+	// α = dt / (τ + dt)
+	const float alpha = dt / (GUST_FILTER_TC + dt);
+	_gust_filt += alpha * (_gust_raw - _gust_filt);
+
+	// 线性映射到抗风系数k ∈ [0,1]
+	// k = 0 当 gust_filt <= GUST_K_MIN (3 m/s)
+	// k = 1 当 gust_filt >= GUST_K_MAX (10 m/s)
+	_antiwind_k = math::constrain((_gust_filt - GUST_K_MIN) / (GUST_K_MAX - GUST_K_MIN), 0.0f, 1.0f);
 }
 
 int TrimSelector::custom_command(int argc, char *argv[])

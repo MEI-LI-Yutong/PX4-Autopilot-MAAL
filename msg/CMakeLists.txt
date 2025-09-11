@@ -213,6 +213,7 @@ set(msg_files
 	TiltrotorExtraControls.msg
 	TimesyncStatus.msg
 	TrajectorySetpoint6dof.msg
+	trim_selector_status.msg
 	TransponderReport.msg
 	TuneControl.msg
 	UavcanParameterRequest.msg
