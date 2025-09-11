@@ -110,8 +110,6 @@ private:
 	uORB::Subscription _manual_sp_sub{ORB_ID(manual_control_setpoint)};
 	uORB::Subscription _airspeed_validated_sub{ORB_ID(airspeed_validated)};
 	uORB::Subscription _vehicle_local_position_sub{ORB_ID(vehicle_local_position)};
-	uORB::Subscription _airspeed_validated_sub{ORB_ID(airspeed_validated)};
-	uORB::Subscription _vehicle_local_position_sub{ORB_ID(vehicle_local_position)};
 
 	perf_counter_t _loop_perf{nullptr};      ///< 循环性能计数器
 	log_message_s _log_message{};            ///< 日志消息
