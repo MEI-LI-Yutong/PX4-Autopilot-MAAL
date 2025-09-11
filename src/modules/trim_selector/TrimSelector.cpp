@@ -80,12 +80,27 @@ bool TrimSelector::compute_nominal_trim(float &f1, float &f2, float &f3,
                                         float &horizontal_velocity_magnitude, bool &data_valid)
 {
     trajectory_setpoint_s traj{};
-    // 优先读取本周期更新的轨迹设定；若无更新则使用上一次的轨迹设定
+    position_setpoint_triplet_s pos_sp_triplet{};
+    
+    // 优先从navigator模块的position_setpoint_triplet获取前馈速度
+    bool has_pos_sp = _position_setpoint_triplet_sub.update(&pos_sp_triplet) || 
+                      _position_setpoint_triplet_sub.copy(&pos_sp_triplet);
+    
+    // 备选：读取轨迹设定
     bool has_traj = _trajectory_setpoint_sub.update(&traj) || _trajectory_setpoint_sub.copy(&traj);
 
-    // 轨迹前馈水平速度幅值
+    // 计算前馈水平速度幅值
     float v_ff = 0.f;
-    if (has_traj && PX4_ISFINITE(traj.velocity[0]) && PX4_ISFINITE(traj.velocity[1])) {
+    
+    // 首先尝试从navigator的position_setpoint_triplet获取前馈速度
+    if (has_pos_sp && pos_sp_triplet.current.valid && 
+        PX4_ISFINITE(pos_sp_triplet.current.vx) && PX4_ISFINITE(pos_sp_triplet.current.vy)) {
+        // 使用navigator模块提供的前馈速度
+        v_ff = sqrtf(pos_sp_triplet.current.vx * pos_sp_triplet.current.vx + 
+                     pos_sp_triplet.current.vy * pos_sp_triplet.current.vy);
+    }
+    // 备选方案：如果navigator数据不可用，使用trajectory_setpoint
+    else if (has_traj && PX4_ISFINITE(traj.velocity[0]) && PX4_ISFINITE(traj.velocity[1])) {
         matrix::Vector2f vxy(traj.velocity);
         v_ff = sqrtf(vxy.norm_squared());
     }
@@ -284,13 +299,26 @@ void TrimSelector::Run()
 		theta_trim_s theta_trim{};
 		theta_trim.timestamp = now;
 
-		// 固定发布 5 度（单位：deg）
-		theta_trim.pitch_angle = 5.0f;
-		
-		// 调试输出：打印发布的俯仰角期望
+		// 根据水平期望速度设置俯仰角：大于1m/s时为5度，否则为0度
+		if (vxy_mag > 1.0f) {
+			theta_trim.pitch_angle = 5.0f;
+		} else {
+			theta_trim.pitch_angle = 0.0f;
+		}
+
+		// 调试输出：打印发布的俯仰角期望和水平速度
 		static uint64_t last_debug_time = 0;
 		if (now - last_debug_time > 1000_ms) {
-			PX4_INFO("TRIM_SELECTOR: Publishing theta_trim.pitch_angle = %.2f deg", (double)theta_trim.pitch_angle);
+			// 获取数据源信息用于调试输出
+			position_setpoint_triplet_s pos_sp_triplet{};
+			bool has_nav_data = _position_setpoint_triplet_sub.copy(&pos_sp_triplet) && 
+			                   pos_sp_triplet.current.valid && 
+			                   PX4_ISFINITE(pos_sp_triplet.current.vx) && 
+			                   PX4_ISFINITE(pos_sp_triplet.current.vy);
+			
+			const char* data_source = has_nav_data ? "NAV" : "TRAJ";
+			PX4_INFO("TRIM_SELECTOR: vxy_mag = %.2f m/s (%s), theta_trim.pitch_angle = %.2f deg",
+			         (double)vxy_mag, data_source, (double)theta_trim.pitch_angle);
 			last_debug_time = now;
 		}
 

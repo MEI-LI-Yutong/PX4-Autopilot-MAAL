@@ -58,6 +58,7 @@
 #include <uORB/topics/log_message.h>
 #include <uORB/topics/trim_selector_status.h>
 #include <uORB/topics/wind.h>
+#include <uORB/topics/position_setpoint_triplet.h>
 
 using namespace time_literals;
 
@@ -110,6 +111,7 @@ private:
 	uORB::Subscription _manual_sp_sub{ORB_ID(manual_control_setpoint)};
 	uORB::Subscription _airspeed_validated_sub{ORB_ID(airspeed_validated)};
 	uORB::Subscription _vehicle_local_position_sub{ORB_ID(vehicle_local_position)};
+	uORB::Subscription _position_setpoint_triplet_sub{ORB_ID(position_setpoint_triplet)};
 
 	perf_counter_t _loop_perf{nullptr};      ///< 循环性能计数器
 	log_message_s _log_message{};            ///< 日志消息
