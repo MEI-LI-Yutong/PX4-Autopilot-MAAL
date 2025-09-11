@@ -284,8 +284,15 @@ void TrimSelector::Run()
 		theta_trim_s theta_trim{};
 		theta_trim.timestamp = now;
 
-		// 固定发布 0 度（单位：deg）
+		// 固定发布 5 度（单位：deg）
 		theta_trim.pitch_angle = 5.0f;
+		
+		// 调试输出：打印发布的俯仰角期望
+		static uint64_t last_debug_time = 0;
+		if (now - last_debug_time > 1000_ms) {
+			PX4_INFO("TRIM_SELECTOR: Publishing theta_trim.pitch_angle = %.2f deg", (double)theta_trim.pitch_angle);
+			last_debug_time = now;
+		}
 
 		_theta_trim_pub.publish(theta_trim);
 

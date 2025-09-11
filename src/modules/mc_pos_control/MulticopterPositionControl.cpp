@@ -418,6 +418,9 @@ void MulticopterPositionControl::Run()
 		theta_trim_s theta_trim;
 		if (_theta_trim_sub.update(&theta_trim)) {
 			_pitch_sp = math::radians(theta_trim.pitch_angle);
+			// 调试输出：打印接收到的俯仰角期望
+			PX4_INFO("MC_POS_CTRL: Received theta_trim.pitch_angle = %.2f deg, _pitch_sp = %.4f rad", 
+			         (double)theta_trim.pitch_angle, (double)_pitch_sp);
 		}
 
 		if (_param_mpc_use_hte.get()) {
