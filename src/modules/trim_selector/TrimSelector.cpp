@@ -317,14 +317,25 @@ void TrimSelector::Run()
 
 		_utrim_pub.publish(utrim);
 
-		// 同步发布 theta_trim（俯仰角，带 ramp）
+		// 同步发布 theta_trim（俯仰角，根据前馈速度设置）
 		theta_trim_s theta_trim{};
 		theta_trim.timestamp = now;
 
-		// 根据抗风系数 k 切换俯仰期望（单位：deg）
-		// k=0: theta_trim=0°, k=1: theta_trim=5°
-		theta_trim.pitch_angle = _antiwind_k * 5.0f;
-		theta_trim.pitch_angle = 0.0f;
+		// 根据前馈水平期望速度设置俯仰角：大于1m/s时为5度，否则为0度
+		if (vxy_mag > 1.0f) {
+			theta_trim.pitch_angle = 5.0f;
+		} else {
+			theta_trim.pitch_angle = 0.0f;
+		}
+
+		// 调试输出：打印发布的俯仰角期望和水平速度
+		static uint64_t last_debug_time = 0;
+		if (now - last_debug_time > 1000_ms) {
+			PX4_INFO("TRIM_SELECTOR: v_ff = %.2f m/s, theta_trim.pitch_angle = %.2f deg",
+			         (double)vxy_mag, (double)theta_trim.pitch_angle);
+			last_debug_time = now;
+		}
+
 		_theta_trim_pub.publish(theta_trim);
 
 		// 发布 trim_selector_status（阵风和抗风滑移系数）
