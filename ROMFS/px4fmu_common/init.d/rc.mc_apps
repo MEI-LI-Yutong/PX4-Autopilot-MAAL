@@ -6,6 +6,11 @@
 #
 
 #
+# Start Trim Selector (provides trim values for position and control allocation).
+#
+trim_selector start
+
+#
 # Start Control Allocator
 #
 control_allocator start
@@ -31,11 +36,6 @@ fi
 mc_hover_thrust_estimator start
 flight_mode_manager start
 mc_pos_control start
-
-#
-# Start Trim Selector (provides trim values for position control).
-#
-trim_selector start
 
 #
 # Start Multicopter Land Detector.
