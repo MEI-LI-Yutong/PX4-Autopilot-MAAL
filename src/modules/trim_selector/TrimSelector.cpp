@@ -329,9 +329,9 @@ void TrimSelector::Run()
 			base_pitch_angle = 0.0f;  // 低速或起降时基础0度
 		}
 		
-		// 第二步：乘以抗风系数k得到最终俯仰角
-		// k=0时完全不使用俯仰补偿，k=1时使用全部俯仰补偿
-		theta_trim.pitch_angle = base_pitch_angle * _antiwind_k;
+		// 第二步：使用抗风系数k进行反向调制得到最终俯仰角
+		// k=0时(无风)：使用全部俯仰补偿，k=1时(大风)：完全不使用俯仰补偿
+		theta_trim.pitch_angle = base_pitch_angle * (1.0f - _antiwind_k);
 
 		// 调试输出：打印发布的俯仰角期望、基础角度、水平速度和抗风系数
 		static uint64_t last_debug_time = 0;
