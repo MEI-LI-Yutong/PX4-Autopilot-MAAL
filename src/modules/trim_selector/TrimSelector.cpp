@@ -317,22 +317,27 @@ void TrimSelector::Run()
 
 		_utrim_pub.publish(utrim);
 
-		// 同步发布 theta_trim（俯仰角，根据前馈速度设置）
+		// 同步发布 theta_trim（俯仰角，根据前馈速度和抗风系数组合设置）
 		theta_trim_s theta_trim{};
 		theta_trim.timestamp = now;
 
-		// 根据前馈水平期望速度设置俯仰角：大于1m/s时为5度，否则为0度
+		// 第一步：根据前馈水平期望速度判断基础俯仰角
+		float base_pitch_angle = 0.0f;
 		if (vxy_mag > 1.0f) {
-			theta_trim.pitch_angle = 5.0f;
+			base_pitch_angle = 5.0f;  // 平飞时基础5度
 		} else {
-			theta_trim.pitch_angle = 0.0f;
+			base_pitch_angle = 0.0f;  // 低速或起降时基础0度
 		}
+		
+		// 第二步：乘以抗风系数k得到最终俯仰角
+		// k=0时完全不使用俯仰补偿，k=1时使用全部俯仰补偿
+		theta_trim.pitch_angle = base_pitch_angle * _antiwind_k;
 
-		// 调试输出：打印发布的俯仰角期望和水平速度
+		// 调试输出：打印发布的俯仰角期望、基础角度、水平速度和抗风系数
 		static uint64_t last_debug_time = 0;
 		if (now - last_debug_time > 1000_ms) {
-			PX4_INFO("TRIM_SELECTOR: v_ff = %.2f m/s, theta_trim.pitch_angle = %.2f deg",
-			         (double)vxy_mag, (double)theta_trim.pitch_angle);
+			PX4_INFO("TRIM_SELECTOR: v_ff=%.2f m/s, base_pitch=%.2f°, k=%.3f, final_pitch=%.2f°",
+			         (double)vxy_mag, (double)base_pitch_angle, (double)_antiwind_k, (double)theta_trim.pitch_angle);
 			last_debug_time = now;
 		}
 
