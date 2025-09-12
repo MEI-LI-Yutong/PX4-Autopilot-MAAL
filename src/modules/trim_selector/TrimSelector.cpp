@@ -73,7 +73,7 @@ void TrimSelector::parameters_update(bool force)
 	}
 }
 
-static inline float rad2deg(float r) { return r * 180.f / M_PI_F; }
+// static inline float rad2deg(float r) { return r * 180.f / M_PI_F; }
 
 bool TrimSelector::compute_nominal_trim(float &f1, float &f2, float &f3,
                                         float &theta1_deg, float &theta2_deg, float &theta3_deg,
@@ -151,6 +151,7 @@ bool TrimSelector::compute_nominal_trim(float &f1, float &f2, float &f3,
     return data_valid;
 }
 
+/*
 void TrimSelector::update_takeoff_land_ramp(float dt)
 {
 	// 默认：不启用 ramp 就直通（s=1）
@@ -211,6 +212,7 @@ void TrimSelector::update_takeoff_land_ramp(float dt)
     _s += alpha * (_s_target - _s);
     _s = math::constrain(_s, 0.f, 1.f);
 }
+*/
 
 void TrimSelector::update_gust_estimation(float dt)
 {
@@ -256,8 +258,11 @@ void TrimSelector::Run()
 	}
 	_last_run = now;
 
-	// 更新 ramp
-	update_takeoff_land_ramp(dt);
+	// 更新 ramp - 现在直接设置为1，不再使用动态调整
+	_s = 1.f;
+	_s_target = 1.f;
+
+	// update_takeoff_land_ramp(dt); // 已禁用
 
 	// 更新阵风估计
 	update_gust_estimation(dt);
