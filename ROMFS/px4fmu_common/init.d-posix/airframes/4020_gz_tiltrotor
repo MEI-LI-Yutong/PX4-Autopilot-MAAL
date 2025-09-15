@@ -5,7 +5,7 @@
 # @type VTOL Tiltrotor
 #
 
-. ${R}etc/init.d/rc.vtol_defaults
+. ${R}etc/init.d/rc.mc_defaults
 
 PX4_SIMULATOR=${PX4_SIMULATOR:=gz}
 PX4_GZ_WORLD=${PX4_GZ_WORLD:=default}
@@ -13,9 +13,9 @@ PX4_SIM_MODEL=${PX4_SIM_MODEL:=tiltrotor}
 
 param set-default SIM_GZ_EN 1 # Gazebo bridge
 
-param set-default MAV_TYPE 21
+param set-default MAV_TYPE 15
 
-param set-default CA_AIRFRAME 3
+param set-default CA_AIRFRAME 8
 
 param set-default CA_ROTOR_COUNT 4
 param set-default CA_ROTOR0_PX 0.1515
@@ -105,3 +105,4 @@ param set-default VT_FWD_THRUST_EN 4
 param set-default VT_FWD_THRUST_SC 0.6
 param set-default VT_TILT_TRANS 0.6
 param set-default VT_TYPE 1
+param set-default VT_TILT_MC 0.5
