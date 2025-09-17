@@ -353,22 +353,33 @@ void MulticopterNeuralNetworkControl::PopulateInputTensor()
 
 void MulticopterNeuralNetworkControl::PublishOutput(float *command_actions)
 {
+	// Publish servo outputs (first 3 outputs)
+	actuator_servos_s actuator_servos;
+	actuator_servos.timestamp = hrt_absolute_time();
+	actuator_servos.timestamp_sample = hrt_absolute_time();
 
+	for (int i = 0; i < 3; i++) {
+		actuator_servos.control[i] = PX4_ISFINITE(command_actions[i]) ? command_actions[i] : NAN;
+	}
+	// Set remaining servo controls to NAN
+	for (int i = 3; i < actuator_servos_s::NUM_CONTROLS; i++) {
+		actuator_servos.control[i] = NAN;
+	}
+
+	_actuator_servos_pub.publish(actuator_servos);
+
+	// Publish motor outputs (last 3 outputs)
 	actuator_motors_s actuator_motors;
 	actuator_motors.timestamp = hrt_absolute_time();
+	actuator_motors.timestamp_sample = hrt_absolute_time();
 
-	actuator_motors.control[0] = PX4_ISFINITE(command_actions[0]) ? command_actions[0] : NAN;
-	actuator_motors.control[1] = PX4_ISFINITE(command_actions[1]) ? command_actions[1] : NAN;
-	actuator_motors.control[2] = PX4_ISFINITE(command_actions[2]) ? command_actions[2] : NAN;
-	actuator_motors.control[3] = PX4_ISFINITE(command_actions[3]) ? command_actions[3] : NAN;
-	actuator_motors.control[4] = -NAN;
-	actuator_motors.control[5] = -NAN;
-	actuator_motors.control[6] = -NAN;
-	actuator_motors.control[7] = -NAN;
-	actuator_motors.control[8] = -NAN;
-	actuator_motors.control[9] = -NAN;
-	actuator_motors.control[10] = -NAN;
-	actuator_motors.control[11] = -NAN;
+	for (int i = 0; i < 3; i++) {
+		actuator_motors.control[i] = PX4_ISFINITE(command_actions[i + 3]) ? command_actions[i + 3] : NAN;
+	}
+	// Set remaining motor controls to NAN
+	for (int i = 3; i < actuator_motors_s::NUM_CONTROLS; i++) {
+		actuator_motors.control[i] = NAN;
+	}
 	actuator_motors.reversible_flags = 0;
 
 	_actuator_motors_pub.publish(actuator_motors);
@@ -386,15 +397,28 @@ inline void MulticopterNeuralNetworkControl::RescaleActions()
 	const float tmp1 = b / (2.f * a);
 	const float tmp2 = b * b / (4.f * a * a);
 
-	for (int i = 0; i < 4; i++) {
-
+	// Process first 3 outputs as servo controls (direct mapping from [-1,1] to servo range)
+	for (int i = 0; i < 3; i++) {
+		// Clamp to [-1, 1] range
 		if (_output_tensor->data.f[i] < -1.0f) {
 			_output_tensor->data.f[i] = -1.0f;
+		} else if (_output_tensor->data.f[i] > 1.0f) {
+			_output_tensor->data.f[i] = 1.0f;
+		}
+		// For servos, keep the [-1,1] range as is - the servo driver will map this to angle range
+		// -1 corresponds to min angle, +1 corresponds to max angle (configured via MC_NN_SV_*_ANG params)
+	}
 
+	// Process last 3 outputs as motor controls (same as before but for 3 motors instead of 4)
+	for (int i = 3; i < 6; i++) {
+		// Clamp to [-1, 1] range
+		if (_output_tensor->data.f[i] < -1.0f) {
+			_output_tensor->data.f[i] = -1.0f;
 		} else if (_output_tensor->data.f[i] > 1.0f) {
 			_output_tensor->data.f[i] = 1.0f;
 		}
 
+		// Convert from [-1,1] to [0,2] for thrust calculation
 		_output_tensor->data.f[i] = _output_tensor->data.f[i] + 1.0f;
 		float rps = _output_tensor->data.f[i] / thrust_coeff;
 		rps = sqrt(rps);
@@ -569,10 +593,10 @@ void MulticopterNeuralNetworkControl::Run()
 			neural_control.observation[i] = _input_data[i];
 		}
 
-		neural_control.network_output[0] = _output_tensor->data.f[0];
-		neural_control.network_output[1] = _output_tensor->data.f[1];
-		neural_control.network_output[2] = _output_tensor->data.f[2];
-		neural_control.network_output[3] = _output_tensor->data.f[3];
+		// Log all 6 outputs (3 servo + 3 motor)
+		for (int i = 0; i < 6; i++) {
+			neural_control.network_output[i] = _output_tensor->data.f[i];
+		}
 		_neural_control_pub.publish(neural_control);
 	}
 
@@ -607,10 +631,10 @@ int MulticopterNeuralNetworkControl::print_usage(const char *reason)
 		R"DESCR_STR(
 ### Description
 Multicopter Neural Network Control module.
-This module is an end-to-end neural network control system for multicopters.
-It takes in 15 input values and outputs 4 control actions.
+This module is an end-to-end neural network control system for multicopters with servo and motor control.
+It takes in 15 input values and outputs 6 control actions.
 Inputs: [pos_err(3), att(6), vel(3), ang_vel(3)]
-Outputs: [Actuator motors(4)]
+Outputs: [Servo controls(3), Motor controls(3)]
 )DESCR_STR");
 
 	PRINT_MODULE_USAGE_NAME("mc_nn_control", "controller");

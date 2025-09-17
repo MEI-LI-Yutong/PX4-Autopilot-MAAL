@@ -81,3 +81,21 @@ PARAM_DEFINE_FLOAT(MC_NN_THRST_COEF, 1.2f);
  * @group Neural Control
  */
 PARAM_DEFINE_INT32(MC_NN_MANL_CTRL, 1);
+
+/**
+ * Maximum tilt angle for servos in degrees. Used to map neural network output [-1,1] to servo positions.
+ *
+ * @min 0.0
+ * @max 180.0
+ * @group Neural Control
+ */
+PARAM_DEFINE_FLOAT(MC_NN_SV_MAX_ANG, 45.0f);
+
+/**
+ * Minimum tilt angle for servos in degrees. Used to map neural network output [-1,1] to servo positions.
+ *
+ * @min -180.0
+ * @max 180.0
+ * @group Neural Control
+ */
+PARAM_DEFINE_FLOAT(MC_NN_SV_MIN_ANG, -45.0f);

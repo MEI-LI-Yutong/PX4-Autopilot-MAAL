@@ -73,6 +73,7 @@
 
 // Publications
 #include <uORB/topics/actuator_motors.h>
+#include <uORB/topics/actuator_servos.h>
 #include <uORB/topics/neural_control.h>
 #include <uORB/topics/register_ext_component_request.h>
 #include <uORB/topics/unregister_ext_component.h>
@@ -133,6 +134,7 @@ private:
 
 	// Publications
 	uORB::Publication<actuator_motors_s> _actuator_motors_pub{ORB_ID(actuator_motors)};
+	uORB::Publication<actuator_servos_s> _actuator_servos_pub{ORB_ID(actuator_servos)};
 	uORB::Publication<neural_control_s> _neural_control_pub{ORB_ID(neural_control)};
 	uORB::Publication<register_ext_component_request_s> _register_ext_component_request_pub{ORB_ID(register_ext_component_request)};
 	uORB::Publication<unregister_ext_component_s> _unregister_ext_component_pub{ORB_ID(unregister_ext_component)};
@@ -161,6 +163,8 @@ private:
 		(ParamInt<px4::params::MC_NN_MAX_RPM>) _param_max_rpm,
 		(ParamInt<px4::params::MC_NN_MIN_RPM>) _param_min_rpm,
 		(ParamFloat<px4::params::MC_NN_THRST_COEF>) _param_thrust_coeff,
-		(ParamBool<px4::params::MC_NN_MANL_CTRL>) _param_manual_control
+		(ParamBool<px4::params::MC_NN_MANL_CTRL>) _param_manual_control,
+		(ParamFloat<px4::params::MC_NN_SV_MAX_ANG>) _param_servo_max_angle,
+		(ParamFloat<px4::params::MC_NN_SV_MIN_ANG>) _param_servo_min_angle
 	)
 };
