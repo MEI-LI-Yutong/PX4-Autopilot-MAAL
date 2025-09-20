@@ -38,7 +38,9 @@
 #include <gz/math/Vector3.hh>
 #include <gz/transport/Node.hh>
 #include <chrono>
+#include <string>
 #include <sdf/sdf.hh>
+#include <gz/transport/Publisher.hh>
 
 namespace custom
 {
@@ -62,6 +64,11 @@ private:
     gz::math::Vector3d _amplitude{0, 0, 0};
     double _frequency_hz{0.0};
     double _phase_rad{0.0};
+    std::string _model{"one_minus_cos"};
+    // 1-cos gust parameters
+    double _gust_length_m{30.0};     // l_g
+    double _airspeed_ms{-1.0};       // V_inf (<=0 means derive from |mean|)
+    gz::math::Vector3d _direction{1, 0, 0};
 
     // State
     gz::sim::Entity _worldEntity{gz::sim::kNullEntity};
@@ -69,6 +76,7 @@ private:
     bool _configured{false};
     bool _warnedMissingWind{false};
     gz::transport::Node _node;
+    gz::transport::Node::Publisher _pub;
+    std::string _topic;
 };
 } // namespace custom
-

@@ -42,6 +42,10 @@
 
 #include <gz/math/Vector3.hh>
 #include <gz/math/Helpers.hh>
+#include <gz/msgs/vector3d.pb.h>
+#include <gz/msgs/Utility.hh>
+#include "gz/sim/components/Name.hh"
+#include <cmath>
 
 using namespace gz::sim;
 using namespace gz::math;
@@ -66,6 +70,9 @@ void WindGustSystem::Configure(const Entity &_entity,
 
     // Parse parameters
     if (_sdf) {
+        if (_sdf->HasElement("model")) {
+            _model = _sdf->Get<std::string>("model", _model).first;
+        }
         if (_sdf->HasElement("mean")) {
             _mean = _sdf->Get<Vector3d>("mean", Vector3d::Zero).first;
         }
@@ -78,10 +85,28 @@ void WindGustSystem::Configure(const Entity &_entity,
         if (_sdf->HasElement("phase")) {
             _phase_rad = _sdf->Get<double>("phase", 0.0).first;
         }
+        // 1-cos gust parameters (optional)
+        if (_sdf->HasElement("gust_length")) {
+            _gust_length_m = _sdf->Get<double>("gust_length", _gust_length_m).first;
+        }
+        if (_sdf->HasElement("airspeed")) {
+            _airspeed_ms = _sdf->Get<double>("airspeed", _airspeed_ms).first;
+        }
+        if (_sdf->HasElement("direction")) {
+            _direction = _sdf->Get<Vector3d>("direction", _direction).first;
+        }
     }
 
     // Try to resolve wind entity now; lazily fallback during updates
     _windEntity = _ecm.EntityByComponents(components::Wind());
+
+    // Setup debug topic publisher: /world/<name>/wind_gust
+    std::string worldName{"world"};
+    if (auto name = _ecm.Component<components::Name>(_entity)) {
+        worldName = name->Data();
+    }
+    _topic = std::string("/world/") + worldName + "/wind_gust";
+    _pub = _node.Advertise<gz::msgs::Vector3d>(_topic);
 
     // Initialize with current mean + amplitude (if frequency==0, constant)
     if (_windEntity != kNullEntity) {
@@ -117,17 +142,47 @@ void WindGustSystem::PreUpdate(const UpdateInfo &_info,
         }
     }
 
-    // Compute wind vector at sim time (sinusoidal model for now)
+    // Compute wind vector at sim time
     const double t = std::chrono::duration<double>(_info.simTime).count();
     Vector3d wind = _mean;
 
-    if (_frequency_hz > 0.0) {
-        const double omega = 2.0 * GZ_PI * _frequency_hz;
-        wind.X() += _amplitude.X() * std::sin(omega * t + _phase_rad);
-        wind.Y() += _amplitude.Y() * std::sin(omega * t + _phase_rad);
-        wind.Z() += _amplitude.Z() * std::sin(omega * t + _phase_rad);
-    } else {
-        wind += _amplitude;
+    if (_model == "sine") {
+        if (_frequency_hz > 0.0) {
+            const double omega = 2.0 * GZ_PI * _frequency_hz;
+            wind.X() += _amplitude.X() * std::sin(omega * t + _phase_rad);
+            wind.Y() += _amplitude.Y() * std::sin(omega * t + _phase_rad);
+            wind.Z() += _amplitude.Z() * std::sin(omega * t + _phase_rad);
+        } else {
+            wind += _amplitude;
+        }
+
+    } else { // default: one_minus_cos periodic gust
+        // Derive V_inf if not provided
+        double V = _airspeed_ms;
+        if (V <= 0.0) {
+            V = _mean.Length();
+        }
+        // If still invalid, no gust component
+        if (V > 0.0 && _gust_length_m > 0.0) {
+            const double T = _gust_length_m / V;               // period
+            // phase shift in seconds (phase_rad corresponds to 2*pi per period)
+            const double t_phase = (_phase_rad / (2.0 * GZ_PI)) * T;
+            const double t_eff = t + t_phase;
+            double t_mod = std::fmod(t_eff, T);
+            if (t_mod < 0) t_mod += T;
+
+            // amplitude from given formula
+            const double A = 17.07 * std::pow((_gust_length_m / 212.28), 1.6) / 2.0;
+            const double wg = A * (1.0 - std::cos(2.0 * GZ_PI * t_mod / T));
+
+            Vector3d dir = _direction;
+            if (dir.Length() < 1e-6) {
+                dir.Set(1, 0, 0);
+            } else {
+                dir.Normalize();
+            }
+            wind += dir * wg;
+        }
     }
 
     // Update component
@@ -137,5 +192,9 @@ void WindGustSystem::PreUpdate(const UpdateInfo &_info,
     } else {
         windVel->Data() = wind;
     }
-}
 
+    // Publish debug topic
+    gz::msgs::Vector3d msg;
+    gz::msgs::Set(&msg, wind);
+    _pub.Publish(msg);
+}
