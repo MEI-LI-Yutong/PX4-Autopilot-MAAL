@@ -1,0 +1,12 @@
+[project]
+name = "px4-gust-eval"
+version = "0.1.0"
+description = "PX4 SITL Wind Gust Evaluation Framework"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "mavsdk>=3.10.2",
+    "pymavlink>=2.4.49",
+    "psutil",
+    "colorama",
+]
