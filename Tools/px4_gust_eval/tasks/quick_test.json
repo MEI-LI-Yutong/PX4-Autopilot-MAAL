@@ -1,0 +1,42 @@
+{
+  "test_suite": "Quick Validation Test",
+  "description": "Quick test for framework validation",
+  "px4_sitl_command": "make px4_sitl gz_tiltrotor_windy",
+  "mission_type": "straight_line",
+  "mission_config": {
+    "takeoff_altitude": 15.0,
+    "waypoints": [
+      {"lat": 47.397742, "lon": 8.545594, "alt": 15.0},
+      {"lat": 47.398242, "lon": 8.546094, "alt": 15.0}
+    ],
+    "airspeed": 12.0,
+    "timeout_sec": 60
+  },
+  "wind_gust_tests": [
+    {
+      "test_id": "quick_baseline",
+      "description": "Quick baseline test",
+      "wind_config": {
+        "model": "sine",
+        "mean": [0.0, 0.0, 0.0],
+        "amplitude": [0.0, 0.0, 0.0],
+        "frequency": 0.0,
+        "phase": 0.0
+      },
+      "expected_results": {
+        "max_position_error_m": 5.0,
+        "max_altitude_deviation_m": 3.0,
+        "mission_completion_expected": true
+      }
+    }
+  ],
+  "output_config": {
+    "log_directory": "logs/quick_test",
+    "generate_plots": false,
+    "save_flight_data": true,
+    "metrics_to_track": [
+      "position_error",
+      "altitude_deviation"
+    ]
+  }
+}
