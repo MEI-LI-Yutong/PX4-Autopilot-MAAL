@@ -68,7 +68,7 @@ PARAM_DEFINE_INT32(MC_NN_MIN_RPM, 1000);
  * Thrust coefficient of the motors. Used to normalize the output of the neural network. Divided by 100 000
  *
  * @min 0.0
- * @max 5.0
+ * @max 45.0
  * @group Neural Control
  */
 PARAM_DEFINE_FLOAT(MC_NN_THRST_COEF, 1.2f);
