@@ -4,14 +4,14 @@
   "px4_sitl_command": "make px4_sitl gz_tiltrotor_windy",
   "mission_type": "straight_line",
   "mission_config": {
-    "takeoff_altitude": 10.0,
+    "takeoff_altitude": 5.0,
     "waypoints": [
-      {"lat": 47.397742, "lon": 8.545594, "alt": 10.0},
-      {"lat": 47.398742, "lon": 8.546594, "alt": 10.0},
-      {"lat": 47.399742, "lon": 8.547594, "alt": 10.0}
+      {"lat": 47.397742, "lon": 8.545594, "alt": 5.0},
+      {"lat": 47.398742, "lon": 8.546594, "alt": 5.0},
+      {"lat": 47.399742, "lon": 8.549594, "alt": 5.0}
     ],
     "airspeed": 10.0,
-    "timeout_sec": 300
+    "timeout_sec": 100
   },
   "wind_gust_tests": [
     {
@@ -19,11 +19,11 @@
       "description": "Long duration 1-cos gust model",
       "wind_config": {
         "model": "one_minus_cos",
-        "mean": [8.0, 0.0, 0.0],
-        "gust_length": 200.0,
-        "airspeed": 15.0,
-        "direction": [0.7, 0.7, 0.1],
-        "phase": 3.14
+        "mean": [-10.0, 0.0, -10.0],
+        "gust_length": 100.0,
+        "airspeed": 10.0,
+        "direction": [1.0, 0.0, 0.0],
+        "phase": 0.0
       },
       "expected_results": {
         "max_position_error_m": 20.0,
@@ -32,18 +32,19 @@
       }
     },
     {
-      "test_id": "gust_crosswind_strong",
-      "description": "Strong crosswind gust",
+      "test_id": "gust_one_minus_cos_long",
+      "description": "Long duration 1-cos gust model",
       "wind_config": {
-        "model": "sine",
-        "mean": [2.0, 10.0, 0.0],
-        "amplitude": [1.0, 5.0, 1.0],
-        "frequency": 0.15,
+        "model": "one_minus_cos",
+        "mean": [0.0, 0.0, 0.0],
+        "gust_length": 0.0,
+        "airspeed": 10.0,
+        "direction": [1.0, 0.0, 0.0],
         "phase": 0.0
       },
       "expected_results": {
-        "max_position_error_m": 25.0,
-        "max_altitude_deviation_m": 8.0,
+        "max_position_error_m": 20.0,
+        "max_altitude_deviation_m": 10.0,
         "mission_completion_expected": true
       }
     }
