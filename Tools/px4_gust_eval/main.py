@@ -11,7 +11,8 @@ Usage:
 
 import sys
 from pathlib import Path
-from gust_test_runner import main as runner_main
+# Use the simplified runner by default
+from simple_runner import main as runner_main
 
 def main():
     """Main entry point - delegate to gust_test_runner"""
