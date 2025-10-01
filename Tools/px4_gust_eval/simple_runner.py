@@ -33,6 +33,7 @@ import math
 import xml.etree.ElementTree as ET
 import csv
 import asyncio.subprocess
+import re
 
 
 # ----------------------------
@@ -133,10 +134,14 @@ class SimpleGustRunner:
         self._csv_task: Optional[asyncio.Task] = None
         self._wind_task: Optional[asyncio.Task] = None
         self._latest_wind_ms: Optional[float] = None
+        self._latest_wind_xyz: Optional[tuple] = None
+        self._wind_last_update: float = 0.0
         self._recording: bool = False
         self._csv_file = None
         self._csv_writer = None
         self.current_setpoint = {"lat": None, "lon": None, "alt_amsl": None}
+        self.wind_fill_zero: bool = bool(self.config.get("wind_fill_zero", True))
+        self.wind_stale_sec: float = float(self.config.get("wind_stale_sec", 1.0))
 
     # ---- lifecycle ----
     async def _wait_until_armable(self, timeout_sec: int, require_gps: bool = True) -> bool:
@@ -352,7 +357,7 @@ class SimpleGustRunner:
             # Update current setpoint for logging
             self.current_setpoint = {"lat": lat_t, "lon": lon_t, "alt_amsl": alt_amsl}
             self.logger.info(f"Advancing {advance_m:.1f} m along {advance_axis} to lat={lat_t:.7f} lon={lon_t:.7f} at AMSL {alt_amsl:.1f} m")
-            await self.drone.action.goto_location(lat_t, lon_t, alt_amsl, 0.0)
+            await self.drone.action.goto_location(lat_t, lon_t, alt_amsl, 90.0)
 
             # Wait until close to target or timeout (half remaining time)
             wait_deadline = asyncio.get_event_loop().time() + max(15, timeout_sec // 2)
@@ -623,6 +628,10 @@ class SimpleGustRunner:
         if not self.drone:
             return
         self._recording = True
+        # reset wind state for new task
+        self._latest_wind_ms = None
+        self._latest_wind_xyz = None
+        self._wind_last_update = 0.0
         csv_path = self.run_dir / f"{test_id}.csv"
         self._csv_file = open(csv_path, "w", newline="")
         self._csv_writer = csv.DictWriter(
@@ -632,7 +641,7 @@ class SimpleGustRunner:
                 "lat_deg", "lon_deg", "rel_alt_m", "abs_alt_m",
                 "roll_deg", "pitch_deg", "yaw_deg",
                 "sp_lat_deg", "sp_lon_deg", "sp_abs_alt_m",
-                "wind_m_s",
+                "wind_x_m_s", "wind_y_m_s", "wind_z_m_s", "wind_m_s",
             ],
         )
         self._csv_writer.writeheader()
@@ -663,6 +672,10 @@ class SimpleGustRunner:
                     pass
                 self._csv_file = None
                 self._csv_writer = None
+            # clear wind state so next task starts clean
+            self._latest_wind_ms = None
+            self._latest_wind_xyz = None
+            self._wind_last_update = 0.0
 
     async def _csv_loop(self) -> None:
         assert self.drone is not None
@@ -710,8 +723,20 @@ class SimpleGustRunner:
             if sp.get("alt_amsl") is not None:
                 row["sp_abs_alt_m"] = f"{sp['alt_amsl']:.3f}"
 
-            if self._latest_wind_ms is not None:
-                row["wind_m_s"] = f"{self._latest_wind_ms:.3f}"
+            now = asyncio.get_event_loop().time()
+            fresh = (self._latest_wind_xyz is not None) and (now - self._wind_last_update <= self.wind_stale_sec)
+            if fresh:
+                x, y, z = self._latest_wind_xyz
+                row["wind_x_m_s"] = f"{x:.3f}"
+                row["wind_y_m_s"] = f"{y:.3f}"
+                row["wind_z_m_s"] = f"{z:.3f}"
+                if self._latest_wind_ms is not None:
+                    row["wind_m_s"] = f"{self._latest_wind_ms:.3f}"
+            elif self.wind_fill_zero:
+                row["wind_x_m_s"] = "0.000"
+                row["wind_y_m_s"] = "0.000"
+                row["wind_z_m_s"] = "0.000"
+                row["wind_m_s"] = "0.000"
 
             try:
                 if self._csv_writer:
@@ -724,12 +749,13 @@ class SimpleGustRunner:
             await asyncio.sleep(period)
 
     async def _wind_subscriber_task(self) -> None:
-        """Subscribe to /world/windy/wind_gust via gz topic and update latest wind speed."""
+        """Subscribe to /world/windy/wind_gust via gz topic and update latest wind speed.
+        Plain-text mode only (no -j). Lines may contain x:, y:, z: separately.
+        """
         topic = "/world/windy/wind_gust"
-        args = ["gz", "topic", "-e", "-t", topic, "-j"]
         try:
             proc = await asyncio.create_subprocess_exec(
-                *args,
+                "gz", "topic", "-e", "-t", topic,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -743,20 +769,55 @@ class SimpleGustRunner:
             return
 
         assert proc.stdout is not None
+        buffer = ""
+        last_vals = {"x": None, "y": None, "z": None}
         try:
             while self._recording:
-                line = await proc.stdout.readline()
-                if not line:
-                    await asyncio.sleep(0.1)
+                chunk = await proc.stdout.read(1024)
+                if not chunk:
+                    await asyncio.sleep(0.05)
                     continue
                 try:
-                    obj = json.loads(line.decode("utf-8", errors="ignore"))
-                    vec = _extract_vec3(obj)
-                    if vec is not None:
-                        x, y, z = vec
-                        self._latest_wind_ms = float(math.sqrt(x * x + y * y + z * z))
+                    text = chunk.decode("utf-8", errors="ignore")
                 except Exception:
-                    pass
+                    continue
+                buffer += text
+                lines = buffer.splitlines(keepends=False)
+                if not buffer.endswith("\n") and lines:
+                    buffer = lines[-1]
+                    lines = lines[:-1]
+                else:
+                    buffer = ""
+                for line in lines:
+                    xs = re.search(r"\bx:\s*([-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)", line)
+                    ys = re.search(r"\by:\s*([-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)", line)
+                    zs = re.search(r"\bz:\s*([-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)", line)
+                    updated = False
+                    if xs:
+                        try:
+                            last_vals["x"] = float(xs.group(1))
+                            updated = True
+                        except Exception:
+                            pass
+                    if ys:
+                        try:
+                            last_vals["y"] = float(ys.group(1))
+                            updated = True
+                        except Exception:
+                            pass
+                    if zs:
+                        try:
+                            last_vals["z"] = float(zs.group(1))
+                            updated = True
+                        except Exception:
+                            pass
+                    if updated:
+                        x = last_vals["x"] if last_vals["x"] is not None else 0.0
+                        y = last_vals["y"] if last_vals["y"] is not None else 0.0
+                        z = last_vals["z"] if last_vals["z"] is not None else 0.0
+                        self._latest_wind_xyz = (x, y, z)
+                        self._latest_wind_ms = float(math.sqrt(x * x + y * y + z * z))
+                        self._wind_last_update = time.time()
         finally:
             try:
                 proc.terminate()
@@ -787,6 +848,12 @@ def _extract_vec3(obj: Any) -> Optional[tuple]:
             if res is not None:
                 return res
     elif isinstance(obj, list):
+        # list of 3 numbers
+        if len(obj) == 3 and all(isinstance(it, (int, float)) for it in obj):
+            try:
+                return (float(obj[0]), float(obj[1]), float(obj[2]))
+            except Exception:
+                pass
         for it in obj:
             res = _extract_vec3(it)
             if res is not None:
