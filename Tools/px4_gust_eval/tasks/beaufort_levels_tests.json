@@ -1,0 +1,46 @@
+{
+  "test_suite": "Wind Levels (Sustained & Gust)",
+  "description": "26 tasks: 13 sustained (mean only) and 13 gust-only (mean=0) using one_minus_cos. Midpoints of ranges set target speeds. Gust lengths chosen so that theoretical max gust matches the target (wg_max = 17.07*(L/212.28)^1.6); airspeed fixes gust period (T=L/V).",
+  "px4_sitl_command": "make px4_sitl gz_tiltrotor_windy",
+  "mission_type": "straight_line",
+  "mission_config": {
+    "takeoff_altitude": 10.0,
+    "timeout_sec": 150,
+    "advance_distance_m": 100.0,
+    "advance_axis": "ned_y",
+    "advance_after_hover_sec": 2
+  },
+  "wind_gust_tests": [
+    {"test_id": "steady_lvl_00", "description": "Sustained L0: |V|=0.10 m/s", "wind_config": {"model": "one_minus_cos", "mean": [-0.10, 0, 0], "direction": [1,0,0], "gust_length": 0, "airspeed": 5.0, "phase": 0.0 }},
+    {"test_id": "steady_lvl_01", "description": "Sustained L1: |V|=0.90 m/s", "wind_config": {"model": "one_minus_cos", "mean": [-0.90, 0, 0], "direction": [1,0,0], "gust_length": 0, "airspeed": 5.0, "phase": 0.0 }},
+    {"test_id": "steady_lvl_02", "description": "Sustained L2: |V|=2.45 m/s", "wind_config": {"model": "one_minus_cos", "mean": [-2.45, 0, 0], "direction": [1,0,0], "gust_length": 0, "airspeed": 5.0, "phase": 0.0 }},
+    {"test_id": "steady_lvl_03", "description": "Sustained L3: |V|=4.40 m/s", "wind_config": {"model": "one_minus_cos", "mean": [-4.40, 0, 0], "direction": [1,0,0], "gust_length": 0, "airspeed": 5.0, "phase": 0.0 }},
+    {"test_id": "steady_lvl_04", "description": "Sustained L4: |V|=6.70 m/s", "wind_config": {"model": "one_minus_cos", "mean": [-6.70, 0, 0], "direction": [1,0,0], "gust_length": 0, "airspeed": 5.0, "phase": 0.0 }},
+    {"test_id": "steady_lvl_05", "description": "Sustained L5: |V|=9.35 m/s", "wind_config": {"model": "one_minus_cos", "mean": [-9.35, 0, 0], "direction": [1,0,0], "gust_length": 0, "airspeed": 5.0, "phase": 0.0 }},
+    {"test_id": "steady_lvl_06", "description": "Sustained L6: |V|=12.30 m/s", "wind_config": {"model": "one_minus_cos", "mean": [-12.30, 0, 0], "direction": [1,0,0], "gust_length": 0, "airspeed": 5.0, "phase": 0.0 }},
+    {"test_id": "steady_lvl_07", "description": "Sustained L7: |V|=15.50 m/s", "wind_config": {"model": "one_minus_cos", "mean": [-15.50, 0, 0], "direction": [1,0,0], "gust_length": 0, "airspeed": 5.0, "phase": 0.0 }},
+    {"test_id": "steady_lvl_08", "description": "Sustained L8: |V|=18.95 m/s", "wind_config": {"model": "one_minus_cos", "mean": [-18.95, 0, 0], "direction": [1,0,0], "gust_length": 0, "airspeed": 5.0, "phase": 0.0 }},
+    {"test_id": "steady_lvl_09", "description": "Sustained L9: |V|=22.60 m/s", "wind_config": {"model": "one_minus_cos", "mean": [-22.60, 0, 0], "direction": [1,0,0], "gust_length": 0, "airspeed": 5.0, "phase": 0.0 }},
+    {"test_id": "steady_lvl_10", "description": "Sustained L10: |V|=26.45 m/s", "wind_config": {"model": "one_minus_cos", "mean": [-26.45, 0, 0], "direction": [1,0,0], "gust_length": 0, "airspeed": 5.0, "phase": 0.0 }},
+    {"test_id": "steady_lvl_11", "description": "Sustained L11: |V|=30.55 m/s", "wind_config": {"model": "one_minus_cos", "mean": [-30.55, 0, 0], "direction": [1,0,0], "gust_length": 0, "airspeed": 5.0, "phase": 0.0 }},
+    {"test_id": "steady_lvl_12", "description": "Sustained L12: |V|=34.80 m/s", "wind_config": {"model": "one_minus_cos", "mean": [-34.80, 0, 0], "direction": [1,0,0], "gust_length": 0, "airspeed": 5.0, "phase": 0.0 }},
+
+    {"test_id": "gust_lvl_00", "description": "Gust L0: Vmax≈0.10 m/s (mean=0)", "wind_config": {"model": "one_minus_cos", "mean": [0,0,0], "direction": [-1,0,0], "gust_length": 8.5,  "airspeed": 15.0, "phase": 0.0 }},
+    {"test_id": "gust_lvl_01", "description": "Gust L1: Vmax≈0.90 m/s (mean=0)", "wind_config": {"model": "one_minus_cos", "mean": [0,0,0], "direction": [-1,0,0], "gust_length": 33.7, "airspeed": 15.0, "phase": 0.0 }},
+    {"test_id": "gust_lvl_02", "description": "Gust L2: Vmax≈2.45 m/s (mean=0)", "wind_config": {"model": "one_minus_cos", "mean": [0,0,0], "direction": [-1,0,0], "gust_length": 63.0, "airspeed": 15.0, "phase": 0.0 }},
+    {"test_id": "gust_lvl_03", "description": "Gust L3: Vmax≈4.40 m/s (mean=0)", "wind_config": {"model": "one_minus_cos", "mean": [0,0,0], "direction": [-1,0,0], "gust_length": 91.0, "airspeed": 15.0, "phase": 0.0 }},
+    {"test_id": "gust_lvl_04", "description": "Gust L4: Vmax≈6.70 m/s (mean=0)", "wind_config": {"model": "one_minus_cos", "mean": [0,0,0], "direction": [-1,0,0], "gust_length": 118.3,"airspeed": 15.0, "phase": 0.0 }},
+    {"test_id": "gust_lvl_05", "description": "Gust L5: Vmax≈9.35 m/s (mean=0)", "wind_config": {"model": "one_minus_cos", "mean": [0,0,0], "direction": [-1,0,0], "gust_length": 145.9,"airspeed": 15.0, "phase": 0.0 }},
+    {"test_id": "gust_lvl_06", "description": "Gust L6: Vmax≈12.30 m/s (mean=0)","wind_config": {"model": "one_minus_cos", "mean": [0,0,0], "direction": [-1,0,0], "gust_length": 173.3,"airspeed": 15.0, "phase": 0.0 }},
+    {"test_id": "gust_lvl_07", "description": "Gust L7: Vmax≈15.50 m/s (mean=0)", "wind_config": {"model": "one_minus_cos", "mean": [0,0,0], "direction": [-1,0,0], "gust_length": 199.4,"airspeed": 15.0, "phase": 0.0 }},
+    {"test_id": "gust_lvl_08", "description": "Gust L8: Vmax≈18.95 m/s (mean=0)", "wind_config": {"model": "one_minus_cos", "mean": [0,0,0], "direction": [-1,0,0], "gust_length": 226.3,"airspeed": 15.0, "phase": 0.0 }},
+    {"test_id": "gust_lvl_09", "description": "Gust L9: Vmax≈22.60 m/s (mean=0)", "wind_config": {"model": "one_minus_cos", "mean": [0,0,0], "direction": [-1,0,0], "gust_length": 253.4,"airspeed": 15.0, "phase": 0.0 }},
+    {"test_id": "gust_lvl_10", "description": "Gust L10: Vmax≈26.45 m/s (mean=0)","wind_config": {"model": "one_minus_cos", "mean": [0,0,0], "direction": [-1,0,0], "gust_length": 279.1,"airspeed": 15.0, "phase": 0.0 }},
+    {"test_id": "gust_lvl_11", "description": "Gust L11: Vmax≈30.55 m/s (mean=0)","wind_config": {"model": "one_minus_cos", "mean": [0,0,0], "direction": [-1,0,0], "gust_length": 305.5,"airspeed": 15.0, "phase": 0.0 }},
+    {"test_id": "gust_lvl_12", "description": "Gust L12: Vmax≈34.80 m/s (mean=0)","wind_config": {"model": "one_minus_cos", "mean": [0,0,0], "direction": [-1,0,0], "gust_length": 331.1,"airspeed": 15.0, "phase": 0.0 }}
+  ],
+  "output_config": {
+    "log_directory": "logs/levels",
+    "save_flight_data": true
+  }
+}

@@ -32,13 +32,13 @@
       }
     },
     {
-      "test_id": "gust_one_minus_cos_long",
+      "test_id": "no_gust_and_wind",
       "description": "Long duration 1-cos gust model",
       "wind_config": {
         "model": "one_minus_cos",
         "mean": [0.0, 0.0, 0.0],
         "gust_length": 0.0,
-        "airspeed": 10.0,
+        "airspeed": 0.0,
         "direction": [1.0, 0.0, 0.0],
         "phase": 0.0
       },
