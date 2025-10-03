@@ -94,6 +94,8 @@ def wind_env_from_config(wind_config: Dict[str, Any]) -> Dict[str, str]:
         ("airspeed", "PX4_GZ_WIND_AIRSPEED"),
         ("frequency", "PX4_GZ_WIND_FREQUENCY"),
         ("phase", "PX4_GZ_WIND_PHASE"),
+        ("A0", "PX4_GZ_WIND_A0"),
+        ("T", "PX4_GZ_WIND_T"),
     ):
         if k in wind_config:
             env[env_k] = str(wind_config[k])
@@ -554,7 +556,7 @@ class SimpleGustRunner:
     # GZ wind config writer
     # ----------------------------
     def _update_gz_wind_config(self, wind_cfg: Dict[str, Any]) -> None:
-        """Write one_minus_cos wind parameters into gz server.config.
+        """Write wind parameters into gz server.config for the active model.
         Edits src/modules/simulation/gz_bridge/server.config in-place.
         Creates a backup copy under the run_dir for traceability.
         """
@@ -587,13 +589,15 @@ class SimpleGustRunner:
             self.logger.debug("No WindGust plugin block found in server.config; skipping")
             return
 
-        # Only one_minus_cos supported per requirement
-        model_val = 'one_minus_cos'
+        model_val = str(wind_cfg.get('model', 'one_minus_cos'))
         mean = wind_cfg.get('mean', [0, 0, 0])
         direction = wind_cfg.get('direction', [1, 0, 0])
         gust_length = wind_cfg.get('gust_length', 100)
         airspeed = wind_cfg.get('airspeed', 5)
         phase = wind_cfg.get('phase', 0.0)
+        # For one_minus_cos_simp
+        A0 = wind_cfg.get('A0', wind_cfg.get('a0', None))
+        T = wind_cfg.get('T', wind_cfg.get('t', None))
 
         def set_or_create(parent: ET.Element, tag: str, text: str) -> None:
             node = parent.find(tag)
@@ -605,8 +609,15 @@ class SimpleGustRunner:
             set_or_create(pe, 'model', model_val)
             set_or_create(pe, 'mean', f"{mean[0]} {mean[1]} {mean[2]}")
             set_or_create(pe, 'direction', f"{direction[0]} {direction[1]} {direction[2]}")
-            set_or_create(pe, 'gust_length', str(gust_length))
-            set_or_create(pe, 'airspeed', str(airspeed))
+            if model_val == 'one_minus_cos_simp':
+                if A0 is not None:
+                    set_or_create(pe, 'A0', str(A0))
+                if T is not None:
+                    set_or_create(pe, 'T', str(T))
+                # Keep other fields intact but not required
+            else:
+                set_or_create(pe, 'gust_length', str(gust_length))
+                set_or_create(pe, 'airspeed', str(airspeed))
             set_or_create(pe, 'phase', str(phase))
 
         # Backup then write
