@@ -40,7 +40,9 @@
  #include <chrono>
  #include <string>
  #include <sdf/sdf.hh>
- #include <gz/transport/Publisher.hh>
+#include <gz/transport/Publisher.hh>
+#include <gz/math/Helpers.hh>
+#include <cmath>
 
  namespace custom
  {
@@ -63,20 +65,36 @@
      gz::math::Vector3d _mean{0, 0, 0};
      gz::math::Vector3d _amplitude{0, 0, 0};
      double _frequency_hz{0.0};
-     double _phase_rad{0.0};
-     std::string _model{"one_minus_cos"};
-     // 1-cos gust parameters
-     double _gust_length_m{30.0};     // l_g
-     double _airspeed_ms{-1.0};       // V_inf (<=0 means derive from |mean|)
-     gz::math::Vector3d _direction{1, 0, 0};
+    double _phase_rad{0.0};
+    std::string _model{"one_minus_cos"};
+    // 1-cos gust parameters
+    double _gust_length_m{30.0};     // l_g
+    double _airspeed_ms{-1.0};       // V_inf (<=0 means derive from |mean|)
+    gz::math::Vector3d _direction{1, 0, 0};
+
+    // one_minus_cos_simp parameters: v = (A0/2) * [1 - cos(2*pi*t/T)]
+    double _simp_A0{0.0};            // peak gust magnitude (m/s)
+    double _simp_T{10.0};            // period (s)
 
      // State
      gz::sim::Entity _worldEntity{gz::sim::kNullEntity};
      gz::sim::Entity _windEntity{gz::sim::kNullEntity};
      bool _configured{false};
      bool _warnedMissingWind{false};
-     gz::transport::Node _node;
-     gz::transport::Node::Publisher _pub;
-     std::string _topic;
- };
- } // namespace custom
+    gz::transport::Node _node;
+    gz::transport::Node::Publisher _pub;
+    std::string _topic;
+    // Compute simple 1-cos gust at time t (seconds)
+    inline double one_minus_cos_simp(double t) const {
+        const double T = _simp_T;
+        if (T <= 1e-6) {
+            return 0.0;
+        }
+        // phase shift in seconds (phase_rad corresponds to 2*pi per period)
+        const double t_phase = (_phase_rad / (2.0 * GZ_PI)) * T;
+        double t_mod = std::fmod(t + t_phase, T);
+        if (t_mod < 0) t_mod += T;
+        return 0.5 * _simp_A0 * (1.0 - std::cos(2.0 * GZ_PI * t_mod / T));
+    }
+};
+} // namespace custom
