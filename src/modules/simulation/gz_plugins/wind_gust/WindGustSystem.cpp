@@ -69,7 +69,7 @@
      _worldEntity = _entity;
 
      // Parse parameters
-     if (_sdf) {
+    if (_sdf) {
 	 if (_sdf->HasElement("model")) {
 	     _model = _sdf->Get<std::string>("model", _model).first;
 	 }
@@ -85,17 +85,29 @@
 	 if (_sdf->HasElement("phase")) {
 	     _phase_rad = _sdf->Get<double>("phase", 0.0).first;
 	 }
-	 // 1-cos gust parameters (optional)
-	 if (_sdf->HasElement("gust_length")) {
-	     _gust_length_m = _sdf->Get<double>("gust_length", _gust_length_m).first;
-	 }
-	 if (_sdf->HasElement("airspeed")) {
-	     _airspeed_ms = _sdf->Get<double>("airspeed", _airspeed_ms).first;
-	 }
-	 if (_sdf->HasElement("direction")) {
-	     _direction = _sdf->Get<Vector3d>("direction", _direction).first;
-	 }
+     // 1-cos gust parameters (optional)
+     if (_sdf->HasElement("gust_length")) {
+         _gust_length_m = _sdf->Get<double>("gust_length", _gust_length_m).first;
      }
+     if (_sdf->HasElement("airspeed")) {
+         _airspeed_ms = _sdf->Get<double>("airspeed", _airspeed_ms).first;
+     }
+     if (_sdf->HasElement("direction")) {
+         _direction = _sdf->Get<Vector3d>("direction", _direction).first;
+     }
+
+     // one_minus_cos_simp parameters (optional): A0 and T
+     if (_sdf->HasElement("A0")) {
+         _simp_A0 = _sdf->Get<double>("A0", _simp_A0).first;
+     } else if (_sdf->HasElement("a0")) {
+         _simp_A0 = _sdf->Get<double>("a0", _simp_A0).first;
+     }
+     if (_sdf->HasElement("T")) {
+         _simp_T = _sdf->Get<double>("T", _simp_T).first;
+     } else if (_sdf->HasElement("t")) {
+         _simp_T = _sdf->Get<double>("t", _simp_T).first;
+     }
+    }
 
      // Try to resolve wind entity now; lazily fallback during updates
      _windEntity = _ecm.EntityByComponents(components::Wind());
@@ -146,7 +158,7 @@
      const double t = std::chrono::duration<double>(_info.simTime).count();
      Vector3d wind = _mean;
 
-     if (_model == "sine") {
+    if (_model == "sine") {
 	 if (_frequency_hz > 0.0) {
 	     const double omega = 2.0 * GZ_PI * _frequency_hz;
 	     wind.X() += _amplitude.X() * std::sin(omega * t + _phase_rad);
@@ -156,34 +168,51 @@
 	     wind += _amplitude;
 	 }
 
-     } else { // default: one_minus_cos periodic gust
+    } else if (_model == "one_minus_cos_simp") {
+     // Simple 1-cos single gust based on explicit A0 and T
+     Vector3d dir = _direction;
+     if (dir.Length() < 1e-6) {
+         dir.Set(1, 0, 0);
+     } else {
+         dir.Normalize();
+     }
+     const double T = _simp_T;
+     const double t0 = 26.0; // gust start time (s)
+     double wg = 0.0;
+     if (T > 1e-6 && t >= t0 && t <= t0 + T) {
+         const double tau = t - t0;
+         wg = 0.5 * _simp_A0 * (1.0 - std::cos(2.0 * GZ_PI * tau / T));
+     }
+     wind += dir * wg;
+
+    } else { // default: one_minus_cos single gust
 	 // Derive V_inf if not provided
 	 double V = _airspeed_ms;
 	 if (V <= 0.0) {
 	     V = _mean.Length();
 	 }
-	 // If still invalid, no gust component
-	 if (V > 0.0 && _gust_length_m > 0.0) {
-	     const double T = _gust_length_m / V;               // period
-	     // phase shift in seconds (phase_rad corresponds to 2*pi per period)
-	     const double t_phase = (_phase_rad / (2.0 * GZ_PI)) * T;
-	     const double t_eff = t + t_phase;
-	     double t_mod = std::fmod(t_eff, T);
-	     if (t_mod < 0) t_mod += T;
+     // If still invalid, no gust component
+     if (V > 0.0 && _gust_length_m > 0.0) {
+         const double T = _gust_length_m / V;               // gust duration
+         const double t0 = 26.0;                            // gust start time (s)
 
-	     // amplitude from given formula
-	     const double A = 17.07 * std::pow((_gust_length_m / 212.28), 1.6) / 2.0;
-	     const double wg = A * (1.0 - std::cos(2.0 * GZ_PI * t_mod / T));
+         double wg = 0.0;
+         if (t >= t0 && t <= t0 + T) {
+             // amplitude from given formula
+             const double A = 17.07 * std::pow((_gust_length_m / 212.28), 1.6) / 2.0;
+             const double tau = t - t0;
+             wg = A * (1.0 - std::cos(2.0 * GZ_PI * tau / T));
+         }
 
-	     Vector3d dir = _direction;
-	     if (dir.Length() < 1e-6) {
-		 dir.Set(1, 0, 0);
-	     } else {
-		 dir.Normalize();
-	     }
-	     wind += dir * wg;
-	 }
+         Vector3d dir = _direction;
+         if (dir.Length() < 1e-6) {
+             dir.Set(1, 0, 0);
+         } else {
+             dir.Normalize();
+         }
+         wind += dir * wg;
      }
+    }
 
      // Update component
      auto windVel = _ecm.Component<components::WorldLinearVelocity>(_windEntity);
