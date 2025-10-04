@@ -131,11 +131,11 @@ def compute_metrics_for_test(df: pd.DataFrame) -> Optional[Dict[str, float]]:
     h_max = float(np.nanmax(np.abs(h_dev))) if y_seg.size else float("nan")
     h_std = float(np.nanstd(h_dev)) if y_seg.size else float("nan")
 
-    # Vertical deviation (relative altitude) vs median
+    # Vertical deviation (relative altitude) vs 10m reference
     if "rel_alt_m" in df.columns:
         z = df["rel_alt_m"].to_numpy(dtype=float)
         z_seg = z[mask]
-        z_ref = np.nanmedian(z_seg)
+        z_ref = 10.0  # Use 10m as reference height
         v_dev = z_seg - z_ref
         v_max = float(np.nanmax(np.abs(v_dev))) if z_seg.size else float("nan")
         v_std = float(np.nanstd(v_dev)) if z_seg.size else float("nan")
@@ -171,6 +171,12 @@ def compute_metrics_for_test(df: pd.DataFrame) -> Optional[Dict[str, float]]:
 def compute_grades(dfs: Dict[str, pd.DataFrame], id_to_cfg: Dict[str, Dict]) -> Tuple[Dict[str, str], Dict[str, Dict[str, float]]]:
     """Compute stability grade for each test.
     Grades: "Level 1", "Level 2", "Unstable", "Not launched".
+
+    Level 2 rule: for tests that fail base thresholds on the mid-flight segment,
+    detect the first time any instantaneous deviation (|Y cross-track|, |Z deviation|,
+    |roll|, |pitch|) exceeds its threshold. If within the following RECOVER_T seconds
+    a window of data (the window [t_exceed, t_exceed + RECOVER_T]) produces metrics
+    that are all within thresholds, grade as "Level 2"; otherwise "Unstable".
     """
     grades: Dict[str, str] = {}
     metrics: Dict[str, Dict[str, float]] = {}
@@ -204,34 +210,108 @@ def compute_grades(dfs: Dict[str, pd.DataFrame], id_to_cfg: Dict[str, Dict]) -> 
 
         if base_ok:
             grades[tid] = "Level 1"
+            print(f"[DEBUG] {tid}: Level 1 - all metrics within thresholds")
             continue
 
-        # If gust: check recovery in last 10s of segment
-        if is_gust and "t_s" in df.columns and {"lat_deg", "lon_deg"}.issubset(df.columns):
-            x, _y = latlon_to_xy(df)
+        print(f"[DEBUG] {tid}: Failed Level 1 - gust_len={gust_len}, is_gust={is_gust}")
+        print(f"[DEBUG] {tid}: Metrics - h_max={m.get('h_max_dev', 'N/A'):.2f} (≤{H_MAX}), h_std={m.get('h_std', 'N/A'):.2f} (≤{H_STD}), v_max={m.get('v_max_dev', 'N/A'):.2f} (≤{V_MAX}), v_std={m.get('v_std', 'N/A'):.2f} (≤{V_STD}), roll={m.get('max_abs_roll', 'N/A'):.1f} (≤{ANG_MAX}), pitch={m.get('max_abs_pitch', 'N/A'):.1f} (≤{ANG_MAX})")
+        print(f"[DEBUG] {tid}: Level 1 checks - h_max_ok:{m.get('h_max_dev', float('inf')) <= H_MAX}, h_std_ok:{m.get('h_std', float('inf')) <= H_STD}, v_max_ok:{m.get('v_max_dev', float('inf')) <= V_MAX}, v_std_ok:{m.get('v_std', float('inf')) <= V_STD}, roll_ok:{m.get('max_abs_roll', float('inf')) <= ANG_MAX}, pitch_ok:{m.get('max_abs_pitch', float('inf')) <= ANG_MAX}")
+
+        # Check recovery within RECOVER_T after first exceedance for all tests
+        if "t_s" in df.columns and {"lat_deg", "lon_deg"}.issubset(df.columns):
+            print(f"[DEBUG] {tid}: Checking Level 2 recovery logic...")
+            x, y = latlon_to_xy(df)
             t = df["t_s"].to_numpy(dtype=float)
             mask = _segment_mask_from_x(x)
             if mask.any():
-                t_seg = t[mask]
-                t_end = t_seg[-1]
-                mask_last = mask & (t >= (t_end - RECOVER_T))
-                if mask_last.sum() >= 5:
-                    df_last = df[mask_last]
-                    m_last = compute_metrics_for_test(df_last)
-                    if m_last is not None:
-                        ok_last = (
-                            (m_last.get("h_max_dev", float("inf")) <= H_MAX) and
-                            (m_last.get("h_std", float("inf")) <= H_STD) and
-                            (m_last.get("v_max_dev", float("inf")) <= V_MAX) and
-                            (m_last.get("v_std", float("inf")) <= V_STD) and
-                            (m_last.get("max_abs_roll", float("inf")) <= ANG_MAX) and
-                            (m_last.get("max_abs_pitch", float("inf")) <= ANG_MAX)
-                        )
-                        if ok_last:
-                            grades[tid] = "Level 2"
-                            continue
+                # Build instantaneous exceedance flags on the mid-flight segment
+                # Horizontal cross-track deviation against best-fit line
+                exceed_h = np.zeros_like(mask, dtype=bool)
+                try:
+                    x_seg = x[mask]
+                    y_seg = y[mask]
+                    finite_xy = np.isfinite(x_seg) & np.isfinite(y_seg)
+                    if finite_xy.sum() >= 2:
+                        k, b = np.polyfit(x_seg[finite_xy], y_seg[finite_xy], 1)
+                        y_pred = k * x + b
+                    else:
+                        # Fallback: use median as straight line (zero slope)
+                        y_med = float(np.nanmedian(y_seg)) if y_seg.size else 0.0
+                        y_pred = np.full_like(y, y_med)
+                    y_dev_full = y - y_pred
+                    exceed_h = np.abs(y_dev_full) > H_MAX
+                except Exception:
+                    pass
+
+                # Vertical deviation against 10m reference
+                exceed_v = np.zeros_like(mask, dtype=bool)
+                if "rel_alt_m" in df.columns:
+                    try:
+                        z = df["rel_alt_m"].to_numpy(dtype=float)
+                        z_ref = 10.0  # Use 10m as reference height
+                        v_dev_full = z - z_ref
+                        exceed_v = np.abs(v_dev_full) > V_MAX
+                    except Exception:
+                        pass
+
+                # Attitude exceedance
+                exceed_roll = np.zeros_like(mask, dtype=bool)
+                exceed_pitch = np.zeros_like(mask, dtype=bool)
+                if "roll_deg" in df.columns:
+                    try:
+                        exceed_roll = np.abs(df["roll_deg"].to_numpy(dtype=float)) > ANG_MAX
+                    except Exception:
+                        pass
+                if "pitch_deg" in df.columns:
+                    try:
+                        exceed_pitch = np.abs(df["pitch_deg"].to_numpy(dtype=float)) > ANG_MAX
+                    except Exception:
+                        pass
+
+                exceed_any = (exceed_h | exceed_v | exceed_roll | exceed_pitch) & mask
+                exceed_count = exceed_any.sum()
+                print(f"[DEBUG] {tid}: Exceedances - h:{exceed_h.sum()}, v:{exceed_v.sum()}, roll:{exceed_roll.sum()}, pitch:{exceed_pitch.sum()}, total:{exceed_count}")
+
+                if exceed_any.any():
+                    # First exceedance time
+                    i0 = int(np.argmax(exceed_any))
+                    t0 = float(t[i0])
+                    print(f"[DEBUG] {tid}: First exceedance at t={t0:.1f}s, checking recovery window [t0, t0+{RECOVER_T}]")
+                    mask_recover = mask & (t >= t0) & (t <= (t0 + RECOVER_T))
+                    recover_count = mask_recover.sum()
+                    print(f"[DEBUG] {tid}: Recovery window has {recover_count} samples (need ≥5)")
+
+                    if recover_count >= 5:
+                        df_after = df[mask_recover]
+                        m_after = compute_metrics_for_test(df_after)
+                        if m_after is not None:
+                            print(f"[DEBUG] {tid}: Recovery metrics - h_max={m_after.get('h_max_dev', 'N/A'):.2f}, h_std={m_after.get('h_std', 'N/A'):.2f}, v_max={m_after.get('v_max_dev', 'N/A'):.2f}, v_std={m_after.get('v_std', 'N/A'):.2f}, roll={m_after.get('max_abs_roll', 'N/A'):.1f}, pitch={m_after.get('max_abs_pitch', 'N/A'):.1f}")
+                            ok_after = (
+                                (m_after.get("h_max_dev", float("inf")) <= H_MAX) and
+                                (m_after.get("h_std", float("inf")) <= H_STD) and
+                                (m_after.get("v_max_dev", float("inf")) <= V_MAX) and
+                                (m_after.get("v_std", float("inf")) <= V_STD) and
+                                (m_after.get("max_abs_roll", float("inf")) <= ANG_MAX) and
+                                (m_after.get("max_abs_pitch", float("inf")) <= ANG_MAX)
+                            )
+                            print(f"[DEBUG] {tid}: Recovery successful: {ok_after}")
+                            if ok_after:
+                                grades[tid] = "Level 2"
+                                print(f"[DEBUG] {tid}: Assigned Level 2")
+                                continue
+                        else:
+                            print(f"[DEBUG] {tid}: Failed to compute recovery metrics")
+                    else:
+                        print(f"[DEBUG] {tid}: Insufficient recovery samples")
+                else:
+                    print(f"[DEBUG] {tid}: No exceedances found in segment")
+            else:
+                print(f"[DEBUG] {tid}: No valid segment mask found")
+        else:
+            print(f"[DEBUG] {tid}: Skipping Level 2 check - missing required columns (t_s, lat_deg, lon_deg)")
 
         grades[tid] = "Unstable"
+        print(f"[DEBUG] {tid}: Final grade: Unstable")
 
     # Add missing ones as Not launched
     for tid in id_to_cfg.keys():
