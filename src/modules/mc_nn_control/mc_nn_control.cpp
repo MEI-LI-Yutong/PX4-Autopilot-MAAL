@@ -353,34 +353,46 @@ void MulticopterNeuralNetworkControl::PopulateInputTensor()
 
 void MulticopterNeuralNetworkControl::PublishOutput(float *command_actions)
 {
-	// Publish servo outputs (first 3 outputs)
-	actuator_servos_s actuator_servos;
-	actuator_servos.timestamp = hrt_absolute_time();
-	actuator_servos.timestamp_sample = hrt_absolute_time();
+	// DISABLED: Publish servo outputs (first 3 outputs)
+	// actuator_servos_s actuator_servos;
+	// actuator_servos.timestamp = hrt_absolute_time();
+	// actuator_servos.timestamp_sample = hrt_absolute_time();
 
-	for (int i = 0; i < 3; i++) {
-		actuator_servos.control[i] = PX4_ISFINITE(command_actions[i]) ? command_actions[i] : NAN;
-	}
-	// Set remaining servo controls to NAN
-	for (int i = 3; i < actuator_servos_s::NUM_CONTROLS; i++) {
-		actuator_servos.control[i] = NAN;
-	}
+	// for (int i = 0; i < 3; i++) {
+	// 	actuator_servos.control[i] = PX4_ISFINITE(command_actions[i]) ? command_actions[i] : NAN;
+	// }
+	// // Set remaining servo controls to NAN
+	// for (int i = 3; i < actuator_servos_s::NUM_CONTROLS; i++) {
+	// 	actuator_servos.control[i] = NAN;
+	// }
 
-	_actuator_servos_pub.publish(actuator_servos);
+	// _actuator_servos_pub.publish(actuator_servos);
+
+	PX4_INFO("command_actions[0-2] (servo raw): %f, %f, %f", (double)command_actions[0], (double)command_actions[1], (double)command_actions[2]);
+
 
 	// Publish motor outputs (last 3 outputs)
 	actuator_motors_s actuator_motors;
 	actuator_motors.timestamp = hrt_absolute_time();
 	actuator_motors.timestamp_sample = hrt_absolute_time();
 
+	PX4_INFO("command_actions[3-5] (motor raw): %f, %f, %f", (double)command_actions[3], (double)command_actions[4], (double)command_actions[5]);
+
 	for (int i = 0; i < 3; i++) {
-		actuator_motors.control[i] = PX4_ISFINITE(command_actions[i + 3]) ? command_actions[i + 3] : NAN;
+		float motor_value = PX4_ISFINITE(command_actions[i + 3]) ? command_actions[i + 3] : NAN;
+		// Clamp negative values to 0 for non-reversible motors
+		if (PX4_ISFINITE(motor_value) && motor_value < 0.0f) {
+			motor_value = 0.0f;
+		}
+		actuator_motors.control[i] = motor_value;
 	}
+	// actuator_motors.control[2] = 0.44f;
 	// Set remaining motor controls to NAN
 	for (int i = 3; i < actuator_motors_s::NUM_CONTROLS; i++) {
 		actuator_motors.control[i] = NAN;
 	}
 	actuator_motors.reversible_flags = 0;
+	PX4_INFO("actuator_motors: %f, %f, %f", (double)actuator_motors.control[0], (double)actuator_motors.control[1], (double)actuator_motors.control[2]);
 
 	_actuator_motors_pub.publish(actuator_motors);
 }
