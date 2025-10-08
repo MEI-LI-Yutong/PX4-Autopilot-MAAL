@@ -354,19 +354,19 @@ void MulticopterNeuralNetworkControl::PopulateInputTensor()
 void MulticopterNeuralNetworkControl::PublishOutput(float *command_actions)
 {
 	// DISABLED: Publish servo outputs (first 3 outputs)
-	// actuator_servos_s actuator_servos;
-	// actuator_servos.timestamp = hrt_absolute_time();
-	// actuator_servos.timestamp_sample = hrt_absolute_time();
+	actuator_servos_s actuator_servos;
+	actuator_servos.timestamp = hrt_absolute_time();
+	actuator_servos.timestamp_sample = hrt_absolute_time();
 
-	// for (int i = 0; i < 3; i++) {
-	// 	actuator_servos.control[i] = PX4_ISFINITE(command_actions[i]) ? command_actions[i] : NAN;
-	// }
-	// // Set remaining servo controls to NAN
-	// for (int i = 3; i < actuator_servos_s::NUM_CONTROLS; i++) {
-	// 	actuator_servos.control[i] = NAN;
-	// }
+	for (int i = 0; i < 3; i++) {
+		actuator_servos.control[i] = PX4_ISFINITE(command_actions[i]) ? command_actions[i] : NAN;
+	}
+	// Set remaining servo controls to NAN
+	for (int i = 3; i < actuator_servos_s::NUM_CONTROLS; i++) {
+		actuator_servos.control[i] = NAN;
+	}
 
-	// _actuator_servos_pub.publish(actuator_servos);
+	_actuator_servos_pub.publish(actuator_servos);
 
 	PX4_INFO("command_actions[0-2] (servo raw): %f, %f, %f", (double)command_actions[0], (double)command_actions[1], (double)command_actions[2]);
 
