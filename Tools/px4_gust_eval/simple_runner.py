@@ -198,10 +198,26 @@ class SimpleGustRunner:
         env = os.environ.copy()
         env.update(env_overrides)
 
+        # Parse command: extract environment variables prefix (KEY=VALUE KEY2=VALUE2 ... actual_command)
+        parts = shlex.split(cmd)
+        cmd_parts = []
+        for part in parts:
+            if '=' in part and not part.startswith('-'):
+                # Looks like an environment variable
+                key, value = part.split('=', 1)
+                env[key] = value
+            else:
+                # Actual command starts here
+                cmd_parts.append(part)
+
+        if not cmd_parts:
+            self.logger.error("No actual command found after parsing environment variables")
+            return False
+
         try:
-            self.logger.info(f"Launching PX4: {cmd}")
+            self.logger.info(f"Launching PX4: {' '.join(cmd_parts)} (with env overrides)")
             self.proc = subprocess.Popen(
-                shlex.split(cmd),
+                cmd_parts,
                 cwd=self.px4_root,
                 env=env,
                 stdout=subprocess.PIPE if self.verbose else subprocess.DEVNULL,
@@ -575,50 +591,68 @@ class SimpleGustRunner:
             self.logger.warning(f"Failed to parse {cfg_path}: {e}")
             return
 
-        # Find wind plugin block
-        plugin_elems = []
+        # Find wind plugin block (use set to avoid duplicates)
+        plugin_elems = set()
         for p in root.findall('.//plugin'):
             name = p.attrib.get('name', '')
             filename = p.attrib.get('filename', '')
             if 'WindGust' in name or 'WindGust' in filename or 'WindGust' in ''.join(p.itertext()):
-                plugin_elems.append(p)
-            if 'libWindGustPlugin.so' in filename:
-                plugin_elems.append(p)
+                plugin_elems.add(p)
+            elif 'libWindGustPlugin.so' in filename:
+                plugin_elems.add(p)
 
         if not plugin_elems:
             self.logger.debug("No WindGust plugin block found in server.config; skipping")
             return
 
-        model_val = str(wind_cfg.get('model', 'one_minus_cos'))
-        mean = wind_cfg.get('mean', [0, 0, 0])
-        direction = wind_cfg.get('direction', [1, 0, 0])
-        gust_length = wind_cfg.get('gust_length', 100)
-        airspeed = wind_cfg.get('airspeed', 5)
-        phase = wind_cfg.get('phase', 0.0)
-        # For one_minus_cos_simp
-        A0 = wind_cfg.get('A0', wind_cfg.get('a0', None))
-        T = wind_cfg.get('T', wind_cfg.get('t', None))
+        # Build parent map for all elements (standard solution for ElementTree)
+        parent_map = {c: p for p in root.iter() for c in p}
 
-        def set_or_create(parent: ET.Element, tag: str, text: str) -> None:
-            node = parent.find(tag)
-            if node is None:
-                node = ET.SubElement(parent, tag)
-            node.text = text
-
+        # Rebuild each plugin element from scratch to avoid parameter conflicts
         for pe in plugin_elems:
-            set_or_create(pe, 'model', model_val)
-            set_or_create(pe, 'mean', f"{mean[0]} {mean[1]} {mean[2]}")
-            set_or_create(pe, 'direction', f"{direction[0]} {direction[1]} {direction[2]}")
-            if model_val == 'one_minus_cos_simp':
-                if A0 is not None:
-                    set_or_create(pe, 'A0', str(A0))
-                if T is not None:
-                    set_or_create(pe, 'T', str(T))
-                # Keep other fields intact but not required
-            else:
-                set_or_create(pe, 'gust_length', str(gust_length))
-                set_or_create(pe, 'airspeed', str(airspeed))
-            set_or_create(pe, 'phase', str(phase))
+            # Save plugin attributes
+            attribs = pe.attrib.copy()
+
+            # Find parent using pre-built map
+            parent = parent_map.get(pe)
+
+            if parent is None:
+                self.logger.warning("Could not find parent for plugin element; skipping")
+                continue
+
+            # Get insertion index to maintain position (with error handling)
+            try:
+                insert_idx = list(parent).index(pe)
+            except ValueError:
+                self.logger.warning(f"Plugin element not found in parent's children; appending to end")
+                insert_idx = len(list(parent))
+
+            # Remove old plugin element
+            parent.remove(pe)
+
+            # Create new plugin element with same attributes
+            new_plugin = ET.Element('plugin', attribs)
+            parent.insert(insert_idx, new_plugin)
+
+            # Add all parameters from wind_cfg dynamically
+            for key, value in wind_cfg.items():
+                if isinstance(value, list):
+                    # Handle vector parameters (mean, direction, etc.)
+                    if len(value) == 3 and all(isinstance(v, (int, float)) for v in value):
+                        ET.SubElement(new_plugin, key).text = f"{value[0]} {value[1]} {value[2]}"
+                    else:
+                        # Non-3D vector list, convert to space-separated string
+                        ET.SubElement(new_plugin, key).text = " ".join(str(v) for v in value)
+                elif isinstance(value, (int, float, str)):
+                    # Scalar parameters
+                    ET.SubElement(new_plugin, key).text = str(value)
+                # Skip dict and other complex types
+
+            # Add indentation for better formatting
+            new_plugin.text = "\n      "
+            new_plugin.tail = "\n  "
+            for i, child in enumerate(new_plugin):
+                child.tail = "\n      " if i < len(new_plugin) - 1 else "\n    "
 
         # Backup then write
         try:
