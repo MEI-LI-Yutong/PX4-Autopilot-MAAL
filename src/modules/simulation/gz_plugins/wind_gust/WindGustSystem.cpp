@@ -92,9 +92,22 @@
      if (_sdf->HasElement("airspeed")) {
          _airspeed_ms = _sdf->Get<double>("airspeed", _airspeed_ms).first;
      }
-     if (_sdf->HasElement("direction")) {
-         _direction = _sdf->Get<Vector3d>("direction", _direction).first;
-     }
+    if (_sdf->HasElement("direction")) {
+        _direction = _sdf->Get<Vector3d>("direction", _direction).first;
+    }
+
+    // Dryden parameters (optional)
+    if (_sdf->HasElement("dryden_sigma")) {
+        _dryden_sigma = _sdf->Get<Vector3d>("dryden_sigma", _dryden_sigma).first;
+    }
+    if (_sdf->HasElement("dryden_length")) {
+        _dryden_length = _sdf->Get<Vector3d>("dryden_length", _dryden_length).first;
+    }
+    if (_sdf->HasElement("seed")) {
+        _rng_seed = static_cast<uint32_t>(_sdf->Get<int>("seed", 0).first);
+        _rng.seed(_rng_seed);
+        _rng_seeded = true;
+    }
 
      // one_minus_cos_simp parameters (optional): A0 and T
      if (_sdf->HasElement("A0")) {
@@ -155,8 +168,13 @@
      }
 
      // Compute wind vector at sim time
-     const double t = std::chrono::duration<double>(_info.simTime).count();
-     Vector3d wind = _mean;
+    const double t = std::chrono::duration<double>(_info.simTime).count();
+    if (_last_time_s < 0.0) {
+        _last_time_s = t;
+    }
+    const double dt = std::max(0.0, t - _last_time_s);
+    _last_time_s = t;
+    Vector3d wind = _mean;
 
     if (_model == "sine") {
 	 if (_frequency_hz > 0.0) {
@@ -168,7 +186,7 @@
 	     wind += _amplitude;
 	 }
 
-    } else if (_model == "one_minus_cos_simp") {
+   } else if (_model == "one_minus_cos_simp") {
      // Simple 1-cos single gust based on explicit A0 and T
      Vector3d dir = _direction;
      if (dir.Length() < 1e-6) {
@@ -185,7 +203,66 @@
      }
      wind += dir * wg;
 
-    } else { // default: one_minus_cos single gust
+   } else if (_model == "dryden") {
+    // Dryden continuous gust model with zero at -a/sqrt(3)
+    // Determine airspeed
+    double Va = _airspeed_ms;
+    if (Va <= 0.0) {
+        Va = _mean.Length();
+        if (Va <= 0.0) {
+            Va = 15.0;
+        }
+    }
+
+    const double Lu = std::max(1e-6, _dryden_length.X());
+    const double Lv = std::max(1e-6, _dryden_length.Y());
+    const double Lw = std::max(1e-6, _dryden_length.Z());
+    const double au = Va / Lu;
+    const double av = Va / Lv;
+    const double aw = Va / Lw;
+
+    // RNG seed if not provided explicitly
+    if (!_rng_seeded) {
+        std::random_device rd;
+        _rng.seed(rd());
+        _rng_seeded = true;
+    }
+
+    if (dt > 0.0) {
+        const double sqrt_dt = std::sqrt(dt);
+
+        // u: Ornstein-Uhlenbeck exact discretization
+        if (au > 1e-9) {
+            const double E = std::exp(-au * dt);
+            const double var_inc = (1.0 - E * E) / (2.0 * au);
+            _xu = E * _xu + std::sqrt(std::max(0.0, var_inc)) * _norm(_rng);
+        } else {
+            _xu = 0.0;
+        }
+
+        // v: second-order Euler–Maruyama
+        {
+            const double xv1_prev = _xv1;
+            const double n = _norm(_rng) * sqrt_dt;
+            _xv1 += (-2.0 * av * _xv1 - av * av * _xv2) * dt + n;
+            _xv2 += xv1_prev * dt;
+        }
+        // w: second-order Euler–Maruyama
+        {
+            const double xw1_prev = _xw1;
+            const double n = _norm(_rng) * sqrt_dt;
+            _xw1 += (-2.0 * aw * _xw1 - aw * aw * _xw2) * dt + n;
+            _xw2 += xw1_prev * dt;
+        }
+    }
+
+    const double ug = _dryden_sigma.X() * std::sqrt(2.0 * au) * _xu;
+    const double vg = _dryden_sigma.Y() * std::sqrt(3.0 * av) * (_xv1 + (av / std::sqrt(3.0)) * _xv2);
+    const double wg = _dryden_sigma.Z() * std::sqrt(3.0 * aw) * (_xw1 + (aw / std::sqrt(3.0)) * _xw2);
+
+    wind += Vector3d(ug, vg, wg);
+
+   } else { // default: one_minus_cos single gust
 	 // Derive V_inf if not provided
 	 double V = _airspeed_ms;
 	 if (V <= 0.0) {

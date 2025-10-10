@@ -43,6 +43,7 @@
 #include <gz/transport/Publisher.hh>
 #include <gz/math/Helpers.hh>
 #include <cmath>
+#include <random>
 
  namespace custom
  {
@@ -75,6 +76,20 @@
     // one_minus_cos_simp parameters: v = (A0/2) * [1 - cos(2*pi*t/T)]
     double _simp_A0{0.0};            // peak gust magnitude (m/s)
     double _simp_T{10.0};            // period (s)
+
+    // Dryden model parameters
+    gz::math::Vector3d _dryden_sigma{1.0, 1.0, 1.0};   // (sigma_u, sigma_v, sigma_w) [m/s]
+    gz::math::Vector3d _dryden_length{200.0, 200.0, 50.0}; // (Lu, Lv, Lw) [m]
+    double _last_time_s{-1.0};
+    // Dryden states (world axes u->X, v->Y, w->Z)
+    double _xu{0.0};
+    double _xv1{0.0}, _xv2{0.0};
+    double _xw1{0.0}, _xw2{0.0};
+    // RNG for Dryden
+    std::mt19937 _rng{std::random_device{}()};
+    std::normal_distribution<double> _norm{0.0, 1.0};
+    bool _rng_seeded{false};
+    uint32_t _rng_seed{0};
 
      // State
      gz::sim::Entity _worldEntity{gz::sim::kNullEntity};
