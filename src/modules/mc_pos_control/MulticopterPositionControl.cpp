@@ -414,6 +414,12 @@ void MulticopterPositionControl::Run()
 
 		_vehicle_land_detected_sub.update(&_vehicle_land_detected);
 
+		// Update theta_trim subscription
+		theta_trim_s theta_trim;
+		if (_theta_trim_sub.update(&theta_trim)) {
+			_pitch_sp = math::radians(theta_trim.pitch_angle);
+		}
+
 		if (_param_mpc_use_hte.get()) {
 			hover_thrust_estimate_s hte;
 

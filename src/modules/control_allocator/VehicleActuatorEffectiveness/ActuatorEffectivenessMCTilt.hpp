@@ -40,39 +40,54 @@
 class ActuatorEffectivenessMCTilt : public ModuleParams, public ActuatorEffectiveness
 {
 public:
-	ActuatorEffectivenessMCTilt(ModuleParams *parent);
-	virtual ~ActuatorEffectivenessMCTilt() = default;
+    ActuatorEffectivenessMCTilt(ModuleParams *parent);
+    virtual ~ActuatorEffectivenessMCTilt() = default;
 
-	bool getEffectivenessMatrix(Configuration &configuration, EffectivenessUpdateReason external_update) override;
+    bool getEffectivenessMatrix(Configuration &configuration, EffectivenessUpdateReason external_update) override;
 
-	void getDesiredAllocationMethod(AllocationMethod allocation_method_out[MAX_NUM_MATRICES]) const override
-	{
-		allocation_method_out[0] = AllocationMethod::SEQUENTIAL_DESATURATION;
-	}
+    void getDesiredAllocationMethod(AllocationMethod allocation_method_out[MAX_NUM_MATRICES]) const override
+    {
+        allocation_method_out[0] = AllocationMethod::SEQUENTIAL_DESATURATION;
+    }
 
-	void getNormalizeRPY(bool normalize[MAX_NUM_MATRICES]) const override
-	{
-		normalize[0] = true;
-	}
+    void getNormalizeRPY(bool normalize[MAX_NUM_MATRICES]) const override
+    {
+        normalize[0] = true;
+    }
 
-	void updateSetpoint(const matrix::Vector<float, NUM_AXES> &control_sp, int matrix_index,
-			    ActuatorVector &actuator_sp, const matrix::Vector<float, NUM_ACTUATORS> &actuator_min,
-			    const matrix::Vector<float, NUM_ACTUATORS> &actuator_max) override;
+    void updateSetpoint(const matrix::Vector<float, NUM_AXES> &control_sp, int matrix_index, ActuatorVector &actuator_sp,
+                const ActuatorVector &actuator_min, const ActuatorVector &actuator_max) override;
 
-	const char *name() const override { return "MC Tilt"; }
+    const char *name() const override { return "MC Tilt"; }
 
-	void getUnallocatedControl(int matrix_index, control_allocator_status_s &status) override;
+    void getUnallocatedControl(int matrix_index, control_allocator_status_s &status) override;
 
 protected:
-	ActuatorVector _tilt_offsets;
-	ActuatorEffectivenessRotors _mc_rotors;
-	ActuatorEffectivenessTilts _tilts;
-	int _first_tilt_idx{0};
+    ActuatorVector _tilt_offsets;
+    ActuatorEffectivenessRotors _mc_rotors;
+    ActuatorEffectivenessTilts _tilts;
+    int _first_tilt_idx{0};
 
-	struct YawTiltSaturationFlags {
-		bool tilt_yaw_pos;
-		bool tilt_yaw_neg;
-	};
+    struct YawTiltSaturationFlags {
+        bool tilt_yaw_pos;
+        bool tilt_yaw_neg;
+    };
 
-	YawTiltSaturationFlags _yaw_tilt_saturation_flags{};
+    YawTiltSaturationFlags _yaw_tilt_saturation_flags{};
+
+private:
+    // ===== 后处理 Fx 层（等角Δθ）+ 抗风零空间推进（尾部 φ 固定负向，前排等量 ψ） =====
+    static constexpr float MAX_LINEAR_TILT_RAD = 0.30f;       // 线性小角域 ~17°
+    static constexpr float EPS_F = 1e-6f;
+    static constexpr float TAIL_Y_EPS = 0.05f;                // |y|<阈值视为尾部
+    static constexpr float ANTIWIND_PHI_RAD = -10.f * M_PI_F / 180.f; // φ 缺省为 -10°（负向、反 Fx）
+    static constexpr bool  ENABLE_FX_LAYER = true;
+    static constexpr bool  ENABLE_ANTIWIND = true;
+
+    // Fx 残差（用于上报到 control_allocator_status）
+    float _fx_residual{0.f};
+
+    // 角度 <-> 归一化映射
+    float angleToServoNormalized(int tilt_index, float theta) const;
+    float servoNormalizedToAngle(int tilt_index, float normalized) const;
 };
