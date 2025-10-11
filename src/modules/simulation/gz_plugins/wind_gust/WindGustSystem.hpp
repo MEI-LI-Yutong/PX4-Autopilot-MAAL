@@ -43,6 +43,7 @@
 #include <gz/transport/Publisher.hh>
 #include <gz/math/Helpers.hh>
 #include <cmath>
+#include <random>
 
  namespace custom
  {
@@ -61,7 +62,7 @@
 		    gz::sim::EntityComponentManager &_ecm) final;
 
  private:
-     // Parameters
+     // ======== Temporal wind parameters (original) ========
      gz::math::Vector3d _mean{0, 0, 0};
      gz::math::Vector3d _amplitude{0, 0, 0};
      double _frequency_hz{0.0};
@@ -76,14 +77,60 @@
     double _simp_A0{0.0};            // peak gust magnitude (m/s)
     double _simp_T{10.0};            // period (s)
 
+    // Dryden model parameters
+    gz::math::Vector3d _dryden_sigma{1.0, 1.0, 1.0};   // (sigma_u, sigma_v, sigma_w) [m/s]
+    gz::math::Vector3d _dryden_length{200.0, 200.0, 50.0}; // (Lu, Lv, Lw) [m]
+    double _last_time_s{-1.0};
+    // Dryden states (world axes u->X, v->Y, w->Z)
+    double _xu{0.0};
+    double _xv1{0.0}, _xv2{0.0};
+    double _xw1{0.0}, _xw2{0.0};
+    // RNG for Dryden
+    std::mt19937 _rng{std::random_device{}()};
+    std::normal_distribution<double> _norm{0.0, 1.0};
+    bool _rng_seeded{false};
+    uint32_t _rng_seed{0};
+
+     // ======== Spatial wind parameters (NEW) ========
+     std::string _spatial_model{"none"};  // none, linear_shear, sine_wave, vortex, boundary_layer
+     std::string _tracked_model{""};      // Name of model to track (empty = disabled)
+     gz::sim::Entity _tracked_entity{gz::sim::kNullEntity};
+
+     // Linear shear: ΔV = gradient · Δpos (wind shear in any direction)
+     gz::math::Vector3d _shear_gradient_x{0, 0, 0};  // dV/dx [m/s per m]
+     gz::math::Vector3d _shear_gradient_y{0, 0, 0};  // dV/dy
+     gz::math::Vector3d _shear_gradient_z{0, 0, 0};  // dV/dz
+     gz::math::Vector3d _shear_ref_pos{0, 0, 0};     // Reference position
+
+     // Sine wave: A·sin(2π·k·r/λ + φ)
+     gz::math::Vector3d _sine_amplitude{0, 0, 0};
+     gz::math::Vector3d _sine_direction{1, 0, 0};    // Wave propagation direction
+     double _sine_wavelength{100.0};                  // [m]
+     double _sine_phase{0.0};                         // [rad]
+
+     // Vortex: Rotational field
+     gz::math::Vector3d _vortex_center{0, 0, 0};
+     double _vortex_strength{0.0};                    // Circulation [m²/s]
+     double _vortex_core_radius{10.0};                // [m]
+
+     // Boundary layer: V = V_ref · (z/z_ref)^α
+     double _bl_ref_height{10.0};                     // [m]
+     double _bl_exponent{0.143};                      // Power law exponent
+     gz::math::Vector3d _bl_ref_wind{0, 0, 0};       // Wind at z_ref
+
      // State
      gz::sim::Entity _worldEntity{gz::sim::kNullEntity};
      gz::sim::Entity _windEntity{gz::sim::kNullEntity};
      bool _configured{false};
      bool _warnedMissingWind{false};
+     bool _warnedMissingModel{false};
     gz::transport::Node _node;
     gz::transport::Node::Publisher _pub;
     std::string _topic;
+
+    // ======== Spatial wind helper functions ========
+    gz::math::Vector3d ComputeSpatialWind(const gz::math::Vector3d &pos);
+    bool GetTrackedPosition(gz::sim::EntityComponentManager &_ecm, gz::math::Vector3d &pos);
     // Compute simple 1-cos gust at time t (seconds)
     inline double one_minus_cos_simp(double t) const {
         const double T = _simp_T;

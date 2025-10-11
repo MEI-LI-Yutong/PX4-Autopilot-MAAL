@@ -56,6 +56,7 @@
 #include <uORB/topics/airspeed_validated.h>
 #include <uORB/topics/vehicle_local_position.h>
 #include <uORB/topics/log_message.h>
+#include <uORB/topics/trim_selector_status.h>
 #include <uORB/topics/wind.h>
 #include <uORB/topics/trim_selector_status.h>
 
