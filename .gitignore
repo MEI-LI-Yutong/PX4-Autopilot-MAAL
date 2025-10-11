@@ -111,3 +111,5 @@ log/
 keys/
 
 *logs/
+*Avl/
+plots/

@@ -210,6 +210,7 @@ set(msg_files
 	TecsStatus.msg
 	TelemetryStatus.msg
 	theta_trim.msg
+	trim_selector_status.msg
 	TiltrotorExtraControls.msg
 	TimesyncStatus.msg
 	TrajectorySetpoint6dof.msg

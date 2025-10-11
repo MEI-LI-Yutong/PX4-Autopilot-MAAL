@@ -1,34 +1,5 @@
 /****************************************************************************
- *
  *   Copyright (c) 2021-2023 PX4 Development Team. All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- * 3. Neither the name PX4 nor the names of its contributors may be
- *    used to endorse or promote products derived from this software
- *    without specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
- * FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
- * COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
- * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
- * BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
- * OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED
- * AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
- * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
- * ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGE.
- *
  ****************************************************************************/
 
 #include "ActuatorEffectivenessMCTilt.hpp"
@@ -37,293 +8,339 @@
 using namespace matrix;
 
 ActuatorEffectivenessMCTilt::ActuatorEffectivenessMCTilt(ModuleParams *parent)
-	: ModuleParams(parent),
-	  _mc_rotors(this, ActuatorEffectivenessRotors::AxisConfiguration::FixedUpwards, true),
-	  _tilts(this)
+    : ModuleParams(parent),
+      _mc_rotors(this, ActuatorEffectivenessRotors::AxisConfiguration::FixedUpwards, true),
+      _tilts(this)
 {
 }
 
 bool
 ActuatorEffectivenessMCTilt::getEffectivenessMatrix(Configuration &configuration,
-		EffectivenessUpdateReason external_update)
+        EffectivenessUpdateReason external_update)
 {
-	if (external_update == EffectivenessUpdateReason::NO_EXTERNAL_UPDATE) {
-		return false;
-	}
+    if (external_update == EffectivenessUpdateReason::NO_EXTERNAL_UPDATE) {
+        return false;
+    }
 
-	// MC motors
-	_mc_rotors.enableYawByDifferentialThrust(!_tilts.hasYawControl());
-	const bool rotors_added_successfully = _mc_rotors.addActuators(configuration);
+    // MC motors
+    _mc_rotors.enableYawByDifferentialThrust(!_tilts.hasYawControl());
+    const bool rotors_added_successfully = _mc_rotors.addActuators(configuration);
 
-	// Tilts
-	_first_tilt_idx = configuration.num_actuators_matrix[0];
-	_tilts.updateTorqueSign(_mc_rotors.geometry());
-	const bool tilts_added_successfully = _tilts.addActuators(configuration);
+    // Tilts
+    _first_tilt_idx = configuration.num_actuators_matrix[0];
+    _tilts.updateTorqueSign(_mc_rotors.geometry());
+    const bool tilts_added_successfully = _tilts.addActuators(configuration);
 
-	// Set offset such that tilts point upwards when control input == 0 (trim is 0 if min_angle == -max_angle).
-	// Note that we don't set configuration.trim here, because in the case of trim == +-1, yaw is always saturated
-	// and reduced to 0 with the sequential desaturation method. Instead we add it after.
-	_tilt_offsets.setZero();
+    // Set offset such that tilts point upwards when control input == 0
+    _tilt_offsets.setZero();
 
-	for (int i = 0; i < _tilts.count(); ++i) {
-		float delta_angle = _tilts.config(i).max_angle - _tilts.config(i).min_angle;
+    for (int i = 0; i < _tilts.count(); ++i) {
+        float delta_angle = _tilts.config(i).max_angle - _tilts.config(i).min_angle;
 
-		if (delta_angle > FLT_EPSILON) {
-			float trim = -1.f - 2.f * _tilts.config(i).min_angle / delta_angle;
-			_tilt_offsets(_first_tilt_idx + i) = trim;
-		}
-	}
+        if (delta_angle > FLT_EPSILON) {
+            float trim = -1.f - 2.f * _tilts.config(i).min_angle / delta_angle;
+            _tilt_offsets(_first_tilt_idx + i) = trim;
+        }
+    }
 
-	return (rotors_added_successfully && tilts_added_successfully);
+    return (rotors_added_successfully && tilts_added_successfully);
 }
 
-void ActuatorEffectivenessMCTilt::updateSetpoint(const matrix::Vector<float, NUM_AXES> &control_sp,
-		int matrix_index, ActuatorVector &actuator_sp, const matrix::Vector<float, NUM_ACTUATORS> &actuator_min,
-		const matrix::Vector<float, NUM_ACTUATORS> &actuator_max)
+void ActuatorEffectivenessMCTilt::updateSetpoint(const matrix::Vector<float, NUM_AXES> &control_sp, int matrix_index,
+        ActuatorVector &actuator_sp, const ActuatorVector &actuator_min, const ActuatorVector &actuator_max)
 {
-	actuator_sp += _tilt_offsets;
+    actuator_sp += _tilt_offsets;
 
-	// ====== 新增：Fx 增量层（在分配完成后叠加 Δθ） ======
-	_fx_residual = 0.f;
-	
-	// 清空log数据
-	_tilt_log_data = {};
+    // =================== Fx 等角层 + 抗风零空间推进（后处理） ===================
+    _fx_residual = 0.f;
 
-	if (matrix_index == 0 && _tilts.count() > 0) {
+    if (matrix_index == 0 && _tilts.count() > 0 && ENABLE_FX_LAYER) {
 
-		const auto &geom = _mc_rotors.geometry();
+        const auto &geom = _mc_rotors.geometry();
 
-		// 收集所有由"朝前倾"舵机控制的电机
-		struct Item { int motor; int tilt; float fi; float y; float old_tilt_angle; };
-		Item items[ActuatorEffectivenessRotors::NUM_ROTORS_MAX];
-		int N = 0;
+        // 只选择"朝前倾"的 tilt（避免侧向力）
+        struct Item { int motor; int tilt; float fi; float y; float old_tilt_angle; };
+        Item items[ActuatorEffectivenessRotors::NUM_ROTORS_MAX];
+        int N = 0;
 
-		// 记录舵机索引映射 (用于log记录)
-		int tilt_fl_idx = -1, tilt_fr_idx = -1, tilt_tail_idx = -1;
+        // 记录 3 组 tilt 索引（可能为 -1）
+        int tilt_fl_idx = -1, tilt_fr_idx = -1, tilt_tail_idx = -1;
 
-		for (int m = 0; m < geom.num_rotors; ++m) {
-			const auto &r = geom.rotors[m];
-			const int t = r.tilt_index;
-			if (t < 0 || t >= _tilts.count()) continue;
-			if (_tilts.config(t).tilt_direction != ActuatorEffectivenessTilts::TiltDirection::TowardsFront) continue;
+        for (int m = 0; m < geom.num_rotors; ++m) {
+            const auto &r = geom.rotors[m];
+            const int t = r.tilt_index;
+            if (t < 0 || t >= _tilts.count()) continue;
+            if (_tilts.config(t).tilt_direction != ActuatorEffectivenessTilts::TiltDirection::TowardsFront) continue;
 
-			const float u0 = actuator_sp(m);        // 当前分配后电机归一化输出
-			const float ct = r.thrust_coef;
-			const float fi = ct * u0;               // 小角近似推力幅值
-			const float y  = r.position(1);
+            const float u0 = actuator_sp(m);        // 当前已分配电机归一化输出
+            const float ct = r.thrust_coef;
+            const float fi = ct * u0;               // 小角近似推力幅值
+            const float y  = r.position(1);
 
-			const int servo_col = _first_tilt_idx + t;
-			if (servo_col < 0 || servo_col >= NUM_ACTUATORS) continue;
-			const float old_angle = servoNormalizedToAngle(t, actuator_sp(servo_col));
+            const int servo_col = _first_tilt_idx + t;
+            if (servo_col < 0 || servo_col >= NUM_ACTUATORS) continue;
+            const float old_angle = servoNormalizedToAngle(t, actuator_sp(servo_col));
 
-			items[N++] = {m, t, fi, y, old_angle};
+            items[N++] = {m, t, fi, y, old_angle};
 
-			// 根据Y坐标判断舵机组别 (用于log记录)
-			if (fabsf(y) < 0.05f) { // 尾部
-				tilt_tail_idx = t;
-				_tilt_log_data.theta_tail_old = old_angle;
-				_tilt_log_data.servo_tail_old = actuator_sp(servo_col);
-			} else if (y > 0.f) { // 前左
-				tilt_fl_idx = t;
-				_tilt_log_data.theta_fl_old = old_angle;
-				_tilt_log_data.servo_fl_old = actuator_sp(servo_col);
-			} else { // 前右
-				tilt_fr_idx = t;
-				_tilt_log_data.theta_fr_old = old_angle;
-				_tilt_log_data.servo_fr_old = actuator_sp(servo_col);
-			}
+            // 简单用 y 分组（只取第一次命中的 tilt 索引，用于等量加 ψ）
+            if (fabsf(y) < TAIL_Y_EPS) {
+                if (tilt_tail_idx < 0) tilt_tail_idx = t;
+            } else if (y > 0.f) {
+                if (tilt_fl_idx < 0) tilt_fl_idx = t;
+            } else {
+                if (tilt_fr_idx < 0) tilt_fr_idx = t;
+            }
 
-			if (N >= ActuatorEffectivenessRotors::NUM_ROTORS_MAX) break;
-		}
+            if (N >= ActuatorEffectivenessRotors::NUM_ROTORS_MAX) break;
+        }
 
-		// 计算 Σ f_i 与 Fx_cmd, Fz_cmd
-		float F_total = 0.f;
-		for (int i = 0; i < N; ++i) F_total += items[i].fi;
+        // 计算 Σ f_i、Fx/Fz 指令
+        float F_total = 0.f;
+        for (int i = 0; i < N; ++i) F_total += items[i].fi;
 
-		const float Fx_cmd = control_sp(3);
-		const float Fz_cmd = control_sp(5); // 注意：使用 control_sp(5) 作为归一化基准
+        const float Fx_cmd = control_sp(3);
+        const float Fz_cmd = control_sp(5);
 
-		// 记录基本日志数据
-		_tilt_log_data.fx_cmd = Fx_cmd;
-		_tilt_log_data.fz_cmd = Fz_cmd;
-		_tilt_log_data.f_total = F_total;
-		_tilt_log_data.num_motors = N;
+        if (N > 0 && PX4_ISFINITE(Fx_cmd) && PX4_ISFINITE(Fz_cmd) && fabsf(Fz_cmd) > EPS_F) {
+            // ---------- Step A: 等角 tilt0 生成 Fx ----------
+            float delta_theta = -Fx_cmd / Fz_cmd; // 你的约定：z 向下为正，要产生 +Fx 需负角
+            delta_theta = math::constrain(delta_theta, -MAX_LINEAR_TILT_RAD, MAX_LINEAR_TILT_RAD);
 
-		if (N > 0 && PX4_ISFINITE(Fx_cmd) && PX4_ISFINITE(Fz_cmd) && fabsf(Fz_cmd) > EPS_F) {
-			// 公共增量 Δθ（小角线性）
-			// 注意：z轴朝下为正，前向倾转需要负角度来产生正向Fx
-			// 使用 Fz_cmd 作为归一化基准：Δθ = -Fx_cmd / Fz_cmd
-			float delta_theta = -Fx_cmd / Fz_cmd;
-			delta_theta = math::constrain(delta_theta, -MAX_LINEAR_TILT_RAD, MAX_LINEAR_TILT_RAD);
-			
-			_tilt_log_data.delta_theta = delta_theta;
+            // 写回舵机角；记录等角后的角度
+            bool tilt_written[ActuatorEffectivenessTilts::MAX_COUNT] {};
+            float tilt_angle_after_A[ActuatorEffectivenessTilts::MAX_COUNT] {};
 
-			// 对每个唯一 tilt 写一次目标角，然后给其下挂电机做垂直补偿
-			bool tilt_written[ActuatorEffectivenessTilts::MAX_COUNT] {};
-			float tilt_new_angle[ActuatorEffectivenessTilts::MAX_COUNT] {};
+            for (int i = 0; i < N; ++i) {
+                const int t = items[i].tilt;
+                const int servo_col = _first_tilt_idx + t;
 
-			for (int i = 0; i < N; ++i) {
-				const int t = items[i].tilt;
-				const int servo_col = _first_tilt_idx + t;
+                if (!tilt_written[t]) {
+                    const float old_angle = servoNormalizedToAngle(t, actuator_sp(servo_col));
+                    const float raw_target = old_angle + delta_theta;
+                    const float clamped_target = math::constrain(raw_target,
+                        _tilts.config(t).min_angle, _tilts.config(t).max_angle);
+                    const float final_target = math::constrain(clamped_target,
+                        -MAX_LINEAR_TILT_RAD, MAX_LINEAR_TILT_RAD);
 
-				if (!tilt_written[t]) {
-					// 当前归一化舵机值
-					const float current_normalized = actuator_sp(servo_col);
-					
-					// 将角度增量转换为归一化增量
-					const float delta_normalized = angleToServoNormalized(t, delta_theta) - angleToServoNormalized(t, 0.f);
-					
-					// 目标归一化值 = 当前归一化值 + 归一化增量
-					const float target_normalized = math::constrain(current_normalized + delta_normalized, -1.f, 1.f);
-					
-					// 应用限幅
-					actuator_sp(servo_col) = target_normalized;
+                    actuator_sp(servo_col) = angleToServoNormalized(t, final_target);
+                    tilt_angle_after_A[t] = servoNormalizedToAngle(t, actuator_sp(servo_col));
+                    tilt_written[t] = true;
+                }
+            }
 
-					// 读回实际角（包含量化/限幅）
-					tilt_new_angle[t] = servoNormalizedToAngle(t, actuator_sp(servo_col));
-					tilt_written[t] = true;
+            // 垂直补偿 + Fx 实现值累计（Step A）
+            float Fx_real = 0.f;
 
-					// 记录具体舵机的角度和归一化值
-					if (t == tilt_fl_idx) {
-						_tilt_log_data.theta_fl_new = tilt_new_angle[t];
-						_tilt_log_data.servo_fl_new = actuator_sp(servo_col);
-					} else if (t == tilt_fr_idx) {
-						_tilt_log_data.theta_fr_new = tilt_new_angle[t];
-						_tilt_log_data.servo_fr_new = actuator_sp(servo_col);
-					} else if (t == tilt_tail_idx) {
-						_tilt_log_data.theta_tail_new = tilt_new_angle[t];
-						_tilt_log_data.servo_tail_new = actuator_sp(servo_col);
-					}
-				}
-			}
+            for (int i = 0; i < N; ++i) {
+                const int m = items[i].motor;
+                const int t = items[i].tilt;
 
-			// 逐电机垂直补偿 + Fx 实现值累计
-			float Fx_real = 0.f;
+                const float old_a = items[i].old_tilt_angle;
+                const float new_a = tilt_angle_after_A[t];
 
-			for (int i = 0; i < N; ++i) {
-				const int m = items[i].motor;
-				const int t = items[i].tilt;
+                // 保持 Fz：scale = cos(old)/cos(new)
+                float scale = 1.f;
+                const float c_old = cosf(old_a);
+                const float c_new = cosf(new_a);
+                if (fabsf(c_new) > 1e-4f) {
+                    scale = c_old / c_new;
+                }
 
-				const float old_a = items[i].old_tilt_angle;
-				const float new_a = tilt_new_angle[t];
+                float cmd = actuator_sp(m) * scale;
+                cmd = math::constrain(cmd, actuator_min(m), actuator_max(m));
+                actuator_sp(m) = cmd;
 
-				// 保持 Fz：scale = cos(old)/cos(new)
-				float scale = 1.f;
-				const float c_old = cosf(old_a);
-				const float c_new = cosf(new_a);
-				if (fabsf(c_new) > 1e-4f) {
-					scale = c_old / c_new;
-				}
+                // Fx 贡献（线性）：f_i * Δθ_i_real
+                Fx_real += items[i].fi * (new_a - old_a);
+            }
 
-				float cmd = actuator_sp(m) * scale;
-				cmd = math::constrain(cmd, actuator_min(m), actuator_max(m));
-				actuator_sp(m) = cmd;
+            // ---------- Step B: 抗风（尾部 φ 固定负向，前排等量 ψ，净 Fx 保持不变） ----------
+            if (ENABLE_ANTIWIND && tilt_tail_idx >= 0 && tilt_fl_idx >= 0 && tilt_fr_idx >= 0) {
 
-				// Fx 贡献（线性）：f_i * Δθ_i_real
-				Fx_real += items[i].fi * (new_a - old_a);
-			}
+                // 用 Step A 后的角度作为起点
+                const float a_tail_cur = tilt_angle_after_A[tilt_tail_idx];
+                const float a_fl_cur   = tilt_angle_after_A[tilt_fl_idx];
+                const float a_fr_cur   = tilt_angle_after_A[tilt_fr_idx];
 
-			_fx_residual = Fx_cmd - Fx_real;
-			_tilt_log_data.fx_real = Fx_real;
-			
-			// 提示：若几何/推力不对称，加同一 Δθ 可能产生轻微 yaw 扰动，这里不抑制，
-			// 上层下一周期会吸收。需要的话可估算 ΔMz 并注入 status.unallocated_torque[2]。
-		}
-	}
-	// ====== Fx 增量层结束 ======
+                // 线性域/物理域限幅
+                auto clamp_min = [&](int t) { return math::max(_tilts.config(t).min_angle, -MAX_LINEAR_TILT_RAD); };
+                auto clamp_max = [&](int t) { return math::min(_tilts.config(t).max_angle,  MAX_LINEAR_TILT_RAD); };
 
-	bool yaw_saturated_positive = true;
-	bool yaw_saturated_negative = true;
+                const float min_tail = clamp_min(tilt_tail_idx), max_tail = clamp_max(tilt_tail_idx);
+                const float min_fl   = clamp_min(tilt_fl_idx),   max_fl   = clamp_max(tilt_fl_idx);
+                const float min_fr   = clamp_min(tilt_fr_idx),   max_fr   = clamp_max(tilt_fr_idx);
 
-	for (int i = 0; i < _tilts.count(); ++i) {
+                // 重新用当前（Step A 后）motor 命令估推力，得到组推力
+                float f_tail = 0.f, f_front_total = 0.f;
 
-		// custom yaw saturation logic: only declare yaw saturated if all tilts are at the negative or positive yawing limit
-		if (_tilts.getYawTorqueOfTilt(i) > FLT_EPSILON) {
+                for (int i = 0; i < N; ++i) {
+                    const auto &r = geom.rotors[items[i].motor];
+                    const float fi_now = r.thrust_coef * actuator_sp(items[i].motor); // 用补偿后的命令更贴合当前
+                    if (fabsf(items[i].y) < TAIL_Y_EPS) f_tail += fi_now;
+                    else f_front_total += fi_now;
+                }
 
-			if (yaw_saturated_positive && actuator_sp(i + _first_tilt_idx) < actuator_max(i + _first_tilt_idx) - FLT_EPSILON) {
-				yaw_saturated_positive = false;
-			}
+                if (f_tail > EPS_F && f_front_total > EPS_F) {
+                    // φ 固定负号：让尾部永远产生负向 Fx
+                    // 先取缺省 φ0=-10°，再按角度域裁剪到可行范围
+                    const float phi0 = ANTIWIND_PHI_RAD; // <0
+                    // 尾部角域允许的负向步长
+                    float phi_min_tail = min_tail - a_tail_cur; // 这是能走到下限的负向极限（<=0）
+                    // 目标 φ 应为负，裁剪到 [phi_min_tail, 0]
+                    float phi = math::constrain(phi0, phi_min_tail, 0.f);
 
-			if (yaw_saturated_negative && actuator_sp(i + _first_tilt_idx) > actuator_min(i + _first_tilt_idx) + FLT_EPSILON) {
-				yaw_saturated_negative = false;
-			}
+                    // 零 Fx 约束：ψ = -(f_tail/f_front_total) * φ
+                    const float ratio = (f_tail / f_front_total);
+                    float psi = -ratio * phi;
 
-		} else if (_tilts.getYawTorqueOfTilt(i) < -FLT_EPSILON) {
-			if (yaw_saturated_negative && actuator_sp(i + _first_tilt_idx) < actuator_max(i + _first_tilt_idx) - FLT_EPSILON) {
-				yaw_saturated_negative = false;
-			}
+                    // 前排左右还需满足各自角域：a_fl_cur+psi ∈ [min_fl,max_fl]，a_fr_cur+psi 同理
+                    float psi_min = math::max(min_fl - a_fl_cur, min_fr - a_fr_cur);
+                    float psi_max = math::min(max_fl - a_fl_cur, max_fr - a_fr_cur);
+                    psi = math::constrain(psi, psi_min, psi_max);
 
-			if (yaw_saturated_positive && actuator_sp(i + _first_tilt_idx) > actuator_min(i + _first_tilt_idx) + FLT_EPSILON) {
-				yaw_saturated_positive = false;
-			}
-		}
-	}
+                    // 如果 ψ 被裁剪，反推 φ 以尽量满足零Fx（保持符号为负）
+                    phi = - (f_front_total / f_tail) * psi;
+                    phi = math::constrain(phi, phi_min_tail, 0.f);
 
-	_yaw_tilt_saturation_flags.tilt_yaw_neg = yaw_saturated_negative;
-	_yaw_tilt_saturation_flags.tilt_yaw_pos = yaw_saturated_positive;
+                    // 最终再算一次 ψ，确保一致
+                    psi = -ratio * phi;
+                    psi = math::constrain(psi, psi_min, psi_max);
+
+                    // 写回舵机角（在 Step A 结果上叠加）
+                    {
+                        // 尾部
+                        const int servo_tail = _first_tilt_idx + tilt_tail_idx;
+                        const float tail_target = math::constrain(a_tail_cur + phi, min_tail, max_tail);
+                        actuator_sp(servo_tail) = angleToServoNormalized(tilt_tail_idx, tail_target);
+                        // 前左
+                        const int servo_fl = _first_tilt_idx + tilt_fl_idx;
+                        const float fl_target = math::constrain(a_fl_cur + psi, min_fl, max_fl);
+                        actuator_sp(servo_fl) = angleToServoNormalized(tilt_fl_idx, fl_target);
+                        // 前右
+                        const int servo_fr = _first_tilt_idx + tilt_fr_idx;
+                        const float fr_target = math::constrain(a_fr_cur + psi, min_fr, max_fr);
+                        actuator_sp(servo_fr) = angleToServoNormalized(tilt_fr_idx, fr_target);
+                    }
+
+                    // 读回实际角（考虑量化/限幅），二次垂直补偿 + Fx 额外贡献（理论 ≈0）
+                    float Fx_extra = 0.f;
+
+                    // 先缓存"抗风前后的"角
+                    float a_tail_new = servoNormalizedToAngle(tilt_tail_idx, actuator_sp(_first_tilt_idx + tilt_tail_idx));
+                    float a_fl_new   = servoNormalizedToAngle(tilt_fl_idx,   actuator_sp(_first_tilt_idx + tilt_fl_idx));
+                    float a_fr_new   = servoNormalizedToAngle(tilt_fr_idx,   actuator_sp(_first_tilt_idx + tilt_fr_idx));
+
+                    for (int i = 0; i < N; ++i) {
+                        const int m = items[i].motor;
+                        const int t = items[i].tilt;
+
+                        // old2 = Step A 角度；new2 = 抗风后角度
+                        float old2 = tilt_angle_after_A[t];
+                        float new2 = old2;
+                        if (t == tilt_tail_idx) new2 = a_tail_new;
+                        else if (t == tilt_fl_idx) new2 = a_fl_new;
+                        else if (t == tilt_fr_idx) new2 = a_fr_new;
+
+                        float scale2 = 1.f;
+                        const float c_old2 = cosf(old2);
+                        const float c_new2 = cosf(new2);
+                        if (fabsf(c_new2) > 1e-4f) {
+                            scale2 = c_old2 / c_new2;
+                        }
+
+                        float cmd2 = actuator_sp(m) * scale2;
+                        cmd2 = math::constrain(cmd2, actuator_min(m), actuator_max(m));
+                        actuator_sp(m) = cmd2;
+
+                        // Fx 额外贡献
+                        Fx_extra += (geom.rotors[m].thrust_coef * cmd2) * (new2 - old2);
+                        // 注：这里用更新后的 cmd2 乘 (new2-old2) 近似计算，触限时更贴近实际
+                    }
+
+                    // 理论上 Fx_extra≈0；受限幅/量化误差计入 Fx_real
+                    Fx_real += Fx_extra;
+                }
+            }
+
+            _fx_residual = Fx_cmd - Fx_real;
+        }
+    }
+    // =================== Fx 层结束 ===================
+
+    // 保留原有 yaw 饱和判定与上报
+    bool yaw_saturated_positive = true;
+    bool yaw_saturated_negative = true;
+
+    for (int i = 0; i < _tilts.count(); ++i) {
+
+        // custom yaw saturation logic: only declare yaw saturated if all tilts are at the negative or positive yawing limit
+        if (_tilts.getYawTorqueOfTilt(i) > FLT_EPSILON) {
+
+            if (yaw_saturated_positive && actuator_sp(i + _first_tilt_idx) < actuator_max(i + _first_tilt_idx) - FLT_EPSILON) {
+                yaw_saturated_positive = false;
+            }
+
+            if (yaw_saturated_negative && actuator_sp(i + _first_tilt_idx) > actuator_min(i + _first_tilt_idx) + FLT_EPSILON) {
+                yaw_saturated_negative = false;
+            }
+
+        } else if (_tilts.getYawTorqueOfTilt(i) < -FLT_EPSILON) {
+            if (yaw_saturated_negative && actuator_sp(i + _first_tilt_idx) < actuator_max(i + _first_tilt_idx) - FLT_EPSILON) {
+                yaw_saturated_negative = false;
+            }
+
+            if (yaw_saturated_positive && actuator_sp(i + _first_tilt_idx) > actuator_min(i + _first_tilt_idx) + FLT_EPSILON) {
+                yaw_saturated_positive = false;
+            }
+        }
+    }
+
+    _yaw_tilt_saturation_flags.tilt_yaw_neg = yaw_saturated_negative;
+    _yaw_tilt_saturation_flags.tilt_yaw_pos = yaw_saturated_positive;
 }
 
 void ActuatorEffectivenessMCTilt::getUnallocatedControl(int matrix_index, control_allocator_status_s &status)
 {
-	// 新增：把 Fx 残差注入，便于上层积分
-	if (matrix_index == 0) {
-		status.unallocated_thrust[0] += _fx_residual;
+    // 注入 Fx 残差，便于上层积分（仅 matrix 0）
+    if (matrix_index == 0) {
+        status.unallocated_thrust[0] += _fx_residual;
+    }
 
-		// 填充倾转舵机调试数据到 control_allocator_status
-		status.tilt_fx_cmd = _tilt_log_data.fx_cmd;
-		status.tilt_fz_cmd = _tilt_log_data.fz_cmd;
-		status.tilt_f_total = _tilt_log_data.f_total;
-		status.tilt_delta_theta = _tilt_log_data.delta_theta;
-		status.tilt_theta_fl_old = _tilt_log_data.theta_fl_old;
-		status.tilt_theta_fr_old = _tilt_log_data.theta_fr_old;
-		status.tilt_theta_tail_old = _tilt_log_data.theta_tail_old;
-		status.tilt_theta_fl_new = _tilt_log_data.theta_fl_new;
-		status.tilt_theta_fr_new = _tilt_log_data.theta_fr_new;
-		status.tilt_theta_tail_new = _tilt_log_data.theta_tail_new;
-		status.tilt_servo_fl_old = _tilt_log_data.servo_fl_old;
-		status.tilt_servo_fr_old = _tilt_log_data.servo_fr_old;
-		status.tilt_servo_tail_old = _tilt_log_data.servo_tail_old;
-		status.tilt_servo_fl_new = _tilt_log_data.servo_fl_new;
-		status.tilt_servo_fr_new = _tilt_log_data.servo_fr_new;
-		status.tilt_servo_tail_new = _tilt_log_data.servo_tail_new;
-		status.tilt_fx_real = _tilt_log_data.fx_real;
-		status.tilt_num_motors = static_cast<uint8_t>(_tilt_log_data.num_motors);
-	}
+    // Note: the values '-1', '1' and '0' are just to indicate a negative,
+    // positive or no saturation to the rate controller. The actual magnitude is not used.
+    if (_yaw_tilt_saturation_flags.tilt_yaw_pos) {
+        status.unallocated_torque[2] = 1.f;
 
-	// Note: the values '-1', '1' and '0' are just to indicate a negative,
-	// positive or no saturation to the rate controller. The actual magnitude is not used.
-	if (_yaw_tilt_saturation_flags.tilt_yaw_pos) {
-		status.unallocated_torque[2] = 1.f;
+    } else if (_yaw_tilt_saturation_flags.tilt_yaw_neg) {
+        status.unallocated_torque[2] = -1.f;
 
-	} else if (_yaw_tilt_saturation_flags.tilt_yaw_neg) {
-		status.unallocated_torque[2] = -1.f;
-
-	} else {
-		status.unallocated_torque[2] = 0.f;
-	}
+    } else {
+        status.unallocated_torque[2] = 0.f;
+    }
 }
 
 // ===== Helpers: angle <-> normalized [-1, 1] =====
 float ActuatorEffectivenessMCTilt::angleToServoNormalized(int tilt_index, float theta) const
 {
-	if (tilt_index < 0 || tilt_index >= _tilts.count()) return 0.f;
-	const auto &cfg = _tilts.config(tilt_index);
-	const float min_a = cfg.min_angle; // radians
-	const float max_a = cfg.max_angle;
-	const float delta = max_a - min_a;
-	if (delta < 1e-5f) return 0.f;
-	const float t = math::constrain(theta, min_a, max_a);
-	const float s = 2.f * (t - min_a) / delta - 1.f;
-	return math::constrain(s, -1.f, 1.f);
+    if (tilt_index < 0 || tilt_index >= _tilts.count()) return 0.f;
+    const auto &cfg = _tilts.config(tilt_index);
+    const float min_a = cfg.min_angle; // radians
+    const float max_a = cfg.max_angle;
+    const float delta = max_a - min_a;
+    if (delta < 1e-5f) return 0.f;
+    const float t = math::constrain(theta, min_a, max_a);
+    const float s = 2.f * (t - min_a) / delta - 1.f;
+    return math::constrain(s, -1.f, 1.f);
 }
 
 float ActuatorEffectivenessMCTilt::servoNormalizedToAngle(int tilt_index, float normalized) const
 {
-	if (tilt_index < 0 || tilt_index >= _tilts.count()) return 0.f;
-	const auto &cfg = _tilts.config(tilt_index);
-	const float min_a = cfg.min_angle;
-	const float max_a = cfg.max_angle;
-	const float delta = max_a - min_a;
-	const float n = math::constrain(normalized, -1.f, 1.f);
-	return min_a + (n + 1.f) * 0.5f * delta;
+    if (tilt_index < 0 || tilt_index >= _tilts.count()) return 0.f;
+    const auto &cfg = _tilts.config(tilt_index);
+    const float min_a = cfg.min_angle;
+    const float max_a = cfg.max_angle;
+    const float delta = max_a - min_a;
+    const float n = math::constrain(normalized, -1.f, 1.f);
+    return min_a + (n + 1.f) * 0.5f * delta;
 }

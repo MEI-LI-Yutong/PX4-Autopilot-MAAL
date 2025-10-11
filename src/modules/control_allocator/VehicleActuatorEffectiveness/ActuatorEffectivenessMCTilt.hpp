@@ -40,73 +40,54 @@
 class ActuatorEffectivenessMCTilt : public ModuleParams, public ActuatorEffectiveness
 {
 public:
-	ActuatorEffectivenessMCTilt(ModuleParams *parent);
-	virtual ~ActuatorEffectivenessMCTilt() = default;
+    ActuatorEffectivenessMCTilt(ModuleParams *parent);
+    virtual ~ActuatorEffectivenessMCTilt() = default;
 
-	bool getEffectivenessMatrix(Configuration &configuration, EffectivenessUpdateReason external_update) override;
+    bool getEffectivenessMatrix(Configuration &configuration, EffectivenessUpdateReason external_update) override;
 
-	void getDesiredAllocationMethod(AllocationMethod allocation_method_out[MAX_NUM_MATRICES]) const override
-	{
-		allocation_method_out[0] = AllocationMethod::SEQUENTIAL_DESATURATION;
-	}
+    void getDesiredAllocationMethod(AllocationMethod allocation_method_out[MAX_NUM_MATRICES]) const override
+    {
+        allocation_method_out[0] = AllocationMethod::SEQUENTIAL_DESATURATION;
+    }
 
-	void getNormalizeRPY(bool normalize[MAX_NUM_MATRICES]) const override
-	{
-		normalize[0] = true;
-	}
+    void getNormalizeRPY(bool normalize[MAX_NUM_MATRICES]) const override
+    {
+        normalize[0] = true;
+    }
 
-	void updateSetpoint(const matrix::Vector<float, NUM_AXES> &control_sp, int matrix_index,
-			    ActuatorVector &actuator_sp, const matrix::Vector<float, NUM_ACTUATORS> &actuator_min,
-			    const matrix::Vector<float, NUM_ACTUATORS> &actuator_max) override;
+    void updateSetpoint(const matrix::Vector<float, NUM_AXES> &control_sp, int matrix_index, ActuatorVector &actuator_sp,
+                const ActuatorVector &actuator_min, const ActuatorVector &actuator_max) override;
 
-	const char *name() const override { return "MC Tilt"; }
+    const char *name() const override { return "MC Tilt"; }
 
-	void getUnallocatedControl(int matrix_index, control_allocator_status_s &status) override;
+    void getUnallocatedControl(int matrix_index, control_allocator_status_s &status) override;
 
 protected:
-	ActuatorVector _tilt_offsets;
-	ActuatorEffectivenessRotors _mc_rotors;
-	ActuatorEffectivenessTilts _tilts;
-	int _first_tilt_idx{0};
+    ActuatorVector _tilt_offsets;
+    ActuatorEffectivenessRotors _mc_rotors;
+    ActuatorEffectivenessTilts _tilts;
+    int _first_tilt_idx{0};
 
-	struct YawTiltSaturationFlags {
-		bool tilt_yaw_pos;
-		bool tilt_yaw_neg;
-	};
+    struct YawTiltSaturationFlags {
+        bool tilt_yaw_pos;
+        bool tilt_yaw_neg;
+    };
 
-	YawTiltSaturationFlags _yaw_tilt_saturation_flags{};
+    YawTiltSaturationFlags _yaw_tilt_saturation_flags{};
 
 private:
-	// ===== Post-allocation linear Fx layer (equal Δθ on forward-tilting servos) =====
-	static constexpr float MAX_LINEAR_TILT_RAD = 0.30f; // ~17 deg
-	static constexpr float EPS_F = 1e-6f;
+    // ===== 后处理 Fx 层（等角Δθ）+ 抗风零空间推进（尾部 φ 固定负向，前排等量 ψ） =====
+    static constexpr float MAX_LINEAR_TILT_RAD = 0.30f;       // 线性小角域 ~17°
+    static constexpr float EPS_F = 1e-6f;
+    static constexpr float TAIL_Y_EPS = 0.05f;                // |y|<阈值视为尾部
+    static constexpr float ANTIWIND_PHI_RAD = -10.f * M_PI_F / 180.f; // φ 缺省为 -10°（负向、反 Fx）
+    static constexpr bool  ENABLE_FX_LAYER = true;
+    static constexpr bool  ENABLE_ANTIWIND = true;
 
-	// Fx residual to inject into control_allocator_status
-	float _fx_residual{0.f};
+    // Fx 残差（用于上报到 control_allocator_status）
+    float _fx_residual{0.f};
 
-	// 用于log记录的详细变量
-	struct TiltLogData {
-		float fx_cmd{0.f};          // 输入的Fx指令
-		float fz_cmd{0.f};          // 输入的Fz指令 (thrust_body[2])
-		float f_total{0.f};         // 前倾舵机控制电机的总推力
-		float delta_theta{0.f};     // 计算的角度增量 [rad]
-		float theta_fl_old{0.f};    // 前左舵机原始角度 [rad]
-		float theta_fr_old{0.f};    // 前右舵机原始角度 [rad]
-		float theta_tail_old{0.f};  // 尾部舵机原始角度 [rad]
-		float theta_fl_new{0.f};    // 前左舵机最终角度 [rad]
-		float theta_fr_new{0.f};    // 前右舵机最终角度 [rad]
-		float theta_tail_new{0.f};  // 尾部舵机最终角度 [rad]
-		float servo_fl_old{0.f};    // 前左舵机原始归一化值 [-1,1]
-		float servo_fr_old{0.f};    // 前右舵机原始归一化值 [-1,1]
-		float servo_tail_old{0.f};  // 尾部舵机原始归一化值 [-1,1]
-		float servo_fl_new{0.f};    // 前左舵机最终归一化值 [-1,1]
-		float servo_fr_new{0.f};    // 前右舵机最终归一化值 [-1,1]
-		float servo_tail_new{0.f};  // 尾部舵机最终归一化值 [-1,1]
-		float fx_real{0.f};         // 实际产生的Fx
-		int num_motors{0};          // 参与计算的电机数量
-	} _tilt_log_data;
-
-	// Helpers: angle [rad] <-> servo normalized [-1, 1]
-	float angleToServoNormalized(int tilt_index, float theta) const;
-	float servoNormalizedToAngle(int tilt_index, float normalized) const;
+    // 角度 <-> 归一化映射
+    float angleToServoNormalized(int tilt_index, float theta) const;
+    float servoNormalizedToAngle(int tilt_index, float normalized) const;
 };
