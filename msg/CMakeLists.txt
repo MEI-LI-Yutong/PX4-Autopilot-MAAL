@@ -206,18 +206,21 @@ set(msg_files
 	TaskStackInfo.msg
 	TecsStatus.msg
 	TelemetryStatus.msg
+	theta_trim.msg
 	TiltrotorExtraControls.msg
 	TimesyncStatus.msg
 	TrajectoryBezier.msg
 	TrajectorySetpoint.msg
 	TrajectoryWaypoint.msg
 	TransponderReport.msg
+	trim_selector_status.msg
 	TuneControl.msg
 	UavcanParameterRequest.msg
 	UavcanParameterValue.msg
 	UlogStream.msg
 	UlogStreamAck.msg
 	UnregisterExtComponent.msg
+	utrim.msg
 	VehicleAcceleration.msg
 	VehicleAirData.msg
 	VehicleAngularAccelerationSetpoint.msg

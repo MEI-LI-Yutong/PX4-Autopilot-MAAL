@@ -574,6 +574,8 @@ else
 		zenoh start
 	fi
 
+	trim_selector start
+
 #
 # End of autostart.
 #
