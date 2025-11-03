@@ -123,66 +123,32 @@
          _simp_T = _sdf->Get<double>("t", _simp_T).first;
      }
 
-    // ======== Spatial wind parameters (NEW) ========
-    if (_sdf->HasElement("spatial_model")) {
-        _spatial_model = _sdf->Get<std::string>("spatial_model", _spatial_model).first;
-    }
-    if (_sdf->HasElement("tracked_model")) {
-        _tracked_model = _sdf->Get<std::string>("tracked_model", _tracked_model).first;
-    }
+   // ======== Spatial wind parameters (NEW) ========
+   if (_sdf->HasElement("spatial_model")) {
+       _spatial_model = _sdf->Get<std::string>("spatial_model", _spatial_model).first;
+   }
+   if (_sdf->HasElement("tracked_model")) {
+       _tracked_model = _sdf->Get<std::string>("tracked_model", _tracked_model).first;
+   }
+   // Only boundary_layer is supported going forward
+   if (!_spatial_model.empty() &&
+       _spatial_model != "none" &&
+       _spatial_model != "boundary_layer") {
+       gzwarn << "WindGustSystem: unsupported spatial_model '" << _spatial_model
+              << "' — only 'boundary_layer' is supported. Disabling spatial wind." << std::endl;
+       _spatial_model = "none";
+   }
 
-    // Linear shear parameters
-    if (_sdf->HasElement("shear_gradient_x")) {
-        _shear_gradient_x = _sdf->Get<Vector3d>("shear_gradient_x", _shear_gradient_x).first;
-    }
-    if (_sdf->HasElement("shear_gradient_y")) {
-        _shear_gradient_y = _sdf->Get<Vector3d>("shear_gradient_y", _shear_gradient_y).first;
-    }
-    if (_sdf->HasElement("shear_gradient_z")) {
-        _shear_gradient_z = _sdf->Get<Vector3d>("shear_gradient_z", _shear_gradient_z).first;
-    }
-    if (_sdf->HasElement("shear_ref_pos")) {
-        _shear_ref_pos = _sdf->Get<Vector3d>("shear_ref_pos", _shear_ref_pos).first;
-    }
-
-    // Sine wave parameters
-    if (_sdf->HasElement("sine_amplitude")) {
-        _sine_amplitude = _sdf->Get<Vector3d>("sine_amplitude", _sine_amplitude).first;
-    }
-    if (_sdf->HasElement("sine_direction")) {
-        _sine_direction = _sdf->Get<Vector3d>("sine_direction", _sine_direction).first;
-        if (_sine_direction.Length() > 1e-6) {
-            _sine_direction.Normalize();
-        }
-    }
-    if (_sdf->HasElement("sine_wavelength")) {
-        _sine_wavelength = _sdf->Get<double>("sine_wavelength", _sine_wavelength).first;
-    }
-    if (_sdf->HasElement("sine_phase")) {
-        _sine_phase = _sdf->Get<double>("sine_phase", _sine_phase).first;
-    }
-
-    // Vortex parameters
-    if (_sdf->HasElement("vortex_center")) {
-        _vortex_center = _sdf->Get<Vector3d>("vortex_center", _vortex_center).first;
-    }
-    if (_sdf->HasElement("vortex_strength")) {
-        _vortex_strength = _sdf->Get<double>("vortex_strength", _vortex_strength).first;
-    }
-    if (_sdf->HasElement("vortex_core_radius")) {
-        _vortex_core_radius = _sdf->Get<double>("vortex_core_radius", _vortex_core_radius).first;
-    }
-
-    // Boundary layer parameters
-    if (_sdf->HasElement("bl_ref_height")) {
-        _bl_ref_height = _sdf->Get<double>("bl_ref_height", _bl_ref_height).first;
-    }
-    if (_sdf->HasElement("bl_exponent")) {
-        _bl_exponent = _sdf->Get<double>("bl_exponent", _bl_exponent).first;
-    }
-    if (_sdf->HasElement("bl_ref_wind")) {
-        _bl_ref_wind = _sdf->Get<Vector3d>("bl_ref_wind", _bl_ref_wind).first;
-    }
+   // Boundary layer parameters
+   if (_sdf->HasElement("bl_ref_height")) {
+       _bl_ref_height = _sdf->Get<double>("bl_ref_height", _bl_ref_height).first;
+   }
+   if (_sdf->HasElement("bl_exponent")) {
+       _bl_exponent = _sdf->Get<double>("bl_exponent", _bl_exponent).first;
+   }
+   if (_sdf->HasElement("bl_ref_wind")) {
+       _bl_ref_wind = _sdf->Get<Vector3d>("bl_ref_wind", _bl_ref_wind).first;
+   }
     }
 
      // Try to resolve wind entity now; lazily fallback during updates
@@ -422,42 +388,7 @@ Vector3d WindGustSystem::ComputeSpatialWind(const Vector3d &pos)
 {
     Vector3d spatial_wind(0, 0, 0);
 
-    if (_spatial_model == "linear_shear") {
-        // Linear wind shear: ΔV = gradient · Δpos
-        Vector3d dp = pos - _shear_ref_pos;
-        spatial_wind = _shear_gradient_x * dp.X() +
-                      _shear_gradient_y * dp.Y() +
-                      _shear_gradient_z * dp.Z();
-
-    } else if (_spatial_model == "sine_wave") {
-        // Spatial sine wave: A · sin(2π · k·r / λ + φ)
-        double phase = 2.0 * GZ_PI * _sine_direction.Dot(pos) / _sine_wavelength + _sine_phase;
-        double amplitude = std::sin(phase);
-        spatial_wind = _sine_amplitude * amplitude;
-
-    } else if (_spatial_model == "vortex") {
-        // Vortex wind field (2D in XY plane, rotates around Z axis)
-        Vector3d r = pos - _vortex_center;
-        double r_xy = std::sqrt(r.X() * r.X() + r.Y() * r.Y());
-
-        if (r_xy > 1e-6) {
-            // Rankine vortex model
-            double v_theta;
-            if (r_xy < _vortex_core_radius) {
-                // Solid body rotation inside core
-                v_theta = _vortex_strength * r_xy / (_vortex_core_radius * _vortex_core_radius);
-            } else {
-                // Free vortex outside core
-                v_theta = _vortex_strength / r_xy;
-            }
-
-            // Tangential velocity in XY plane
-            spatial_wind.X() = -v_theta * r.Y() / r_xy;
-            spatial_wind.Y() =  v_theta * r.X() / r_xy;
-            spatial_wind.Z() = 0.0;
-        }
-
-    } else if (_spatial_model == "boundary_layer") {
+    if (_spatial_model == "boundary_layer") {
         // Power law boundary layer profile: V(z) = V_ref * (z/z_ref)^α
         double z = pos.Z();
         if (z > 0.1 && _bl_ref_height > 0.1) {  // Avoid singularity at z=0
