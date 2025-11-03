@@ -378,13 +378,32 @@ void MulticopterNeuralNetworkControl::PublishOutput(float *command_actions)
 
 	PX4_INFO("command_actions[3-5] (motor raw): %f, %f, %f", (double)command_actions[3], (double)command_actions[4], (double)command_actions[5]);
 
+	// Final output validity check: if any motor output is less than 0, set all motors to 0
+	bool has_negative_motor = false;
 	for (int i = 0; i < 3; i++) {
 		float motor_value = PX4_ISFINITE(command_actions[i + 3]) ? command_actions[i + 3] : NAN;
-		// Clamp negative values to 0 for non-reversible motors
 		if (PX4_ISFINITE(motor_value) && motor_value < 0.0f) {
-			motor_value = 0.0f;
+			has_negative_motor = true;
+			break;
 		}
-		actuator_motors.control[i] = motor_value;
+	}
+
+	if (has_negative_motor) {
+		// Set all motors to 0 if any motor output is negative
+		for (int i = 0; i < 3; i++) {
+			actuator_motors.control[i] = 0.0f;
+		}
+		PX4_WARN("Motor output validity check failed: negative value detected, all motors set to 0");
+	} else {
+		// Normal processing: clamp individual negative values to 0
+		for (int i = 0; i < 3; i++) {
+			float motor_value = PX4_ISFINITE(command_actions[i + 3]) ? command_actions[i + 3] : NAN;
+			// Clamp negative values to 0 for non-reversible motors
+			if (PX4_ISFINITE(motor_value) && motor_value < 0.0f) {
+				motor_value = 0.0f;
+			}
+			actuator_motors.control[i] = motor_value;
+		}
 	}
 	// actuator_motors.control[2] = 0.44f;
 	// Set remaining motor controls to NAN
