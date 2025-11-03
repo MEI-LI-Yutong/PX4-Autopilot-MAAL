@@ -62,7 +62,7 @@
 		    gz::sim::EntityComponentManager &_ecm) final;
 
  private:
-     // Parameters
+     // ======== Temporal wind parameters (original) ========
      gz::math::Vector3d _mean{0, 0, 0};
      gz::math::Vector3d _amplitude{0, 0, 0};
      double _frequency_hz{0.0};
@@ -91,14 +91,32 @@
     bool _rng_seeded{false};
     uint32_t _rng_seed{0};
 
+    // ======== Spatial wind parameters (NEW) ========
+    std::string _spatial_model{"none"};  // supported: none, boundary_layer
+    std::string _tracked_model{""};      // Name of model to track (empty = disabled)
+    gz::sim::Entity _tracked_entity{gz::sim::kNullEntity};
+
+    // Note: Previously supported linear_shear, sine_wave, and vortex have
+    // been removed to keep only the boundary_layer model.
+
+     // Boundary layer: V = V_ref · (z/z_ref)^α
+     double _bl_ref_height{10.0};                     // [m]
+     double _bl_exponent{0.143};                      // Power law exponent
+     gz::math::Vector3d _bl_ref_wind{0, 0, 0};       // Wind at z_ref
+
      // State
      gz::sim::Entity _worldEntity{gz::sim::kNullEntity};
      gz::sim::Entity _windEntity{gz::sim::kNullEntity};
      bool _configured{false};
      bool _warnedMissingWind{false};
+     bool _warnedMissingModel{false};
     gz::transport::Node _node;
     gz::transport::Node::Publisher _pub;
     std::string _topic;
+
+    // ======== Spatial wind helper functions ========
+    gz::math::Vector3d ComputeSpatialWind(const gz::math::Vector3d &pos);
+    bool GetTrackedPosition(gz::sim::EntityComponentManager &_ecm, gz::math::Vector3d &pos);
     // Compute simple 1-cos gust at time t (seconds)
     inline double one_minus_cos_simp(double t) const {
         const double T = _simp_T;

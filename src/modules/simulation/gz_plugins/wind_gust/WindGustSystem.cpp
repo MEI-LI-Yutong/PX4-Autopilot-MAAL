@@ -38,13 +38,15 @@
 
  #include <gz/sim/components/Wind.hh>
  #include <gz/sim/components/LinearVelocity.hh>
+ #include <gz/sim/components/Pose.hh>
+ #include <gz/sim/components/Model.hh>
+ #include <gz/sim/components/Name.hh>
  #include <gz/sim/Util.hh>
 
  #include <gz/math/Vector3.hh>
  #include <gz/math/Helpers.hh>
  #include <gz/msgs/vector3d.pb.h>
  #include <gz/msgs/Utility.hh>
- #include "gz/sim/components/Name.hh"
  #include <cmath>
 
  using namespace gz::sim;
@@ -120,6 +122,33 @@
      } else if (_sdf->HasElement("t")) {
          _simp_T = _sdf->Get<double>("t", _simp_T).first;
      }
+
+   // ======== Spatial wind parameters (NEW) ========
+   if (_sdf->HasElement("spatial_model")) {
+       _spatial_model = _sdf->Get<std::string>("spatial_model", _spatial_model).first;
+   }
+   if (_sdf->HasElement("tracked_model")) {
+       _tracked_model = _sdf->Get<std::string>("tracked_model", _tracked_model).first;
+   }
+   // Only boundary_layer is supported going forward
+   if (!_spatial_model.empty() &&
+       _spatial_model != "none" &&
+       _spatial_model != "boundary_layer") {
+       gzwarn << "WindGustSystem: unsupported spatial_model '" << _spatial_model
+              << "' — only 'boundary_layer' is supported. Disabling spatial wind." << std::endl;
+       _spatial_model = "none";
+   }
+
+   // Boundary layer parameters
+   if (_sdf->HasElement("bl_ref_height")) {
+       _bl_ref_height = _sdf->Get<double>("bl_ref_height", _bl_ref_height).first;
+   }
+   if (_sdf->HasElement("bl_exponent")) {
+       _bl_exponent = _sdf->Get<double>("bl_exponent", _bl_exponent).first;
+   }
+   if (_sdf->HasElement("bl_ref_wind")) {
+       _bl_ref_wind = _sdf->Get<Vector3d>("bl_ref_wind", _bl_ref_wind).first;
+   }
     }
 
      // Try to resolve wind entity now; lazily fallback during updates
@@ -291,6 +320,15 @@
      }
     }
 
+    // ======== Add spatial wind component (NEW) ========
+    if (_spatial_model != "none" && !_tracked_model.empty()) {
+        Vector3d pos;
+        if (GetTrackedPosition(_ecm, pos)) {
+            Vector3d spatial_wind = ComputeSpatialWind(pos);
+            wind += spatial_wind;
+        }
+    }
+
      // Update component
      auto windVel = _ecm.Component<components::WorldLinearVelocity>(_windEntity);
      if (!windVel) {
@@ -304,3 +342,64 @@
      gz::msgs::Set(&msg, wind);
      _pub.Publish(msg);
  }
+
+/////////////////////////////////////////////////
+// ======== Spatial Wind Helper Functions (NEW) ========
+/////////////////////////////////////////////////
+
+bool WindGustSystem::GetTrackedPosition(EntityComponentManager &_ecm, Vector3d &pos)
+{
+    // Try to find tracked model if not already found
+    if (_tracked_entity == kNullEntity && !_tracked_model.empty()) {
+        _tracked_entity = _ecm.EntityByComponents(
+            components::Name(_tracked_model),
+            components::Model());
+
+        if (_tracked_entity == kNullEntity && !_warnedMissingModel) {
+            gzdbg << "WindGustSystem: Model '" << _tracked_model
+                  << "' not found for spatial wind tracking" << std::endl;
+            _warnedMissingModel = true;
+            return false;
+        }
+    }
+
+    if (_tracked_entity == kNullEntity) {
+        return false;
+    }
+
+    // Get world pose of the model
+    auto worldPoseComp = _ecm.Component<components::WorldPose>(_tracked_entity);
+    if (worldPoseComp) {
+        pos = worldPoseComp->Data().Pos();
+        return true;
+    }
+
+    // Fallback: try Pose component and use worldPose() helper
+    auto poseComp = _ecm.Component<components::Pose>(_tracked_entity);
+    if (poseComp) {
+        pos = worldPose(_tracked_entity, _ecm).Pos();
+        return true;
+    }
+
+    return false;
+}
+
+Vector3d WindGustSystem::ComputeSpatialWind(const Vector3d &pos)
+{
+    Vector3d spatial_wind(0, 0, 0);
+
+    if (_spatial_model == "boundary_layer") {
+        // Power law boundary layer profile: V(z) = V_ref * (z/z_ref)^α
+        double z = pos.Z();
+        if (z > 0.1 && _bl_ref_height > 0.1) {  // Avoid singularity at z=0
+            double ratio = std::pow(z / _bl_ref_height, _bl_exponent);
+            spatial_wind = _bl_ref_wind * ratio;
+        } else if (z <= 0.1) {
+            // Below 0.1m, use ground level (z=0.1m) wind
+            double ratio = std::pow(0.1 / _bl_ref_height, _bl_exponent);
+            spatial_wind = _bl_ref_wind * ratio;
+        }
+    }
+
+    return spatial_wind;
+}
