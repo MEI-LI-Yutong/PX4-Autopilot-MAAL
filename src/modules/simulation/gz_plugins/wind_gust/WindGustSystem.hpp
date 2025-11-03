@@ -91,27 +91,13 @@
     bool _rng_seeded{false};
     uint32_t _rng_seed{0};
 
-     // ======== Spatial wind parameters (NEW) ========
-     std::string _spatial_model{"none"};  // none, linear_shear, sine_wave, vortex, boundary_layer
-     std::string _tracked_model{""};      // Name of model to track (empty = disabled)
-     gz::sim::Entity _tracked_entity{gz::sim::kNullEntity};
+    // ======== Spatial wind parameters (NEW) ========
+    std::string _spatial_model{"none"};  // supported: none, boundary_layer
+    std::string _tracked_model{""};      // Name of model to track (empty = disabled)
+    gz::sim::Entity _tracked_entity{gz::sim::kNullEntity};
 
-     // Linear shear: ΔV = gradient · Δpos (wind shear in any direction)
-     gz::math::Vector3d _shear_gradient_x{0, 0, 0};  // dV/dx [m/s per m]
-     gz::math::Vector3d _shear_gradient_y{0, 0, 0};  // dV/dy
-     gz::math::Vector3d _shear_gradient_z{0, 0, 0};  // dV/dz
-     gz::math::Vector3d _shear_ref_pos{0, 0, 0};     // Reference position
-
-     // Sine wave: A·sin(2π·k·r/λ + φ)
-     gz::math::Vector3d _sine_amplitude{0, 0, 0};
-     gz::math::Vector3d _sine_direction{1, 0, 0};    // Wave propagation direction
-     double _sine_wavelength{100.0};                  // [m]
-     double _sine_phase{0.0};                         // [rad]
-
-     // Vortex: Rotational field
-     gz::math::Vector3d _vortex_center{0, 0, 0};
-     double _vortex_strength{0.0};                    // Circulation [m²/s]
-     double _vortex_core_radius{10.0};                // [m]
+    // Note: Previously supported linear_shear, sine_wave, and vortex have
+    // been removed to keep only the boundary_layer model.
 
      // Boundary layer: V = V_ref · (z/z_ref)^α
      double _bl_ref_height{10.0};                     // [m]

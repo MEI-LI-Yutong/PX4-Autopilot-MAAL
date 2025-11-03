@@ -270,20 +270,16 @@ def extract_gust_level(test_id: str, description: str) -> Optional[int]:
 
 
 def detect_task_type(test_config: Dict) -> str:
-    """Detect task type from wind configuration."""
-    wind_cfg = test_config.get("wind_config", {})
-    direction = wind_cfg.get("direction", [0, 0, 0])
+    """Detect task type from test_id pattern."""
+    test_id = test_config.get("test_id", "")
 
-    # Normalize to identify primary direction
-    abs_vals = [abs(d) for d in direction]
-    max_idx = abs_vals.index(max(abs_vals)) if abs_vals else 0
-
-    if max_idx == 0:  # X direction
-        return "Horizontal (X)" if direction[0] != 0 else "Unknown"
-    elif max_idx == 1:  # Y direction
-        return "Horizontal (Y)" if direction[1] != 0 else "Unknown"
-    elif max_idx == 2:  # Z direction
-        return "Vertical (Z)" if direction[2] != 0 else "Unknown"
+    # Use test_id pattern to detect type
+    if "_z_" in test_id:
+        return "Vertical (Z)"
+    elif "_y_" in test_id:
+        return "Horizontal (Y)"
+    elif "gust_lvl_" in test_id:
+        return "Horizontal (X)"
 
     return "Unknown"
 
