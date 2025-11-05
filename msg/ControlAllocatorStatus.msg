@@ -19,3 +19,23 @@ int8[16] actuator_saturation            # Indicates actuator saturation status.
                                         # Note 2: an actuator with limited dynamics can be indicated as upper-saturated even if it as not reached its maximum value.
 
 uint16 handled_motor_failure_mask        # Bitmask of failed motors that were removed from the allocation / effectiveness matrix. Not necessarily identical to the report from FailureDetector
+
+# ===== Tiltrotor Fx Control Debug Data =====
+float32 tilt_fx_cmd                     # Input Fx command [N]
+float32 tilt_fz_cmd                     # Input Fz command [N] (usually negative)
+float32 tilt_f_total                    # Total thrust from forward-tilt motors [N]
+float32 tilt_delta_theta                # Calculated angle increment [rad]
+float32 tilt_theta_fl_old               # Front-left tilt old angle [rad]
+float32 tilt_theta_fr_old               # Front-right tilt old angle [rad]
+float32 tilt_theta_tail_old             # Tail tilt old angle [rad]
+float32 tilt_theta_fl_new               # Front-left tilt new angle [rad]
+float32 tilt_theta_fr_new               # Front-right tilt new angle [rad]
+float32 tilt_theta_tail_new             # Tail tilt new angle [rad]
+float32 tilt_servo_fl_old               # Front-left servo old normalized value [-1,1]
+float32 tilt_servo_fr_old               # Front-right servo old normalized value [-1,1]
+float32 tilt_servo_tail_old             # Tail servo old normalized value [-1,1]
+float32 tilt_servo_fl_new               # Front-left servo new normalized value [-1,1]
+float32 tilt_servo_fr_new               # Front-right servo new normalized value [-1,1]
+float32 tilt_servo_tail_new             # Tail servo new normalized value [-1,1]
+float32 tilt_fx_real                    # Actually achieved Fx [N]
+uint8 tilt_num_motors                   # Number of motors participating in calculation

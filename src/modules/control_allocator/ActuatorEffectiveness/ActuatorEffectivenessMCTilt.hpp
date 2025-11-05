@@ -33,7 +33,7 @@
 
 #pragma once
 
-#include "ActuatorEffectiveness.hpp"
+#include "control_allocation/actuator_effectiveness/ActuatorEffectiveness.hpp"
 #include "ActuatorEffectivenessRotors.hpp"
 #include "ActuatorEffectivenessTilts.hpp"
 
@@ -75,4 +75,38 @@ protected:
 	};
 
 	YawTiltSaturationFlags _yaw_tilt_saturation_flags{};
+
+private:
+	// ===== Post-allocation linear Fx layer (equal Δθ on forward-tilting servos) =====
+	static constexpr float MAX_LINEAR_TILT_RAD = 0.30f; // ~17 deg
+	static constexpr float EPS_F = 1e-6f;
+
+	// Fx residual to inject into control_allocator_status
+	float _fx_residual{0.f};
+
+	// 用于log记录的详细变量
+	struct TiltLogData {
+		float fx_cmd{0.f};          // 输入的Fx指令
+		float fz_cmd{0.f};          // 输入的Fz指令 (thrust_body[2])
+		float f_total{0.f};         // 前倾舵机控制电机的总推力
+		float delta_theta{0.f};     // 计算的角度增量 [rad]
+		float theta_fl_old{0.f};    // 前左舵机原始角度 [rad]
+		float theta_fr_old{0.f};    // 前右舵机原始角度 [rad]
+		float theta_tail_old{0.f};  // 尾部舵机原始角度 [rad]
+		float theta_fl_new{0.f};    // 前左舵机最终角度 [rad]
+		float theta_fr_new{0.f};    // 前右舵机最终角度 [rad]
+		float theta_tail_new{0.f};  // 尾部舵机最终角度 [rad]
+		float servo_fl_old{0.f};    // 前左舵机原始归一化值 [-1,1]
+		float servo_fr_old{0.f};    // 前右舵机原始归一化值 [-1,1]
+		float servo_tail_old{0.f};  // 尾部舵机原始归一化值 [-1,1]
+		float servo_fl_new{0.f};    // 前左舵机最终归一化值 [-1,1]
+		float servo_fr_new{0.f};    // 前右舵机最终归一化值 [-1,1]
+		float servo_tail_new{0.f};  // 尾部舵机最终归一化值 [-1,1]
+		float fx_real{0.f};         // 实际产生的Fx
+		int num_motors{0};          // 参与计算的电机数量
+	} _tilt_log_data;
+
+	// Helpers: angle [rad] <-> servo normalized [-1, 1]
+	float angleToServoNormalized(int tilt_index, float theta) const;
+	float servoNormalizedToAngle(int tilt_index, float normalized) const;
 };

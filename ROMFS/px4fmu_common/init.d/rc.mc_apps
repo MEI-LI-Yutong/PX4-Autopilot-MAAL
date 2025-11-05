@@ -6,6 +6,11 @@
 #
 
 #
+# Start Trim Selector (provides trim values for position and control allocation).
+#
+trim_selector start
+
+#
 # Start Control Allocator
 #
 control_allocator start

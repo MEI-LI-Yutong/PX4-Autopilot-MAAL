@@ -42,7 +42,9 @@
 #include "GotoControl/GotoControl.hpp"
 
 #include <drivers/drv_hrt.h>
-#include <lib/controllib/blocks.hpp>
+#include <lib/mathlib/math/filter/AlphaFilter.hpp>
+#include <lib/mathlib/math/filter/NotchFilter.hpp>
+#include <lib/mathlib/math/WelfordMean.hpp>
 #include <lib/perf/perf_counter.h>
 #include <lib/slew_rate/SlewRateYaw.hpp>
 #include <lib/systemlib/mavlink_log.h>
@@ -65,11 +67,12 @@
 #include <uORB/topics/vehicle_land_detected.h>
 #include <uORB/topics/vehicle_local_position.h>
 #include <uORB/topics/vehicle_local_position_setpoint.h>
+#include <uORB/topics/theta_trim.h>
 
 using namespace time_literals;
 
-class MulticopterPositionControl : public ModuleBase<MulticopterPositionControl>, public control::SuperBlock,
-	public ModuleParams, public px4::ScheduledWorkItem
+class MulticopterPositionControl : public ModuleBase<MulticopterPositionControl>, public ModuleParams,
+	public px4::ScheduledWorkItem
 {
 public:
 	MulticopterPositionControl(bool vtol = false);
@@ -106,11 +109,13 @@ private:
 	uORB::Subscription _vehicle_constraints_sub{ORB_ID(vehicle_constraints)};
 	uORB::Subscription _vehicle_control_mode_sub{ORB_ID(vehicle_control_mode)};
 	uORB::Subscription _vehicle_land_detected_sub{ORB_ID(vehicle_land_detected)};
+	uORB::Subscription _theta_trim_sub{ORB_ID(theta_trim)};
 
 	hrt_abstime _time_stamp_last_loop{0};		/**< time stamp of last loop iteration */
 	hrt_abstime _time_position_control_enabled{0};
 
 	trajectory_setpoint_s _setpoint{PositionControl::empty_trajectory_setpoint};
+	trajectory_setpoint_s _last_valid_setpoint{PositionControl::empty_trajectory_setpoint};
 	vehicle_control_mode_s _vehicle_control_mode{};
 
 	vehicle_constraints_s _vehicle_constraints {
@@ -127,6 +132,8 @@ private:
 		.maybe_landed = true,
 		.landed = true,
 	};
+
+	float _pitch_sp{0.0f};  // theta_trim pitch setpoint
 
 	DEFINE_PARAMETERS(
 		// Position Control
@@ -148,6 +155,11 @@ private:
 		(ParamBool<px4::params::MPC_USE_HTE>)       _param_mpc_use_hte,
 		(ParamBool<px4::params::MPC_ACC_DECOUPLE>)  _param_mpc_acc_decouple,
 
+		(ParamFloat<px4::params::MPC_VEL_LP>)       _param_mpc_vel_lp,
+		(ParamFloat<px4::params::MPC_VEL_NF_FRQ>)   _param_mpc_vel_nf_frq,
+		(ParamFloat<px4::params::MPC_VEL_NF_BW>)    _param_mpc_vel_nf_bw,
+		(ParamFloat<px4::params::MPC_VELD_LP>)      _param_mpc_veld_lp,
+
 		// Takeoff / Land
 		(ParamFloat<px4::params::COM_SPOOLUP_TIME>) _param_com_spoolup_time, /**< time to let motors spool up after arming */
 		(ParamBool<px4::params::COM_THROW_EN>)      _param_com_throw_en, /**< throw launch enabled  */
@@ -160,7 +172,6 @@ private:
 		(ParamFloat<px4::params::MPC_VEL_MAN_SIDE>) _param_mpc_vel_man_side,
 		(ParamFloat<px4::params::MPC_XY_CRUISE>)    _param_mpc_xy_cruise,
 		(ParamFloat<px4::params::MPC_LAND_ALT2>)    _param_mpc_land_alt2,    /**< downwards speed limited below this altitude */
-		(ParamInt<px4::params::MPC_POS_MODE>)       _param_mpc_pos_mode,
 		(ParamInt<px4::params::MPC_ALT_MODE>)       _param_mpc_alt_mode,
 		(ParamFloat<px4::params::MPC_TILTMAX_LND>)  _param_mpc_tiltmax_lnd,  /**< maximum tilt for landing and smooth takeoff */
 		(ParamFloat<px4::params::MPC_THR_MIN>)      _param_mpc_thr_min,
@@ -185,9 +196,16 @@ private:
 		(ParamFloat<px4::params::MPC_YAWRAUTO_ACC>) _param_mpc_yawrauto_acc
 	);
 
-	control::BlockDerivative _vel_x_deriv; /**< velocity derivative in x */
-	control::BlockDerivative _vel_y_deriv; /**< velocity derivative in y */
-	control::BlockDerivative _vel_z_deriv; /**< velocity derivative in z */
+	math::WelfordMean<float> _sample_interval_s{};
+
+	AlphaFilter<matrix::Vector2f> _vel_xy_lp_filter{};
+	AlphaFilter<float> _vel_z_lp_filter{};
+
+	math::NotchFilter<matrix::Vector2f> _vel_xy_notch_filter{};
+	math::NotchFilter<float> _vel_z_notch_filter{};
+
+	AlphaFilter<matrix::Vector2f> _vel_deriv_xy_lp_filter{};
+	AlphaFilter<float> _vel_deriv_z_lp_filter{};
 
 	GotoControl _goto_control; ///< class for handling smooth goto position setpoints
 	PositionControl _control; ///< class for core PID position control
@@ -224,7 +242,7 @@ private:
 	/**
 	 * Check for validity of positon/velocity states.
 	 */
-	PositionControlStates set_vehicle_states(const vehicle_local_position_s &local_pos);
+	PositionControlStates set_vehicle_states(const vehicle_local_position_s &local_pos, const float dt_s);
 
 	/**
 	 * Generate setpoint to bridge no executable setpoint being available.

@@ -44,10 +44,27 @@ using namespace matrix;
 
 namespace ControlMath
 {
-void thrustToAttitude(const Vector3f &thr_sp, const float yaw_sp, vehicle_attitude_setpoint_s &att_sp)
+// void thrustToAttitude(const Vector3f &thr_sp, const float yaw_sp, vehicle_attitude_setpoint_s &att_sp)
+// {
+// 	bodyzToAttitude(-thr_sp, yaw_sp, att_sp);
+// 	att_sp.thrust_body[2] = -thr_sp.length();
+// }
+
+void thrustToAttitude(const Vector3f &thr_sp, const float yaw_sp, const float pitch_sp, vehicle_attitude_setpoint_s &att_sp)
 {
-	bodyzToAttitude(-thr_sp, yaw_sp, att_sp);
-	att_sp.thrust_body[2] = -thr_sp.length();
+	bodyzToAttitude(-thr_sp, yaw_sp, pitch_sp, att_sp);
+
+	// 从姿态四元数中重构旋转矩阵
+	Quatf q_sp(att_sp.q_d[0], att_sp.q_d[1], att_sp.q_d[2], att_sp.q_d[3]);
+	Dcmf R_sp(q_sp);
+
+	// 将世界坐标系的推力转换到机体坐标系
+	const Vector3f thrust_body = R_sp.transpose() * thr_sp;
+
+	// 设置机体坐标系推力
+	att_sp.thrust_body[0] = thrust_body(0);
+	att_sp.thrust_body[1] = 0;
+	att_sp.thrust_body[2] = thrust_body(2);
 }
 
 void limitTilt(Vector3f &body_unit, const Vector3f &world_unit, const float max_angle)
@@ -67,56 +84,77 @@ void limitTilt(Vector3f &body_unit, const Vector3f &world_unit, const float max_
 	body_unit = cosf(angle) * world_unit + sinf(angle) * rejection.unit();
 }
 
-void bodyzToAttitude(Vector3f body_z, const float yaw_sp, vehicle_attitude_setpoint_s &att_sp)
+// void bodyzToAttitude(Vector3f body_z, const float yaw_sp, vehicle_attitude_setpoint_s &att_sp)
+// {
+// 	// zero vector, no direction, set safe level value
+// 	if (body_z.norm_squared() < FLT_EPSILON) {
+// 		body_z(2) = 1.f;
+// 	}
+
+// 	body_z.normalize();
+
+// 	// vector of desired yaw direction in XY plane, rotated by PI/2
+// 	const Vector3f y_C{-sinf(yaw_sp), cosf(yaw_sp), 0.f};
+
+// 	// desired body_x axis, orthogonal to body_z
+// 	Vector3f body_x = y_C % body_z;
+
+// 	// keep nose to front while inverted upside down
+// 	if (body_z(2) < 0.f) {
+// 		body_x = -body_x;
+// 	}
+
+// 	if (fabsf(body_z(2)) < 0.000001f) {
+// 		// desired thrust is in XY plane, set X downside to construct correct matrix,
+// 		// but yaw component will not be used actually
+// 		body_x.zero();
+// 		body_x(2) = 1.f;
+// 	}
+
+// 	body_x.normalize();
+
+// 	// desired body_y axis
+// 	const Vector3f body_y = body_z % body_x;
+
+// 	Dcmf R_sp;
+
+// 	// fill rotation matrix
+// 	for (int i = 0; i < 3; i++) {
+// 		R_sp(i, 0) = body_x(i);
+// 		R_sp(i, 1) = body_y(i);
+// 		R_sp(i, 2) = body_z(i);
+// 	}
+
+// 	// copy quaternion setpoint to attitude setpoint topic
+// 	const Quatf q_sp{R_sp};
+// 	q_sp.copyTo(att_sp.q_d);
+// }
+
+void bodyzToAttitude(Vector3f body_z_des, const float yaw_sp, const float pitch_sp, vehicle_attitude_setpoint_s &att_sp)
 {
 	// zero vector, no direction, set safe level value
-	if (body_z.norm_squared() < FLT_EPSILON) {
-		body_z(2) = 1.f;
+	if (body_z_des.norm_squared() < FLT_EPSILON) {
+		body_z_des(2) = 1.f;
 	}
 
-	body_z.normalize();
+	// body_z_des.normalize();
 
-	// vector of desired yaw direction in XY plane, rotated by PI/2
-	const Vector3f y_C{-sinf(yaw_sp), cosf(yaw_sp), 0.f};
+	/* 根据 yaw_sp，pitch_sp，将世界坐标系的 thr_sp 旋转到机体坐标系 */
+	/* roll 先假设为 0，将力转换方向，得到机体坐标系的力期望 */
 
-	// desired body_x axis, orthogonal to body_z
-	Vector3f body_x = y_C % body_z;
+	/* 2) 在已定 yaw+pitch 坐标系里解 roll */
+	Dcmf R_yaw_pitch(Eulerf(0.f, pitch_sp, yaw_sp));      // R = Rz*yaw · Ry*pitch
+	Vector3f d_local = R_yaw_pitch.transpose() * body_z_des;
+	float roll_sp = atan2f(-d_local(1), d_local(2));
+	// roll_sp = 0.0f;
+	roll_sp = math::constrain(roll_sp, -M_PI_F/6.0f, M_PI_F/6.0f);
 
-	// keep nose to front while inverted upside down
-	if (body_z(2) < 0.f) {
-		body_x = -body_x;
-	}
-
-	if (fabsf(body_z(2)) < 0.000001f) {
-		// desired thrust is in XY plane, set X downside to construct correct matrix,
-		// but yaw component will not be used actually
-		body_x.zero();
-		body_x(2) = 1.f;
-	}
-
-	body_x.normalize();
-
-	// desired body_y axis
-	const Vector3f body_y = body_z % body_x;
-
-	Dcmf R_sp;
-
-	// fill rotation matrix
-	for (int i = 0; i < 3; i++) {
-		R_sp(i, 0) = body_x(i);
-		R_sp(i, 1) = body_y(i);
-		R_sp(i, 2) = body_z(i);
-	}
+	// 构建最终的旋转矩阵
+	Dcmf R_sp(Eulerf(roll_sp, pitch_sp, yaw_sp));
 
 	// copy quaternion setpoint to attitude setpoint topic
 	const Quatf q_sp{R_sp};
 	q_sp.copyTo(att_sp.q_d);
-
-	// calculate euler angles, for logging only, must not be used for control
-	const Eulerf euler{R_sp};
-	att_sp.roll_body = euler.phi();
-	att_sp.pitch_body = euler.theta();
-	att_sp.yaw_body = euler.psi();
 }
 
 Vector2f constrainXY(const Vector2f &v0, const Vector2f &v1, const float &max)
