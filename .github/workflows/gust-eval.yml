@@ -1,0 +1,68 @@
+name: Gust Eval SITL
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  gust-eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    concurrency:
+      group: gust-eval-${{ github.ref }}
+      cancel-in-progress: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Prepare caches
+        run: |
+          mkdir -p ~/.cache/uv ~/.ccache ~/.gz/fuel
+
+      - name: Cache uv packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/uv
+          key: ${{ runner.os }}-uv-${{ hashFiles('Tools/px4_gust_eval/pyproject.toml', 'Tools/px4_gust_eval/uv.lock') }}
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.ccache
+          key: ${{ runner.os }}-ccache-${{ hashFiles('**/CMakeLists.txt', '**/*.cmake') }}
+          restore-keys: |
+            ${{ runner.os }}-ccache-
+
+      - name: Pull base image
+        run: docker pull raiots/maal_px4_simulation:latest
+
+      - name: Build + Run gust evaluation
+        env:
+          TASKS_JSON: Tools/px4_gust_eval/tasks/dryden_boundary_layer_z_levels.json
+          HEADLESS: "1"
+          BUILD_TARGET: px4_sitl_default
+        run: |
+          docker run --rm --ipc=host \
+            -e TASKS_JSON -e HEADLESS -e BUILD_TARGET \
+            -e GZ_SIM_RESOURCE_PATH=/PX4-Autopilot/Tools/simulation/gz/models \
+            -v "$GITHUB_WORKSPACE":/PX4-Autopilot:rw \
+            -v ~/.cache/uv:/root/.cache/uv \
+            -v ~/.ccache:/root/.ccache \
+            -w /PX4-Autopilot \
+            raiots/maal_px4_simulation:latest \
+            bash -lc 'bash /PX4-Autopilot/docker/run_gust_eval.sh'
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gust-logs
+          path: Tools/px4_gust_eval/logs/**
+          if-no-files-found: warn

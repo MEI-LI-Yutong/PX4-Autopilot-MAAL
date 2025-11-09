@@ -545,6 +545,13 @@ distclean:
 	@rm -rf "$(SRC_DIR)/build"
 	@git clean --force -X "$(SRC_DIR)/msg/" "$(SRC_DIR)/platforms/" "$(SRC_DIR)/posix-configs/" "$(SRC_DIR)/ROMFS/" "$(SRC_DIR)/src/" "$(SRC_DIR)/test/" "$(SRC_DIR)/Tools/"
 
+# Gust evaluation automation (Docker)
+# --------------------------------------------------------------------
+.PHONY: gust_eval
+gust_eval:
+	@echo "Running gust evaluation in Docker (image: raiots/maal_px4_simulation:latest)"
+	@bash Tools/px4_gust_eval/run_gust_eval_container.sh $(TASKS_JSON)
+
 # Help / Error / Misc
 # --------------------------------------------------------------------
 
