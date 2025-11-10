@@ -37,7 +37,7 @@ jobs:
           HEADLESS: "1"
         run: |
           mkdir -p "$GITHUB_WORKSPACE/Tools/px4_gust_eval/logs"
-          docker run --rm -it --ipc=host \
+          docker run --rm --ipc=host \
             -e TASKS_JSON=Tools/px4_gust_eval/tasks/dryden_boundary_layer_z_levels.json -e HEADLESS=1 -e DISPLAY -e QT_X11_NO_MITSHM=1  \
             -v "$GITHUB_WORKSPACE/Tools/px4_gust_eval/logs":/PX4-Autopilot/Tools/px4_gust_eval/logs -v /tmp/.X11-unix:/tmp/.X11-unix:rw \
             px4-gust-eval
