@@ -40,13 +40,13 @@ V_MAX = 3.0      # m - vertical max deviation
 V_STD = 1.5      # m - vertical std deviation
 ANG_MAX = 45.0   # deg - max roll/pitch
 
-# Recovery window for Level 2
+# Recovery window for Wind-Recoverable
 RECOVER_T = 10.0  # seconds
 
 # Grade colors
 COLORS = {
-    "Level 1": "#2ecc71",      # Green
-    "Level 2": "#f39c12",      # Orange
+    "Wind-Resilient": "#2ecc71",      # Green
+    "Wind-Recoverable": "#f39c12",      # Orange
     "Unstable": "#e74c3c",     # Red
     "Not launched": "#95a5a6"  # Gray
 }
@@ -180,9 +180,9 @@ def compute_grade(df: pd.DataFrame) -> str:
     )
 
     if base_ok:
-        return "Level 1"
+        return "Wind-Resilient"
 
-    # Check recovery for Level 2
+    # Check recovery for Wind-Recoverable
     if "t_s" in df.columns and {"lat_deg", "lon_deg"}.issubset(df.columns):
         x, y = latlon_to_xy(df)
         t = df["t_s"].to_numpy(dtype=float)
@@ -249,7 +249,7 @@ def compute_grade(df: pd.DataFrame) -> str:
                             (m_after.get("max_abs_pitch", float("inf")) <= ANG_MAX)
                         )
                         if ok_after:
-                            return "Level 2"
+                            return "Wind-Recoverable"
 
     return "Unstable"
 
@@ -316,7 +316,7 @@ def plot_metric_bar_chart(
 
     # Add threshold lines
     ax.axhline(y=threshold, color='#e74c3c', linestyle='--', linewidth=1.5,
-               label=f'Level 2 Threshold ({threshold} m)', zorder=10)
+               label=f'Wind-Recoverable Threshold ({threshold} m)', zorder=10)
 
     # Labels and title
     ax.set_xlabel('Gust Level', fontsize=24, fontweight='bold')
@@ -329,8 +329,8 @@ def plot_metric_bar_chart(
 
     # Legend for grades
     legend_elements = [
-        mpatches.Patch(facecolor=COLORS["Level 1"], edgecolor='black', label='Level 1'),
-        mpatches.Patch(facecolor=COLORS["Level 2"], edgecolor='black', label='Level 2'),
+        mpatches.Patch(facecolor=COLORS["Wind-Resilient"], edgecolor='black', label='Wind-Resilient'),
+        mpatches.Patch(facecolor=COLORS["Wind-Recoverable"], edgecolor='black', label='Wind-Recoverable'),
         mpatches.Patch(facecolor=COLORS["Unstable"], edgecolor='black', label='Unstable'),
         plt.Line2D([0], [0], color='#e74c3c', linestyle='--', linewidth=1.5, label=f'Threshold ({threshold} m)')
     ]
