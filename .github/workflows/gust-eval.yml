@@ -1,0 +1,96 @@
+name: Gust Eval SITL
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  gust-eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    concurrency:
+      group: gust-eval-${{ github.ref }}
+      cancel-in-progress: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      # - name: Free up disk (before build)
+      #   run: |
+      #     df -h
+      #     sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+      #     docker image prune --all --force || true
+      #     docker builder prune -a -f || true
+      #     df -h
+
+      - name: Build container image
+        run: docker build -t px4-gust-eval --build-arg BUILD_TARGET=px4_sitl_default .
+
+      - name: Run gust evaluation (headless)
+        env:
+          TASKS_JSON: Tools/px4_gust_eval/tasks/dryden_boundary_layer_z_levels.json
+          HEADLESS: "1"
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/Tools/px4_gust_eval/logs"
+          docker run --rm --ipc=host \
+            -e TASKS_JSON=Tools/px4_gust_eval/tasks/dryden_boundary_layer_z_levels.json -e HEADLESS=1 -e DISPLAY -e QT_X11_NO_MITSHM=1  \
+            -v "$GITHUB_WORKSPACE/Tools/px4_gust_eval/logs":/PX4-Autopilot/Tools/px4_gust_eval/logs -v /tmp/.X11-unix:/tmp/.X11-unix:rw \
+            px4-gust-eval
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gust-logs
+          path: Tools/px4_gust_eval/logs/**
+          if-no-files-found: warn
+
+  gust-eval-debug:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: [self-hosted, linux]
+    timeout-minutes: 180
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Free up disk (before build)
+        run: |
+          df -h
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          docker image prune --all --force || true
+          docker builder prune -a -f || true
+          df -h
+
+      - name: Build container image
+        run: docker build -t px4-gust-eval --build-arg BUILD_TARGET=px4_sitl_default .
+
+      - name: Run gust evaluation (GUI)
+        env:
+          TASKS_JSON: Tools/px4_gust_eval/tasks/dryden_boundary_layer_z_levels.json
+          HEADLESS: "0"
+          DISPLAY: ${{ env.DISPLAY }}
+        run: |
+          xhost +local:root || true
+          mkdir -p "$GITHUB_WORKSPACE/Tools/px4_gust_eval/logs"
+          docker run --rm --ipc=host \
+            -e TASKS_JSON -e HEADLESS -e DISPLAY -e QT_X11_NO_MITSHM=1 \
+            -p 18570:18570/udp \
+            -v /tmp/.X11-unix:/tmp/.X11-unix:rw \
+            -v "$GITHUB_WORKSPACE/Tools/px4_gust_eval/logs":/PX4-Autopilot/Tools/px4_gust_eval/logs \
+            px4-gust-eval
+
+      - name: Upload logs (GUI)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gust-logs-gui
+          path: Tools/px4_gust_eval/logs/**
+          if-no-files-found: warn

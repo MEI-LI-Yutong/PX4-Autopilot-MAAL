@@ -40,13 +40,13 @@ V_MAX = 3.0      # m - vertical max deviation
 V_STD = 1.5      # m - vertical std deviation
 ANG_MAX = 45.0   # deg - max roll/pitch
 
-# Recovery window for Level 2
+# Recovery window for Wind-Recoverable
 RECOVER_T = 10.0  # seconds
 
 # Grade colors
 COLORS = {
-    "Level 1": "#2ecc71",      # Green
-    "Level 2": "#f39c12",      # Orange
+    "Wind-Resilient": "#2ecc71",      # Green
+    "Wind-Recoverable": "#f39c12",      # Orange
     "Unstable": "#e74c3c",     # Red
     "Not launched": "#95a5a6"  # Gray
 }
@@ -164,72 +164,72 @@ def compute_metrics_for_test(df: pd.DataFrame) -> Optional[Dict[str, float]]:
     }
 
 
-def compute_grade(df: pd.DataFrame) -> str:
-    """Compute stability grade for a single test."""
+def compute_grade_dimensional(df: pd.DataFrame, dim: str) -> str:
+    """Compute stability grade for a single test, per dimension.
+
+    dim:
+      - 'h' for horizontal metrics (uses H_MAX/H_STD)
+      - 'v' for vertical metrics (uses V_MAX/V_STD)
+
+    Notes:
+      - Angle constraints are not considered for per-dimension grading.
+      - Recovery check is evaluated only on the same dimension's exceedance.
+    """
+    if df.empty or not {"lat_deg", "lon_deg"}.issubset(df.columns):
+        return "Not launched"
+
+    if dim == 'v' and "rel_alt_m" not in df.columns:
+        return "Not launched"
+
     m = compute_metrics_for_test(df)
     if m is None:
         return "Not launched"
 
-    base_ok = (
-        (m.get("h_max_dev", float("inf")) <= H_MAX) and
-        (m.get("h_std", float("inf")) <= H_STD) and
-        (m.get("v_max_dev", float("inf")) <= V_MAX) and
-        (m.get("v_std", float("inf")) <= V_STD) and
-        (m.get("max_abs_roll", float("inf")) <= ANG_MAX) and
-        (m.get("max_abs_pitch", float("inf")) <= ANG_MAX)
-    )
+    if dim == 'h':
+        base_ok = (
+            (m.get("h_max_dev", float("inf")) <= H_MAX) and
+            (m.get("h_std", float("inf")) <= H_STD)
+        )
+    else:  # 'v'
+        base_ok = (
+            (m.get("v_max_dev", float("inf")) <= V_MAX) and
+            (m.get("v_std", float("inf")) <= V_STD)
+        )
 
     if base_ok:
-        return "Level 1"
+        return "Wind-Resilient"
 
-    # Check recovery for Level 2
+    # Check recovery for Wind-Recoverable (dimension-specific)
     if "t_s" in df.columns and {"lat_deg", "lon_deg"}.issubset(df.columns):
         x, y = latlon_to_xy(df)
         t = df["t_s"].to_numpy(dtype=float)
         mask = _segment_mask_from_x(x)
 
         if mask.any():
-            # Build exceedance flags
-            exceed_h = np.zeros_like(mask, dtype=bool)
+            # Build exceedance flag for the selected dimension
+            exceed_dim = np.zeros_like(mask, dtype=bool)
             try:
-                x_seg = x[mask]
-                y_seg = y[mask]
-                finite_xy = np.isfinite(x_seg) & np.isfinite(y_seg)
-                if finite_xy.sum() >= 2:
-                    k, b = np.polyfit(x_seg[finite_xy], y_seg[finite_xy], 1)
-                    y_pred = k * x + b
-                else:
-                    y_med = float(np.nanmedian(y_seg)) if y_seg.size else 0.0
-                    y_pred = np.full_like(y, y_med)
-                y_dev_full = y - y_pred
-                exceed_h = np.abs(y_dev_full) > H_MAX
-            except Exception:
-                pass
-
-            exceed_v = np.zeros_like(mask, dtype=bool)
-            if "rel_alt_m" in df.columns:
-                try:
+                if dim == 'h':
+                    x_seg = x[mask]
+                    y_seg = y[mask]
+                    finite_xy = np.isfinite(x_seg) & np.isfinite(y_seg)
+                    if finite_xy.sum() >= 2:
+                        k, b = np.polyfit(x_seg[finite_xy], y_seg[finite_xy], 1)
+                        y_pred = k * x + b
+                    else:
+                        y_med = float(np.nanmedian(y_seg)) if y_seg.size else 0.0
+                        y_pred = np.full_like(y, y_med)
+                    y_dev_full = y - y_pred
+                    exceed_dim = np.abs(y_dev_full) > H_MAX
+                else:  # 'v'
                     z = df["rel_alt_m"].to_numpy(dtype=float)
                     z_ref = 10.0
                     v_dev_full = z - z_ref
-                    exceed_v = np.abs(v_dev_full) > V_MAX
-                except Exception:
-                    pass
+                    exceed_dim = np.abs(v_dev_full) > V_MAX
+            except Exception:
+                pass
 
-            exceed_roll = np.zeros_like(mask, dtype=bool)
-            exceed_pitch = np.zeros_like(mask, dtype=bool)
-            if "roll_deg" in df.columns:
-                try:
-                    exceed_roll = np.abs(df["roll_deg"].to_numpy(dtype=float)) > ANG_MAX
-                except Exception:
-                    pass
-            if "pitch_deg" in df.columns:
-                try:
-                    exceed_pitch = np.abs(df["pitch_deg"].to_numpy(dtype=float)) > ANG_MAX
-                except Exception:
-                    pass
-
-            exceed_any = (exceed_h | exceed_v | exceed_roll | exceed_pitch) & mask
+            exceed_any = exceed_dim & mask
 
             if exceed_any.any():
                 i0 = int(np.argmax(exceed_any))
@@ -240,16 +240,18 @@ def compute_grade(df: pd.DataFrame) -> str:
                     df_after = df[mask_recover]
                     m_after = compute_metrics_for_test(df_after)
                     if m_after is not None:
-                        ok_after = (
-                            (m_after.get("h_max_dev", float("inf")) <= H_MAX) and
-                            (m_after.get("h_std", float("inf")) <= H_STD) and
-                            (m_after.get("v_max_dev", float("inf")) <= V_MAX) and
-                            (m_after.get("v_std", float("inf")) <= V_STD) and
-                            (m_after.get("max_abs_roll", float("inf")) <= ANG_MAX) and
-                            (m_after.get("max_abs_pitch", float("inf")) <= ANG_MAX)
-                        )
+                        if dim == 'h':
+                            ok_after = (
+                                (m_after.get("h_max_dev", float("inf")) <= H_MAX) and
+                                (m_after.get("h_std", float("inf")) <= H_STD)
+                            )
+                        else:
+                            ok_after = (
+                                (m_after.get("v_max_dev", float("inf")) <= V_MAX) and
+                                (m_after.get("v_std", float("inf")) <= V_STD)
+                            )
                         if ok_after:
-                            return "Level 2"
+                            return "Wind-Recoverable"
 
     return "Unstable"
 
@@ -316,7 +318,7 @@ def plot_metric_bar_chart(
 
     # Add threshold lines
     ax.axhline(y=threshold, color='#e74c3c', linestyle='--', linewidth=1.5,
-               label=f'Level 2 Threshold ({threshold} m)', zorder=10)
+               label=f'Wind-Recoverable Threshold ({threshold} m)', zorder=10)
 
     # Labels and title
     ax.set_xlabel('Gust Level', fontsize=24, fontweight='bold')
@@ -329,8 +331,8 @@ def plot_metric_bar_chart(
 
     # Legend for grades
     legend_elements = [
-        mpatches.Patch(facecolor=COLORS["Level 1"], edgecolor='black', label='Level 1'),
-        mpatches.Patch(facecolor=COLORS["Level 2"], edgecolor='black', label='Level 2'),
+        mpatches.Patch(facecolor=COLORS["Wind-Resilient"], edgecolor='black', label='Wind-Resilient'),
+        mpatches.Patch(facecolor=COLORS["Wind-Recoverable"], edgecolor='black', label='Wind-Recoverable'),
         mpatches.Patch(facecolor=COLORS["Unstable"], edgecolor='black', label='Unstable'),
         plt.Line2D([0], [0], color='#e74c3c', linestyle='--', linewidth=1.5, label=f'Threshold ({threshold} m)')
     ]
@@ -393,19 +395,20 @@ def main() -> None:
             if "t_s" in df.columns:
                 df = df[df["t_s"].notna()]
 
-            # Compute metrics and grade
+            # Compute metrics and per-dimension grades
             metrics = compute_metrics_for_test(df)
             if metrics is None:
                 print(f"  Warning: Could not compute metrics for {test_id}")
                 continue
 
-            grade = compute_grade(df)
+            grade_h = compute_grade_dimensional(df, 'h')
+            grade_v = compute_grade_dimensional(df, 'v')
 
             levels.append(level)
             v_max_devs.append(metrics.get("v_max_dev", float("nan")))
             h_max_devs.append(metrics.get("h_max_dev", float("nan")))
-            grades_v.append(grade)
-            grades_h.append(grade)
+            grades_v.append(grade_v)
+            grades_h.append(grade_h)
 
         if not levels:
             print(f"  No valid data for {task_type}, skipping...")
