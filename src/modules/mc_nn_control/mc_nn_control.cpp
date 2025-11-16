@@ -346,6 +346,14 @@ void MulticopterNeuralNetworkControl::PopulateInputTensor()
 	_input_tensor->data.f[13] = angular_vel_local(1);
 	_input_tensor->data.f[14] = angular_vel_local(2);
 
+	// Additional observations for the retrained model:
+	// 15: yaw error (here: current yaw angle in world frame, in radians, wrapped to (-pi, pi])
+	// 16: wind speed (not observed on vehicle, set to 0)
+	// const float yaw = matrix::Eulerf(attitude).psi();
+	// const float yaw_wrapped = matrix::wrap_pi(yaw);
+	// _input_tensor->data.f[15] = yaw_wrapped;
+	// _input_tensor->data.f[16] = 0.0f;
+
 	for (int i = 0; i < 15; i++) {
 		_input_data[i] = _input_tensor->data.f[i];
 	}
