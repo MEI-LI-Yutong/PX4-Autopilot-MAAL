@@ -1,0 +1,21 @@
+{
+  "test_suite": "Wind Levels (Sustained & Gust)",
+  "description": "26 gust-only tasks: 13 along -X and 13 along -Z. Uses one_minus_cos_simp with T=10s and A0 set to the target |V| level.",
+  "px4_sitl_command": "make px4_sitl_neural gz_tiltrotor_windy",
+  "mission_type": "straight_line",
+  "mission_config": {
+    "takeoff_altitude": 10.0,
+    "timeout_sec": 150,
+    "advance_distance_m": 100.0,
+    "advance_axis": "ned_y",
+    "advance_after_hover_sec": 2
+  },
+  "wind_gust_tests": [
+    {"test_id": "gust_lvl_00", "description": "Gust L0: |V|=0.00 m/s (mean=0)", "wind_config": {"model": "one_minus_cos_simp", "mean": [0,0,0], "direction": [-1,0,0], "A0": 0.00, "T": 10, "phase": 0.0 }},
+    {"test_id": "gust_lvl_01", "description": "Gust L1: |V|=0.30 m/s (mean=0)", "wind_config": {"model": "one_minus_cos_simp", "mean": [0,0,0], "direction": [-1,0,0], "A0": 0.30, "T": 10, "phase": 0.0 }}
+  ],
+  "output_config": {
+    "log_directory": "logs/levels",
+    "save_flight_data": true
+  }
+}

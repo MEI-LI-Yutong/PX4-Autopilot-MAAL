@@ -191,8 +191,7 @@ private:
 
 		(ParamFloat<px4::params::MPC_XY_ERR_MAX>) _param_mpc_xy_err_max,
 		(ParamFloat<px4::params::MPC_YAWRAUTO_MAX>) _param_mpc_yawrauto_max,
-		(ParamFloat<px4::params::MPC_YAWRAUTO_ACC>) _param_mpc_yawrauto_acc,
-		(ParamBool<px4::params::MC_NN_MIS_EN>)      _param_mc_nn_mis_en
+		(ParamFloat<px4::params::MPC_YAWRAUTO_ACC>) _param_mpc_yawrauto_acc
 	);
 
 	math::WelfordMean<float> _sample_interval_s{};

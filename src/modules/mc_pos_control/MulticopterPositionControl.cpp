@@ -395,9 +395,21 @@ void MulticopterPositionControl::Run()
 		vehicle_status_s vehicle_status{};
 		_vehicle_status_sub.update(&vehicle_status);
 
+		static param_t param_mc_nn_mis_en = PARAM_INVALID;
+
+		if (param_mc_nn_mis_en == PARAM_INVALID) {
+			param_mc_nn_mis_en = param_find("MC_NN_MIS_EN");
+		}
+
+		int32_t nn_mission_enabled = 0;
+
+		if (param_mc_nn_mis_en != PARAM_INVALID) {
+			param_get(param_mc_nn_mis_en, &nn_mission_enabled);
+		}
+
 		const bool mission_nn_active =
 			(vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_AUTO_MISSION)
-			&& _param_mc_nn_mis_en.get();
+			&& (nn_mission_enabled != 0);
 
 		if (mission_nn_active) {
 			// Neural network controller is responsible for actuator outputs during mission.
