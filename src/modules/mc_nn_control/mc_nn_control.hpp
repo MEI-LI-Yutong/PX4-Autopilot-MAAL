@@ -158,12 +158,14 @@ private:
 	vehicle_local_position_s _position;
 	vehicle_attitude_s _attitude;
 	manual_control_setpoint_s _manual_control_setpoint{};
+	bool _mission_nn_enabled{false};
 
 	DEFINE_PARAMETERS(
 		(ParamInt<px4::params::MC_NN_MAX_RPM>) _param_max_rpm,
 		(ParamInt<px4::params::MC_NN_MIN_RPM>) _param_min_rpm,
 		(ParamFloat<px4::params::MC_NN_THRST_COEF>) _param_thrust_coeff,
 		(ParamBool<px4::params::MC_NN_MANL_CTRL>) _param_manual_control,
+		(ParamBool<px4::params::MC_NN_MIS_EN>) _param_mission_enable,
 		(ParamFloat<px4::params::MC_NN_SV_MAX_ANG>) _param_servo_max_angle,
 		(ParamFloat<px4::params::MC_NN_SV_MIN_ANG>) _param_servo_min_angle
 	)

@@ -392,6 +392,23 @@ void MulticopterPositionControl::Run()
 	vehicle_local_position_s vehicle_local_position;
 
 	if (_local_pos_sub.update(&vehicle_local_position)) {
+		vehicle_status_s vehicle_status{};
+		_vehicle_status_sub.update(&vehicle_status);
+
+		const bool mission_nn_active =
+			(vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_AUTO_MISSION)
+			&& _param_mc_nn_mis_en.get();
+
+		if (mission_nn_active) {
+			// Neural network controller is responsible for actuator outputs during mission.
+			// Skip position control to avoid conflicting commands.
+			_takeoff.updateTakeoffState(_vehicle_control_mode.flag_armed, _vehicle_land_detected.landed, false, 10.f, true,
+						    vehicle_local_position.timestamp_sample);
+			_control.resetIntegral();
+			perf_end(_cycle_perf);
+			return;
+		}
+
 		const float dt =
 			math::constrain(((vehicle_local_position.timestamp_sample - _time_stamp_last_loop) * 1e-6f), 0.002f, 0.04f);
 		_time_stamp_last_loop = vehicle_local_position.timestamp_sample;

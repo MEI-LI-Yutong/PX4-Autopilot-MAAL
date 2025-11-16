@@ -311,6 +311,7 @@ void MulticopterNeuralNetworkControl::PopulateInputTensor()
 					   0.0f;
 	_trajectory_setpoint.position[2] = PX4_ISFINITE(_trajectory_setpoint.position[2]) ? _trajectory_setpoint.position[2] :
 					   -1.0f;
+	PX4_INFO("trajectory_setpoint.position: %f, %f, %f", (double)_trajectory_setpoint.position[0], (double)_trajectory_setpoint.position[1], (double)_trajectory_setpoint.position[2]);
 
 	matrix::Vector3f position_local = matrix::Vector3f(_position.x, _position.y, _position.z);
 	position_local = frame_transf * frame_transf_2 * position_local;
@@ -509,7 +510,9 @@ void MulticopterNeuralNetworkControl::Run()
 
 	if (_vehicle_status_sub.updated()) {
 		_vehicle_status_sub.copy(&vehicle_status);
-		_use_neural = vehicle_status.nav_state == _mode_id;
+		const bool mission_mode = (vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_AUTO_MISSION);
+		_mission_nn_enabled = _param_mission_enable.get();
+		_use_neural = (vehicle_status.nav_state == _mode_id) || (mission_mode && _mission_nn_enabled);
 	}
 
 	if (_parameter_update_sub.updated()) {

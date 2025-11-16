@@ -2581,6 +2581,26 @@ void Commander::updateControlMode()
 					 _vehicle_status.vehicle_type, _offboard_control_mode_sub.get(), _vehicle_control_mode);
 	_mode_management.updateControlMode(_vehicle_status.nav_state, _vehicle_control_mode);
 
+	// If neural controller is configured to run in mission mode, avoid enabling allocation
+	// in AUTO_MISSION to prevent conflicting actuator outputs.
+	if (_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_AUTO_MISSION) {
+		static param_t param_mc_nn_mis_en = PARAM_INVALID;
+
+		if (param_mc_nn_mis_en == PARAM_INVALID) {
+			param_mc_nn_mis_en = param_find("MC_NN_MIS_EN");
+		}
+
+		int32_t nn_mission_enabled = 0;
+
+		if (param_mc_nn_mis_en != PARAM_INVALID) {
+			param_get(param_mc_nn_mis_en, &nn_mission_enabled);
+		}
+
+		if (nn_mission_enabled != 0) {
+			_vehicle_control_mode.flag_control_allocation_enabled = false;
+		}
+	}
+
 	_vehicle_control_mode.flag_armed = isArmed();
 	_vehicle_control_mode.flag_multicopter_position_control_enabled =
 		(_vehicle_status.vehicle_type == vehicle_status_s::VEHICLE_TYPE_ROTARY_WING)
