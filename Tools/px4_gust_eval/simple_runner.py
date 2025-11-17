@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import psutil  # type: ignore
-from mavsdk import System  # type: ignore
+from mavsdk import System, mission  # type: ignore
 import shlex
 import math
 import xml.etree.ElementTree as ET
@@ -264,6 +264,24 @@ class SimpleGustRunner:
 
         start = asyncio.get_event_loop().time()
 
+        # If full manual control is desired (arming, takeoff, mode changes all via QGC),
+        # then this function only keeps the environment alive for the configured duration
+        # and does not send any flight-control commands.
+        manual_all_qgc = bool(mission_cfg.get("manual_all_via_qgc", False))
+
+        if manual_all_qgc:
+            self.logger.info(
+                f"Manual arming/takeoff/mode control via QGC enabled; "
+                f"runner will not send any arm/takeoff/mission/goto/land commands "
+                f"and will just keep the environment up for {flight_sec}s"
+            )
+            try:
+                await asyncio.sleep(flight_sec)
+            except asyncio.CancelledError:
+                # allow graceful interruption
+                pass
+            return True
+
         # Pre-arm readiness wait
         ready = await self._wait_until_armable(timeout_sec=ready_timeout, require_gps=True)
         if not ready:
@@ -350,50 +368,188 @@ class SimpleGustRunner:
             self.logger.error(f"Error waiting for takeoff: {e}")
             return False
 
-        # Advance in X (NED North) or Y (NED East) by advance_m, then land
-        try:
-            # Get current global position for simple geodesic offset
-            pos = await self.drone.telemetry.position().__anext__()
-            lat0 = float(pos.latitude_deg)
-            lon0 = float(pos.longitude_deg)
-            # Use absolute altitude (AMSL) for goto_location to avoid ground-hugging
-            alt_amsl = float(getattr(pos, "absolute_altitude_m", 0.0))
-            if not alt_amsl or math.isnan(alt_amsl):
-                # Fallback: approximate with relative + a guessed home AMSL (not ideal, but prevents zero AMSL)
-                alt_amsl = max(10.0, float(getattr(pos, "relative_altitude_m", takeoff_alt)) + 450.0)
+        # If user wants to control modes (HOLD/MISSION/Neural) manually via QGC,
+        # we only perform takeoff and then hover for the configured duration.
+        manual_mode_control = bool(mission_cfg.get("manual_mode_control_via_qgc", False))
 
-            dn = advance_m if advance_axis == "ned_x" else 0.0
-            de = advance_m if advance_axis == "ned_y" else 0.0
+        if manual_mode_control:
+            self.logger.info(
+                f"Manual mode control via QGC enabled; skipping any mission/goto advance and just hovering for {flight_sec}s"
+            )
+            try:
+                await asyncio.sleep(flight_sec)
+            except asyncio.CancelledError:
+                # allow graceful interruption
+                pass
 
-            # Convert local N/E offset to lat/lon
-            R = 6378137.0
-            d_lat = (dn / R) * 180.0 / math.pi
-            d_lon = (de / (R * math.cos(math.radians(lat0)))) * 180.0 / math.pi
-            lat_t = lat0 + d_lat
-            lon_t = lon0 + d_lon
+        else:
+            # Advance in X (NED North) or Y (NED East) by advance_m using a single-waypoint mission, then land.
+            try:
+                # Get current global position for simple geodesic offset
+                pos = await self.drone.telemetry.position().__anext__()
+                lat0 = float(pos.latitude_deg)
+                lon0 = float(pos.longitude_deg)
+                # Use absolute altitude (AMSL) for logging; mission will use relative altitude
+                alt_rel = float(getattr(pos, "relative_altitude_m", takeoff_alt))
+                if not alt_rel or math.isnan(alt_rel):
+                    alt_rel = takeoff_alt
 
-            # Update current setpoint for logging
-            self.current_setpoint = {"lat": lat_t, "lon": lon_t, "alt_amsl": alt_amsl}
-            self.logger.info(f"Advancing {advance_m:.1f} m along {advance_axis} to lat={lat_t:.7f} lon={lon_t:.7f} at AMSL {alt_amsl:.1f} m")
-            await self.drone.action.goto_location(lat_t, lon_t, alt_amsl, 90.0)
+                dn = advance_m if advance_axis == "ned_x" else 0.0
+                de = advance_m if advance_axis == "ned_y" else 0.0
 
-            # Wait until close to target or timeout (half remaining time)
-            wait_deadline = asyncio.get_event_loop().time() + max(15, timeout_sec // 2)
-            reached = False
-            while asyncio.get_event_loop().time() < wait_deadline:
-                p = await self.drone.telemetry.position().__anext__()
-                # compute ground distance
-                d_n = (math.radians(p.latitude_deg - lat_t)) * R
-                d_e = (math.radians(p.longitude_deg - lon_t)) * R * math.cos(math.radians((p.latitude_deg + lat_t) / 2.0))
-                dist = math.hypot(d_n, d_e)
-                if dist < 5.0:
-                    reached = True
-                    break
-                await asyncio.sleep(0.5)
-            if not reached:
-                self.logger.info("Advance timeout; proceeding to land")
-        except Exception as e:
-            self.logger.warning(f"Advance move skipped due to error: {e}")
+                # Convert local N/E offset to lat/lon
+                R = 6378137.0
+                d_lat = (dn / R) * 180.0 / math.pi
+                d_lon = (de / (R * math.cos(math.radians(lat0)))) * 180.0 / math.pi
+                lat_t = lat0 + d_lat
+                lon_t = lon0 + d_lon
+
+                # Build a single-waypoint mission
+                mission_items: List[mission.MissionItem] = [
+                    mission.MissionItem(
+                        latitude_deg=lat_t,
+                        longitude_deg=lon_t,
+                        relative_altitude_m=alt_rel,
+                        speed_m_s=float(mission_cfg.get("mission_speed_m_s", 5.0)),
+                        is_fly_through=True,
+                        gimbal_pitch_deg=float("nan"),
+                        gimbal_yaw_deg=float("nan"),
+                        camera_action=mission.MissionItem.CameraAction.NONE,
+                        loiter_time_s=0.0,
+                        camera_photo_interval_s=float("nan"),
+                        acceptance_radius_m=float(mission_cfg.get("mission_acceptance_radius_m", 5.0)),
+                        yaw_deg=float("nan"),
+                        camera_photo_distance_m=float("nan"),
+                        vehicle_action=mission.MissionItem.VehicleAction.NONE,
+                    )
+                ]
+
+                self.logger.info(
+                    f"Uploading single-waypoint mission to advance {advance_m:.1f} m along {advance_axis} "
+                    f"to lat={lat_t:.7f} lon={lon_t:.7f} rel_alt={alt_rel:.1f} m"
+                )
+
+                await self.drone.mission.clear_mission()
+                await self.drone.mission.set_return_to_launch_after_mission(False)
+                # Newer MAVSDK versions expect a MissionPlan rather than a raw list
+                mission_plan = mission.MissionPlan(mission_items)
+                await self.drone.mission.upload_mission(mission_plan)
+
+                # Give navigator / commander a short moment to accept and validate the mission
+                await asyncio.sleep(float(mission_cfg.get("mission_upload_settle_sec", 1.0)))
+
+                # Ensure global & local position are valid and stable for a short window
+                # before trying to switch to AUTO_MISSION. This mimics how a human would
+                # typically wait in QGC until EKF & mission checks are fully happy.
+                gp_timeout = float(mission_cfg.get("mission_global_pos_timeout_sec", 20.0))
+                stable_sec = float(mission_cfg.get("mission_pos_stable_sec", 2.0))
+                loop = asyncio.get_event_loop()
+                gp_deadline = loop.time() + gp_timeout
+                stable_start: Optional[float] = None
+
+                self.logger.info(
+                    f"Waiting for stable global/local position before mission start "
+                    f"(timeout={gp_timeout:.1f}s, stable={stable_sec:.1f}s)"
+                )
+
+                while loop.time() < gp_deadline:
+                    try:
+                        health = await self.drone.telemetry.health().__anext__()
+                        global_ok = bool(getattr(health, "is_global_position_ok", False))
+                        local_ok = bool(getattr(health, "is_local_position_ok", False))
+                        home_ok = bool(getattr(health, "is_home_position_ok", False))
+                    except Exception:
+                        global_ok = False
+                        local_ok = False
+                        home_ok = False
+
+                    if global_ok and local_ok and home_ok:
+                        if stable_start is None:
+                            stable_start = loop.time()
+                        elif loop.time() - stable_start >= stable_sec:
+                            break
+                    else:
+                        stable_start = None
+
+                    await asyncio.sleep(0.5)
+
+                if stable_start is None or (loop.time() - stable_start) < stable_sec:
+                    raise RuntimeError("Global/local position not stable before mission start")
+
+                # Mission start can be temporarily rejected if AUTO_MISSION is not yet available
+                # (e.g. other checks still running, mission_result not updated). Retry a few times
+                # before falling back to goto_location.
+                start_retries = int(mission_cfg.get("mission_start_retries", 3))
+                start_retry_delay = float(mission_cfg.get("mission_start_retry_delay_sec", 2.0))
+                last_start_error: Optional[Exception] = None
+
+                for attempt in range(start_retries):
+                    try:
+                        self.logger.info(
+                            f"Starting mission (attempt {attempt + 1}/{start_retries})"
+                        )
+                        await self.drone.mission.start_mission()
+                        last_start_error = None
+                        break
+                    except Exception as e_start:
+                        last_start_error = e_start
+                        self.logger.warning(
+                            f"Mission start attempt {attempt + 1} failed: {e_start}"
+                        )
+                        if attempt < start_retries - 1:
+                            await asyncio.sleep(start_retry_delay)
+
+                if last_start_error is not None:
+                    raise last_start_error
+
+                # Wait until close to target or mission finished / timeout
+                wait_deadline = asyncio.get_event_loop().time() + max(15, timeout_sec // 2)
+                reached = False
+
+                while asyncio.get_event_loop().time() < wait_deadline:
+                    # Check position distance to target
+                    p = await self.drone.telemetry.position().__anext__()
+                    d_n = (math.radians(p.latitude_deg - lat_t)) * R
+                    d_e = (math.radians(p.longitude_deg - lon_t)) * R * math.cos(
+                        math.radians((p.latitude_deg + lat_t) / 2.0)
+                    )
+                    dist = math.hypot(d_n, d_e)
+
+                    if dist < 5.0:
+                        reached = True
+                        break
+
+                    await asyncio.sleep(0.5)
+
+                if not reached:
+                    self.logger.info("Single-waypoint mission timeout; proceeding to land")
+
+            except Exception as e:
+                self.logger.warning(f"Advance mission skipped due to error (falling back to goto): {e}")
+                # Fallback: old goto_location behavior
+                try:
+                    pos = await self.drone.telemetry.position().__anext__()
+                    lat0 = float(pos.latitude_deg)
+                    lon0 = float(pos.longitude_deg)
+                    alt_amsl = float(getattr(pos, "absolute_altitude_m", 0.0))
+                    if not alt_amsl or math.isnan(alt_amsl):
+                        alt_amsl = max(10.0, float(getattr(pos, "relative_altitude_m", takeoff_alt)) + 450.0)
+
+                    dn = advance_m if advance_axis == "ned_x" else 0.0
+                    de = advance_m if advance_axis == "ned_y" else 0.0
+
+                    d_lat = (dn / R) * 180.0 / math.pi
+                    d_lon = (de / (R * math.cos(math.radians(lat0)))) * 180.0 / math.pi
+                    lat_t = lat0 + d_lat
+                    lon_t = lon0 + d_lon
+
+                    self.logger.info(
+                        f"[fallback] Advancing {advance_m:.1f} m along {advance_axis} "
+                        f"to lat={lat_t:.7f} lon={lon_t:.7f} at AMSL {alt_amsl:.1f} m via goto_location"
+                    )
+                    await self.drone.action.goto_location(lat_t, lon_t, alt_amsl, 90.0)
+                except Exception as e2:
+                    self.logger.warning(f"Fallback goto_location also failed: {e2}")
 
         # Land & wait a bit
         try:

@@ -9,6 +9,7 @@ dependencies = [
     "pymavlink>=2.4.49",
     "psutil",
     "colorama",
+    "pyulog>=0.9.0",
     "pandas>=2.0",
     "numpy>=1.24",
     "matplotlib>=3.7",

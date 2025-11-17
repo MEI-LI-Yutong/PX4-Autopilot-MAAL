@@ -100,3 +100,7 @@
 [submodule "src/drivers/ins/microstrain/mip_sdk"]
 	path = src/drivers/ins/microstrain/mip_sdk
 	url = https://github.com/PX4/LORD-MicroStrain_mip_sdk.git
+[submodule "src/lib/tflm/tflite_micro"]
+	path = src/lib/tflm/tflite_micro
+	url = https://github.com/tensorflow/tflite-micro.git
+	branch = main
