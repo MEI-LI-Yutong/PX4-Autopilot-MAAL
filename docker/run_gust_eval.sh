@@ -25,7 +25,11 @@ if [[ "${HEADLESS}" == "1" ]]; then
   export GZ_SIM_HEADLESS=1
   export QT_QPA_PLATFORM=offscreen
   export __GL_YIELD=USLEEP
-  echo "[run_gust_eval] Running Gazebo headless"
+  # Use OGRE 1.x for better compatibility across different environments
+  export PX4_GZ_SIM_RENDER_ENGINE=${PX4_GZ_SIM_RENDER_ENGINE:-ogre}
+  # Force software rendering if no GPU available
+  export LIBGL_ALWAYS_SOFTWARE=${LIBGL_ALWAYS_SOFTWARE:-1}
+  echo "[run_gust_eval] Running Gazebo headless with render engine: ${PX4_GZ_SIM_RENDER_ENGINE}"
 fi
 
 # Build PX4 SITL once so subsequent `make px4_sitl gz_...` invocations are fast

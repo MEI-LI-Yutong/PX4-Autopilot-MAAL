@@ -3,6 +3,9 @@
   "description": "26 gust-only tasks: 13 along -X and 13 along -Z. Uses one_minus_cos_simp with T=10s and A0 set to the target |V| level.",
   "px4_sitl_command": "make px4_sitl gz_tiltrotor_windy",
   "mission_type": "straight_line",
+  "wandb": {
+      "enable": true
+    },
   "mission_config": {
     "takeoff_altitude": 10.0,
     "timeout_sec": 150,

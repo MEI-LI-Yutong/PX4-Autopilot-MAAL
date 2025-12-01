@@ -1,6 +1,6 @@
 {
-	"test_suite": "Wind Levels (Sustained & Gust)",
-	"description": "26 gust-only tasks: 13 along -X and 13 along -Z. Dryden model tuned to approximate the same peak |V| as previous one_minus_cos_simp: use dryden_sigma ≈ A0/3 and length L = Va*(T/2) with Va=15 m/s, T=10 s ⇒ L=75 m.",
+	"test_suite": "Dryden + Boundary Layer (Z Levels)",
+	"description": "13 tests using gust_lvl_z magnitudes as bl_ref_wind.x; Dryden turbulence fixed; spatial boundary_layer enabled.",
 	"px4_sitl_command": "make px4_sitl gz_tiltrotor_windy",
 	"mission_type": "straight_line",
 	"mission_config": {
@@ -11,14 +11,11 @@
 	  "advance_after_hover_sec": 2
 	},
 	"wind_gust_tests": [
-
-	  {"test_id": "gust_lvl_10", "description": "Gust L10: |V|=24.50 m/s (Dryden; σ≈A0/3)", "wind_config": {"model": "dryden", "mean": [0,0,0], "dryden_sigma": [-8.17, 0.00, 0.00], "dryden_length": [75.0, 75.0, 75.0], "airspeed": 15.0, "seed": 111}},
-	  {"test_id": "gust_lvl_11", "description": "Gust L11: |V|=28.50 m/s (Dryden; σ≈A0/3)", "wind_config": {"model": "dryden", "mean": [0,0,0], "dryden_sigma": [-9.50, 0.00, 0.00], "dryden_length": [75.0, 75.0, 75.0], "airspeed": 15.0, "seed": 112}},
-	  {"test_id": "gust_lvl_12", "description": "Gust L12: |V|=32.70 m/s (Dryden; σ≈A0/3)", "wind_config": {"model": "dryden", "mean": [0,0,0], "dryden_sigma": [-10.90, 0.00, 0.00], "dryden_length": [75.0, 75.0, 75.0], "airspeed": 15.0, "seed": 113}}
-
+	  {"test_id": "dryden_bl_x_06", "description": "X-L6: bl_ref_wind.x=4.40 m/s; Dryden fixed",   "wind_config": {"model": "dryden", "mean": [0,0,0], "dryden_sigma": [2.0, 1.5, 1.0], "dryden_length": [200, 200, 50], "seed": 12345, "spatial_model": "boundary_layer", "tracked_model": "tiltrotor_0", "bl_ref_wind": [-4.40, 0, 0],  "bl_ref_height": 10.0, "bl_exponent": 0.3}}
 	],
 	"output_config": {
-	  "log_directory": "logs/levels",
+	  "log_directory": "Tools/px4_gust_eval/logs/dryden_boundary_layer",
 	  "save_flight_data": true
 	}
       }
+
