@@ -1,37 +1,34 @@
 #!/usr/bin/env python3
 """
-PID Gust Envelope Analyzer
+PID Gust Envelope Analyzer (simplified)
 
 Workflow:
 - Fetch NocoDB records (Title + wandb_runid history) using the same env vars as the runner.
 - For each wandb run, pull the cached/remote summary table at runs.summary["gust_summary/table"].
 - Cache the table locally to avoid repeated downloads.
-- Aggregate gust metrics per PID variant and generate scienceplots-based figures to show how the
-  parameter sweep affects wind performance (multi-run friendly).
-
-Example:
-  uv run --with wandb Tools/px4_gust_eval/analyze_pid_envelope.py \
-    --table-id "$NOCODB_TABLE_ID" --view-id "$NOCODB_VIEW_ID" --token "$NOCODB_TOKEN" \
-    --wandb-entity MAALab --wandb-project px4_gust_eval
+- Compute a single metric per PID variant: 平均位移误差 = (各风级的水平最大位移均值 + 垂直最大位移均值) 的平均。
+- 输出 CSV，并为每个参数画一张按倍率排序的条形图（纵轴为上述平均位移误差）。
+- 额外生成一张总览图：每个参数一个子图，方块颜色表示“首次出现 unstable 的风级”（未出现则视为 12 级）。
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
+import re
 import tempfile
 import urllib.parse
 import urllib.request
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 import seaborn as sns
-import numpy as np
-import re
 
 try:
     import scienceplots  # type: ignore  # noqa: F401
@@ -90,25 +87,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--wandb-project", default=os.getenv("WANDB_PROJECT", "px4_gust_eval"),
                    help="Weights & Biases project")
     p.add_argument("--dpi", type=int, default=300, help="Figure DPI")
-    p.add_argument(
-        "--metrics",
-        nargs="*",
-        default=["h_max_dev", "v_max_dev"],
-        help="Metrics to plot (default: h_max_dev v_max_dev)",
-    )
-    p.add_argument(
-        "--plot-3d",
-        action="store_true",
-        help="Plot 3D envelopes (level vs scale vs metric) grouped by param_name",
-    )
-    p.add_argument(
-        "--q-low-high",
-        nargs=2,
-        type=float,
-        default=(0.1, 0.9),
-        metavar=("QLOW", "QHIGH"),
-        help="Quantile band for envelope plots (default: 0.1 0.9)",
-    )
     return p.parse_args()
 
 
@@ -362,40 +340,6 @@ def parse_variant_info(title: str) -> Tuple[Optional[str], Optional[float]]:
     return param, scale
 
 
-def compute_variant_order(df: pd.DataFrame, focus_param: Optional[str]) -> List[str]:
-    """Order variants so that for the focus param scales ascend with default (scale=1) centered."""
-    focus_list: List[Tuple[float, str]] = []
-    other_list: List[Tuple[str, float, str]] = []
-    seen = set()
-
-    for _, row in df.iterrows():
-        variant = str(row.get("variant"))
-        if variant in seen:
-            continue
-        seen.add(variant)
-        param = row.get("param_name")
-        scale = row.get("scale")
-
-        # Normalize default
-        if variant.lower() == "default":
-            param = focus_param or param
-            scale = 1.0
-
-        try:
-            scale_val = float(scale)
-        except Exception:
-            scale_val = float("inf")
-
-        if focus_param and param == focus_param:
-            focus_list.append((scale_val, variant))
-        else:
-            other_list.append((str(param or ""), scale_val, variant))
-
-    focus_order = [v for _, v in sorted(focus_list, key=lambda x: x[0])]
-    other_order = [v for _, _, v in sorted(other_list, key=lambda x: (x[0], x[1]))]
-    return focus_order + other_order
-
-
 def expand_default_across_params(df: pd.DataFrame, focus_param: Optional[str]) -> pd.DataFrame:
     """Clone default rows across all param_names so each param has a scale=1.0 baseline."""
     default_rows = df[df["variant"].str.lower() == "default"]
@@ -418,250 +362,158 @@ def expand_default_across_params(df: pd.DataFrame, focus_param: Optional[str]) -
     return pd.concat([df, *clones], ignore_index=True)
 
 
-def plot_envelope(df: pd.DataFrame, metric: str, output: Path, dpi: int, focus_param: Optional[str]) -> None:
-    fig, ax = plt.subplots(figsize=(9, 5))
-    variants_ordered = compute_variant_order(df, focus_param)
-    palette = sns.color_palette("tab10", n_colors=len(variants_ordered))
-    for color, variant in zip(palette, variants_ordered):
-        g = df[df["variant"] == variant]
-        if g.empty:
-            continue
-        agg = g.groupby("level")[metric].agg(["mean", "min", "max", "count"]).sort_index()
-        levels = agg.index.to_numpy()
-        ax.plot(levels, agg["mean"], label=f"{variant} (n={agg['count'].sum():.0f})", color=color, marker="o")
-        ax.fill_between(levels, agg["min"], agg["max"], color=color, alpha=0.15)
-    ax.set_xlabel("Gust level")
-    ax.set_ylabel(metric)
-    ax.set_title(f"{metric} envelope vs gust level")
-    ax.grid(True, linestyle="--", alpha=0.4)
-    ax.legend()
-    ensure_dirs(output.parent)
-    fig.tight_layout()
-    fig.savefig(output, dpi=dpi)
-    plt.close(fig)
-
-
-def plot_box(df: pd.DataFrame, metric: str, output: Path, dpi: int, focus_param: Optional[str]) -> None:
-    fig, ax = plt.subplots(figsize=(9, 5))
-    order = compute_variant_order(df, focus_param)
-    sns.boxplot(data=df, x="variant", y=metric, ax=ax, showfliers=False, order=order)
-    sns.stripplot(data=df, x="variant", y=metric, ax=ax, color="black", alpha=0.35, jitter=0.2, order=order)
-    ax.set_title(f"{metric} distribution across PID variants")
-    ax.set_xlabel("PID variant (Title)")
-    ax.set_ylabel(metric)
-    ax.grid(True, axis="y", linestyle="--", alpha=0.4)
-    fig.tight_layout()
-    ensure_dirs(output.parent)
-    fig.savefig(output, dpi=dpi)
-    plt.close(fig)
-
-
-def plot_box_by_param(df: pd.DataFrame, metric: str, output_dir: Path, dpi: int) -> None:
-    """Generate one box plot per param_name."""
+def compute_displacement_summary(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    计算平均位移误差：
+    - 先按 (param_name, variant, scale, level) 分组，取 h_max_dev、v_max_dev 的均值。
+    - 对每个 (param_name, variant, scale) 求 (h_mean + v_mean) 在各风级的平均。
+    """
+    required = {"h_max_dev", "v_max_dev", "level", "variant"}
+    if not required.issubset(df.columns):
+        raise SystemExit(f"Missing required columns for displacement metric: {required - set(df.columns)}")
     if "param_name" not in df.columns:
-        return
-    for param in sorted([p for p in df["param_name"].dropna().unique()]):
-        sub = df[df["param_name"] == param]
-        if sub.empty:
-            continue
-        order = compute_variant_order(sub, param)
-        fig, ax = plt.subplots(figsize=(9, 5))
-        sns.boxplot(data=sub, x="variant", y=metric, ax=ax, showfliers=False, order=order)
-        sns.stripplot(data=sub, x="variant", y=metric, ax=ax, color="black", alpha=0.35, jitter=0.2, order=order)
-        ax.set_title(f"{metric} distribution ({param})")
-        ax.set_xlabel("PID variant")
-        ax.set_ylabel(metric)
-        ax.grid(True, axis="y", linestyle="--", alpha=0.4)
-        fig.tight_layout()
-        ensure_dirs(output_dir)
-        fig.savefig(output_dir / f"{metric}_box_{param}.png", dpi=dpi)
-        plt.close(fig)
+        df["param_name"] = None
+    if "scale" not in df.columns:
+        df["scale"] = np.nan
 
-
-def plot_grade_stack(df: pd.DataFrame, output: Path, dpi: int) -> None:
-    if not {"grade_h", "grade_v"}.issubset(df.columns):
-        return
-    melted = pd.melt(
-        df,
-        id_vars=["variant", "run_id", "level"],
-        value_vars=["grade_h", "grade_v"],
-        var_name="dimension",
-        value_name="grade",
-    )
-    counts = melted.groupby(["variant", "grade"]).size().reset_index(name="count")
-    pivot = counts.pivot(index="variant", columns="grade", values="count").fillna(0)
-    if pivot.empty:
-        return
-    pivot = pivot.loc[pivot.sum(axis=1).sort_values(ascending=False).index]
-    fig, ax = plt.subplots(figsize=(9, 5))
-    pivot.plot(kind="bar", stacked=True, ax=ax)
-    ax.set_ylabel("Count")
-    ax.set_title("Grade distribution by PID variant (H/V combined)")
-    ax.grid(True, axis="y", linestyle="--", alpha=0.4)
-    fig.tight_layout()
-    ensure_dirs(output.parent)
-    fig.savefig(output, dpi=dpi)
-    plt.close(fig)
-
-
-def plot_surface_by_param(df: pd.DataFrame, metric: str, output_dir: Path, dpi: int) -> None:
-    """Plot 3D surface: gust level vs scale vs metric, per param_name."""
-    if "param_name" not in df.columns or "scale" not in df.columns:
-        return
-    for param_name, g in df.groupby("param_name"):
-        if g["scale"].nunique() < 2 or g["level"].nunique() < 2:
-            continue
-        pivot = (
-            g.groupby(["scale", "level"])[metric]
-            .mean()
-            .reset_index()
-            .pivot(index="scale", columns="level", values=metric)
-        )
-        pivot = pivot.sort_index()
-        levels = np.array(sorted(pivot.columns))
-        scales = np.array(sorted(pivot.index))
-        L, S = np.meshgrid(levels, scales)
-        Z = pivot.reindex(index=scales, columns=levels).to_numpy()
-
-        fig = plt.figure(figsize=(9, 6))
-        ax = fig.add_subplot(111, projection="3d")
-        surf = ax.plot_surface(L, S, Z, cmap="viridis", edgecolor="none", alpha=0.85)
-        ax.set_xlabel("Gust level")
-        ax.set_ylabel("Scale")
-        ax.set_zlabel(metric)
-        ax.set_title(f"{param_name} - {metric} envelope")
-        fig.colorbar(surf, shrink=0.6, aspect=12, label=metric)
-        ensure_dirs(output_dir)
-        fig.tight_layout()
-        fig.savefig(output_dir / f"{metric}_surface_{param_name}.png", dpi=dpi)
-        plt.close(fig)
-
-
-def compute_stats_by_param(df: pd.DataFrame, metric: str, q_low: float, q_high: float) -> Dict[str, pd.DataFrame]:
-    """Return per-param aggregated stats: mean/median/q_low/q_high by (scale, level)."""
-    stats: Dict[str, pd.DataFrame] = {}
-    if "param_name" not in df.columns or "scale" not in df.columns:
-        return stats
     grouped = (
-        df.groupby(["param_name", "scale", "level"])[metric]
-        .agg(
-            mean="mean",
-            median="median",
-            q_low=lambda s: s.quantile(q_low),
-            q_high=lambda s: s.quantile(q_high),
-            count="count",
-        )
+        df.groupby(["param_name", "variant", "scale", "level"])[["h_max_dev", "v_max_dev"]]
+        .mean()
         .reset_index()
     )
-    for param_name, g in grouped.groupby("param_name"):
-        stats[param_name] = g.sort_values(["scale", "level"])
-    return stats
+    grouped["disp_level"] = grouped["h_max_dev"] + grouped["v_max_dev"]
+
+    agg = (
+        grouped.groupby(["param_name", "variant", "scale"])["disp_level"]
+        .mean()
+        .reset_index()
+        .rename(columns={"disp_level": "avg_displacement"})
+    )
+    return agg
 
 
-def plot_band_envelope(stats: Dict[str, pd.DataFrame], metric: str, output_dir: Path, dpi: int) -> None:
-    """Plot per-param quantile band envelopes."""
-    for param, g in stats.items():
-        fig, ax = plt.subplots(figsize=(9, 5))
-        scales = sorted(g["scale"].unique())
-        palette = sns.color_palette("tab10", n_colors=len(scales))
-        for color, scale in zip(palette, scales):
-            sub = g[g["scale"] == scale].sort_values("level")
-            levels = sub["level"].to_numpy()
-            ax.plot(levels, sub["median"], color=color, label=f"{param}_{scale}x (n~{int(sub['count'].max())})")
-            ax.fill_between(levels, sub["q_low"], sub["q_high"], color=color, alpha=0.2)
-        ax.set_xlabel("Gust level")
-        ax.set_ylabel(metric)
-        ax.set_title(f"{param} - {metric} quantile band")
-        ax.grid(True, linestyle="--", alpha=0.4)
-        ax.legend()
-        fig.tight_layout()
-        ensure_dirs(output_dir)
-        fig.savefig(output_dir / f"{metric}_band_{param}.png", dpi=dpi)
-        plt.close(fig)
-
-
-def plot_heatmap_with_best(stats: Dict[str, pd.DataFrame], metric: str, output_dir: Path, dpi: int) -> List[Dict[str, Any]]:
-    """Heatmap of mean (by default) with best scale path overlay; returns best path summary."""
-    best_rows: List[Dict[str, Any]] = []
-    for param, g in stats.items():
-        pivot = g.pivot(index="scale", columns="level", values="mean")
-        pivot = pivot.sort_index()
-        if pivot.empty:
-            continue
-        fig, ax = plt.subplots(figsize=(8, 6))
-        sns.heatmap(pivot, cmap="viridis", ax=ax, cbar_kws={"label": f"{metric} (mean)"})
-        ax.set_title(f"{param} - {metric} heatmap (mean)")
-        ax.set_xlabel("Gust level")
-        ax.set_ylabel("Scale")
-
-        # Best path per level (min mean)
-        for level in pivot.columns:
-            col = pivot[level]
-            best_scale = col.idxmin()
-            best_val = col.min()
-            best_rows.append({"param_name": param, "metric": metric, "level": level, "best_scale": best_scale, "best_val": best_val})
-            ax.plot([pivot.columns.get_loc(level) + 0.5], [list(pivot.index).index(best_scale) + 0.5], marker="o", color="red")
-
-        fig.tight_layout()
-        ensure_dirs(output_dir)
-        fig.savefig(output_dir / f"{metric}_heatmap_{param}.png", dpi=dpi)
-        plt.close(fig)
-    return best_rows
-
-
-def grade_to_score(grade: str) -> float:
+def _is_unstable(grade: Any) -> bool:
     if not isinstance(grade, str):
-        return float("nan")
+        return False
     g = grade.lower()
-    if "resilient" in g:
-        return 2.0
-    if "recoverable" in g:
-        return 1.0
-    if "unstable" in g:
-        return 0.0
-    if "not launched" in g:
-        return -1.0
-    return float("nan")
+    return ("unstable" in g) or ("not launched" in g) or ("crash" in g)
 
 
-def plot_grade_bars(df: pd.DataFrame, output_dir: Path, dpi: int) -> None:
-    """Bar plots of average grade score by gust level with scale as hue, per param."""
-    if "param_name" not in df.columns or "scale" not in df.columns:
-        return
-    # Map to numeric score
-    for col in ("grade_h", "grade_v"):
-        if col in df.columns:
-            df[f"{col}_score"] = df[col].apply(grade_to_score)
+def compute_failure_levels(df: pd.DataFrame, default_level: float = 12.0) -> pd.DataFrame:
+    """
+    计算首次出现 unstable 的风级；若未出现则记为 default_level（默认 12）。
+    使用 grade_h/grade_v（如果存在）判定。
+    """
+    if "param_name" not in df.columns:
+        df["param_name"] = None
+    if "scale" not in df.columns:
+        df["scale"] = np.nan
 
-    for dim in ("grade_h_score", "grade_v_score"):
-        if dim not in df.columns:
+    results: List[Dict[str, Any]] = []
+    for (param, variant, scale), g in df.groupby(["param_name", "variant", "scale"]):
+        levels = sorted(g["level"].dropna().unique())
+        failure = None
+        for lvl in levels:
+            sub = g[g["level"] == lvl]
+            # 若任一等级在 H/V 维度出现 unstable，则认定为失败等级
+            cond_h = sub["grade_h"].apply(_is_unstable) if "grade_h" in sub.columns else pd.Series([False])
+            cond_v = sub["grade_v"].apply(_is_unstable) if "grade_v" in sub.columns else pd.Series([False])
+            if bool(cond_h.any() or cond_v.any()):
+                failure = lvl
+                break
+        if failure is None:
+            failure = default_level
+        results.append({
+            "param_name": param,
+            "variant": variant,
+            "scale": scale,
+            "failure_level": failure,
+        })
+    return pd.DataFrame(results)
+
+
+def plot_displacement_bars(summary: pd.DataFrame, output_dir: Path, dpi: int) -> List[Path]:
+    saved: List[Path] = []
+    if summary.empty:
+        return saved
+    ensure_dirs(output_dir)
+    for param, sub in summary.groupby("param_name"):
+        # Order by numeric scale if present, otherwise Title order
+        try:
+            order = [v for _, v in sorted(((float(s), var) for s, var in zip(sub["scale"], sub["variant"])), key=lambda x: x[0])]
+        except Exception:
+            order = list(sub["variant"])
+        fig, ax = plt.subplots(figsize=(9, 5))
+        sns.barplot(data=sub, x="variant", y="avg_displacement", order=order, ax=ax, color="#4C72B0")
+        ax.set_xlabel("PID variant (Title)")
+        ax.set_ylabel("平均位移误差 (h_max_dev+v_max_dev 的风级均值)")
+        ax.set_title(f"{param} 平均位移误差")
+        ax.grid(True, axis="y", linestyle="--", alpha=0.4)
+        plt.xticks(rotation=30, ha="right")
+        fig.tight_layout()
+        out = output_dir / f"{param}_avg_displacement.png"
+        fig.savefig(out, dpi=dpi)
+        plt.close(fig)
+        saved.append(out)
+    return saved
+
+
+def plot_overview_grid(failure: pd.DataFrame, output_dir: Path, dpi: int) -> Optional[Path]:
+    """
+    大图：每个参数一个小图，方块颜色表示首次出现 unstable 的风级（未出现则视为 12）。
+    数字也标出该风级。
+    """
+    if failure.empty or "param_name" not in failure.columns:
+        return None
+    ensure_dirs(output_dir)
+    failure = failure.copy()
+    try:
+        failure["scale_num"] = failure["scale"].astype(float)
+    except Exception:
+        failure["scale_num"] = np.nan
+
+    params = sorted([p for p in failure["param_name"].dropna().unique()])
+    if not params:
+        return None
+
+    vmin, vmax = 1, 12
+    cmap = plt.cm.RdYlGn  # 低值红，高值绿
+    ncols = 3
+    nrows = math.ceil(len(params) / ncols)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(4 * ncols, 2.8 * nrows), squeeze=False)
+
+    last_im = None
+    for idx, param in enumerate(params):
+        ax = axes[idx // ncols][idx % ncols]
+        sub = failure[failure["param_name"] == param]
+        if sub.empty:
+            ax.axis("off")
             continue
-        for param, g in df.groupby("param_name"):
-            agg = (
-                g.groupby(["level", "scale"])[dim]
-                .mean()
-                .reset_index()
-            )
-            if agg.empty:
-                continue
-            # Ensure ordering
-            try:
-                scale_order = sorted(agg["scale"].dropna().unique())
-            except Exception:
-                scale_order = None
-            level_order = sorted(agg["level"].dropna().unique())
+        if sub["scale_num"].notna().any():
+            sub = sub.sort_values("scale_num")
+        else:
+            sub = sub.sort_values("variant")
+        values = sub["failure_level"].to_numpy()
+        im_data = values.reshape(1, -1)
+        last_im = ax.imshow(im_data, aspect="auto", cmap=cmap, vmin=vmin, vmax=vmax)
+        ax.set_xticks(range(len(sub)))
+        ax.set_xticklabels(sub["variant"], rotation=30, ha="right", fontsize=8)
+        ax.set_yticks([])
+        ax.set_title(param, fontsize=11)
+        for x, val in enumerate(values):
+            ax.text(x, 0, f"{val:.0f}", ha="center", va="center", color="black", fontsize=8, fontweight="bold")
 
-            fig, ax = plt.subplots(figsize=(9, 5))
-            sns.barplot(data=agg, x="level", y=dim, hue="scale", order=level_order, hue_order=scale_order, ax=ax)
-            ax.set_title(f"{param} - {dim} vs gust level")
-            ax.set_xlabel("Gust level")
-            ax.set_ylabel(f"{dim} (mean score)")
-            ax.grid(True, axis="y", linestyle="--", alpha=0.4)
-            fig.tight_layout()
-            ensure_dirs(output_dir)
-            fname = f"{dim}_bars_{param}.png"
-            fig.savefig(output_dir / fname, dpi=dpi)
-            plt.close(fig)
+    for j in range(len(params), nrows * ncols):
+        axes[j // ncols][j % ncols].axis("off")
+
+    if last_im is not None:
+        cbar = fig.colorbar(last_im, ax=axes.ravel().tolist(), shrink=0.9, pad=0.02)
+        cbar.set_label("首次 unstable 的风级 (未出现则视为12)", fontsize=10)
+    fig.tight_layout()
+    out = output_dir / "overview_failure_grid.png"
+    fig.savefig(out, dpi=dpi)
+    plt.close(fig)
+    return out
 
 
 def main() -> None:
@@ -684,28 +536,26 @@ def main() -> None:
     ensure_dirs(args.output_dir)
     agg_csv = args.output_dir / "pid_gust_metrics.csv"
     df.to_csv(agg_csv, index=False)
-    metrics = [m for m in args.metrics if m in df.columns]
-    for metric in metrics:
-        plot_envelope(df, metric, args.output_dir / f"{metric}_envelope.png", args.dpi, args.param_name)
-        # Per-param boxes
-        plot_box_by_param(df, metric, args.output_dir, args.dpi)
-        if args.plot_3d:
-            plot_surface_by_param(df, metric, args.output_dir, args.dpi)
-        # Quantile band envelopes per param
-        stats = compute_stats_by_param(df, metric, args.q_low_high[0], args.q_low_high[1])
-        plot_band_envelope(stats, metric, args.output_dir, args.dpi)
-        # Heatmap + best path
-        best_rows = plot_heatmap_with_best(stats, metric, args.output_dir, args.dpi)
-        if best_rows:
-            best_csv = args.output_dir / f"best_path_{metric}.csv"
-            pd.DataFrame(best_rows).to_csv(best_csv, index=False)
-    # Grade bar plots (anti-wind level vs param/scale)
-    plot_grade_bars(df, args.output_dir, args.dpi)
-    plot_grade_stack(df, args.output_dir / "grade_stack.png", args.dpi)
+
+    disp_summary = compute_displacement_summary(df)
+    disp_csv = args.output_dir / "displacement_summary.csv"
+    disp_summary.to_csv(disp_csv, index=False)
+
+    failure_summary = compute_failure_levels(df)
+    failure_csv = args.output_dir / "failure_levels.csv"
+    failure_summary.to_csv(failure_csv, index=False)
+
+    saved_imgs = plot_displacement_bars(disp_summary, args.output_dir, args.dpi)
+    overview = plot_overview_grid(failure_summary, args.output_dir, args.dpi)
+
     print(f"Aggregated {len(df)} rows from {df['run_id'].nunique()} runs across {df['variant'].nunique()} variants.")
-    print(f"Saved CSV to {agg_csv}")
-    for img in sorted(args.output_dir.glob("*.png")):
+    print(f"Saved raw CSV to {agg_csv}")
+    print(f"Saved displacement summary to {disp_csv}")
+    print(f"Saved failure level summary to {failure_csv}")
+    for img in saved_imgs:
         print(f"Saved plot: {img}")
+    if overview:
+        print(f"Saved overview grid: {overview}")
 
 
 if __name__ == "__main__":
