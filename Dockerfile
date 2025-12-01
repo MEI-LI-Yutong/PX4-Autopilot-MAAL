@@ -22,9 +22,13 @@ ARG BUILD_TARGET=px4_sitl_default
 RUN make -j"$(nproc)" ${BUILD_TARGET}
 
 # Defaults, can be overridden at `docker run -e VAR=...`
-ENV TASKS_JSON=tasks/dryden_boundary_layer_z_levels.json \
+ENV TASKS_JSON=tasks/beaufort_levels_tests.json \
     HEADLESS=0 \
-    BUILD_TARGET=${BUILD_TARGET}
+    BUILD_TARGET=${BUILD_TARGET} \
+    WANDB_ENTITY=MAALab \
+    WANDB_PROJECT=px4_gust_eval \
+    RUN_PLOTS=1 \
+    UPLOAD_LOG_DATA=1
 
 # Expose common MAVLink UDP ports (map with -p or use --network host)
 EXPOSE 18570/udp 14540/udp
@@ -44,4 +48,5 @@ ENTRYPOINT ["bash", "-lc", "set -euo pipefail; \
     elif [[ -f \"tasks/${TASKS_JSON##*/}\" ]]; then TASKS_ARG=\"tasks/${TASKS_JSON##*/}\"; fi; \
   fi; \
   echo '[entry] Running: uv run main.py' \"${TASKS_ARG}\" '--verbose'; \
-  uv run main.py \"${TASKS_ARG}\" --verbose "]
+  uv run --with wandb main.py \"${TASKS_ARG}\" --verbose; \
+  "]
