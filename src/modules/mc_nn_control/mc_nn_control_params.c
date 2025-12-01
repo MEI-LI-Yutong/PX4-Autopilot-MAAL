@@ -112,3 +112,14 @@ PARAM_DEFINE_FLOAT(MC_NN_SV_MAX_ANG, 45.0f);
  * @group Neural Control
  */
 PARAM_DEFINE_FLOAT(MC_NN_SV_MIN_ANG, -45.0f);
+
+/**
+ * Enable or disable the internal trajectory generator (fixed XY, climb to -10 m NED).
+ *
+ * When disabled, the controller will hold the current position (reset setpoint to current state)
+ * and will not run the neural trajectory shaping.
+ *
+ * @boolean
+ * @group Neural Control
+ */
+PARAM_DEFINE_INT32(MC_NN_TRAJ_EN, 1);

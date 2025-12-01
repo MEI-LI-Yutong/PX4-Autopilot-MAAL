@@ -166,6 +166,8 @@ private:
 	matrix::Vector3f _fallback_start_pos{};
 	float _fallback_target_z{-5.0f};
 	float _fallback_duration{10.0f};
+	float _filtered_output[6]{NAN, NAN, NAN, NAN, NAN, NAN};
+	bool _filtered_initialized{false};
 
 	DEFINE_PARAMETERS(
 		(ParamInt<px4::params::MC_NN_MAX_RPM>) _param_max_rpm,
@@ -173,6 +175,7 @@ private:
 		(ParamFloat<px4::params::MC_NN_THRST_COEF>) _param_thrust_coeff,
 		(ParamBool<px4::params::MC_NN_MANL_CTRL>) _param_manual_control,
 		(ParamBool<px4::params::MC_NN_MIS_EN>) _param_mission_enable,
+		(ParamBool<px4::params::MC_NN_TRAJ_EN>) _param_traj_enable,
 		(ParamFloat<px4::params::MC_NN_SV_MAX_ANG>) _param_servo_max_angle,
 		(ParamFloat<px4::params::MC_NN_SV_MIN_ANG>) _param_servo_min_angle
 	)

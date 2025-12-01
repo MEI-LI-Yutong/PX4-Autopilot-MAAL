@@ -396,6 +396,24 @@ void MulticopterNeuralNetworkControl::PopulateInputTensor()
 
 void MulticopterNeuralNetworkControl::PublishOutput(float *command_actions)
 {
+	// Smooth outputs to reduce jitter
+	const float alpha = 0.1f; // smoothing factor, closer to 1.0 = less smoothing
+
+	for (int i = 0; i < 6; i++) {
+		const float raw = command_actions[i];
+
+		if (!_filtered_initialized || !PX4_ISFINITE(_filtered_output[i])) {
+			_filtered_output[i] = raw;
+
+		} else if (PX4_ISFINITE(raw)) {
+			_filtered_output[i] = alpha * raw + (1.0f - alpha) * _filtered_output[i];
+		}
+
+		command_actions[i] = _filtered_output[i];
+	}
+
+	_filtered_initialized = true;
+
 	// DISABLED: Publish servo outputs (first 3 outputs)
 	actuator_servos_s actuator_servos;
 	actuator_servos.timestamp = hrt_absolute_time();
@@ -573,6 +591,7 @@ void MulticopterNeuralNetworkControl::Run()
 
 	// run controller on angular velocity updates
 	if (_angular_velocity_sub.update(&_angular_velocity)) {
+		const float dt = math::constrain(((_angular_velocity.timestamp_sample - _last_run) * 1e-6f), 0.0002f, 0.02f);
 		_last_run = _angular_velocity.timestamp_sample;
 
 		if (_attitude_sub.updated()) {
@@ -590,12 +609,41 @@ void MulticopterNeuralNetworkControl::Run()
 			}
 		}
 
-		// Always use internal trajectory generator: hold XY, climb toward -10 m NED over _fallback_duration
-		if (_fallback_active) {
-			update_fallback_trajectory();
+		const bool traj_internal = _param_traj_enable.get();
+
+		// Trajectory handling
+		if (!traj_internal) {
+			// Legacy behavior: use manual integration or upstream trajectory_setpoint
+			if (_param_manual_control.get()) {
+				_manual_control_setpoint_sub.update(&_manual_control_setpoint);
+				check_setpoint_validity(_position);
+				generate_trajectory_setpoint(dt);
+
+			} else {
+				if (_trajectory_setpoint_sub.updated()) {
+					trajectory_setpoint_s _trajectory_setpoint_temp;
+					_trajectory_setpoint_sub.copy(&_trajectory_setpoint_temp);
+
+					if (PX4_ISFINITE(_trajectory_setpoint_temp.position[0]) && PX4_ISFINITE(_trajectory_setpoint_temp.position[1]) &&
+					    PX4_ISFINITE(_trajectory_setpoint_temp.position[2])) {
+						_trajectory_setpoint = _trajectory_setpoint_temp;
+					}
+				}
+			}
+
+			_fallback_active = false;
 
 		} else {
-			start_fallback_trajectory();
+			// Always use internal trajectory generator: hold XY, climb toward -10 m NED over _fallback_duration
+			if (_fallback_active) {
+				update_fallback_trajectory();
+
+			} else {
+				start_fallback_trajectory();
+			}
+
+			// dt unused in this branch
+			(void)dt;
 		}
 
 		PopulateInputTensor();
