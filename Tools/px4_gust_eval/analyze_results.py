@@ -170,13 +170,13 @@ def compute_metrics_for_test(df: pd.DataFrame) -> Optional[Dict[str, float]]:
 
 def compute_grades(dfs: Dict[str, pd.DataFrame], id_to_cfg: Dict[str, Dict]) -> Tuple[Dict[str, str], Dict[str, Dict[str, float]]]:
     """Compute stability grade for each test.
-    Grades: "Level 1", "Level 2", "Unstable", "Not launched".
+    Grades: "Wind-Resilient", "Wind-Recoverable", "Unstable", "Not launched".
 
-    Level 2 rule: for tests that fail base thresholds on the mid-flight segment,
+    Wind-Recoverable rule: for tests that fail base thresholds on the mid-flight segment,
     detect the first time any instantaneous deviation (|Y cross-track|, |Z deviation|,
     |roll|, |pitch|) exceeds its threshold. If within the following RECOVER_T seconds
     a window of data (the window [t_exceed, t_exceed + RECOVER_T]) produces metrics
-    that are all within thresholds, grade as "Level 2"; otherwise "Unstable".
+    that are all within thresholds, grade as "Wind-Recoverable"; otherwise "Unstable".
     """
     grades: Dict[str, str] = {}
     metrics: Dict[str, Dict[str, float]] = {}
@@ -209,17 +209,17 @@ def compute_grades(dfs: Dict[str, pd.DataFrame], id_to_cfg: Dict[str, Dict]) -> 
         is_gust = gust_len > 0.0
 
         if base_ok:
-            grades[tid] = "Level 1"
-            print(f"[DEBUG] {tid}: Level 1 - all metrics within thresholds")
+            grades[tid] = "Wind-Resilient"
+            print(f"[DEBUG] {tid}: Wind-Resilient - all metrics within thresholds")
             continue
 
-        print(f"[DEBUG] {tid}: Failed Level 1 - gust_len={gust_len}, is_gust={is_gust}")
+        print(f"[DEBUG] {tid}: Failed Wind-Resilient - gust_len={gust_len}, is_gust={is_gust}")
         print(f"[DEBUG] {tid}: Metrics - h_max={m.get('h_max_dev', 'N/A'):.2f} (≤{H_MAX}), h_std={m.get('h_std', 'N/A'):.2f} (≤{H_STD}), v_max={m.get('v_max_dev', 'N/A'):.2f} (≤{V_MAX}), v_std={m.get('v_std', 'N/A'):.2f} (≤{V_STD}), roll={m.get('max_abs_roll', 'N/A'):.1f} (≤{ANG_MAX}), pitch={m.get('max_abs_pitch', 'N/A'):.1f} (≤{ANG_MAX})")
-        print(f"[DEBUG] {tid}: Level 1 checks - h_max_ok:{m.get('h_max_dev', float('inf')) <= H_MAX}, h_std_ok:{m.get('h_std', float('inf')) <= H_STD}, v_max_ok:{m.get('v_max_dev', float('inf')) <= V_MAX}, v_std_ok:{m.get('v_std', float('inf')) <= V_STD}, roll_ok:{m.get('max_abs_roll', float('inf')) <= ANG_MAX}, pitch_ok:{m.get('max_abs_pitch', float('inf')) <= ANG_MAX}")
+        print(f"[DEBUG] {tid}: Wind-Resilient checks - h_max_ok:{m.get('h_max_dev', float('inf')) <= H_MAX}, h_std_ok:{m.get('h_std', float('inf')) <= H_STD}, v_max_ok:{m.get('v_max_dev', float('inf')) <= V_MAX}, v_std_ok:{m.get('v_std', float('inf')) <= V_STD}, roll_ok:{m.get('max_abs_roll', float('inf')) <= ANG_MAX}, pitch_ok:{m.get('max_abs_pitch', float('inf')) <= ANG_MAX}")
 
         # Check recovery within RECOVER_T after first exceedance for all tests
         if "t_s" in df.columns and {"lat_deg", "lon_deg"}.issubset(df.columns):
-            print(f"[DEBUG] {tid}: Checking Level 2 recovery logic...")
+            print(f"[DEBUG] {tid}: Checking Wind-Recoverable recovery logic...")
             x, y = latlon_to_xy(df)
             t = df["t_s"].to_numpy(dtype=float)
             mask = _segment_mask_from_x(x)
@@ -296,8 +296,8 @@ def compute_grades(dfs: Dict[str, pd.DataFrame], id_to_cfg: Dict[str, Dict]) -> 
                             )
                             print(f"[DEBUG] {tid}: Recovery successful: {ok_after}")
                             if ok_after:
-                                grades[tid] = "Level 2"
-                                print(f"[DEBUG] {tid}: Assigned Level 2")
+                                grades[tid] = "Wind-Recoverable"
+                                print(f"[DEBUG] {tid}: Assigned Wind-Recoverable")
                                 continue
                         else:
                             print(f"[DEBUG] {tid}: Failed to compute recovery metrics")

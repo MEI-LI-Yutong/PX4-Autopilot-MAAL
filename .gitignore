@@ -113,3 +113,5 @@ keys/
 *logs/
 *Avl/
 plots/
+cache/
+wandb/

@@ -18,13 +18,14 @@ import asyncio
 import json
 import logging
 import os
+import random
 import signal
 import subprocess
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 import psutil  # type: ignore
 from mavsdk import System  # type: ignore
@@ -65,6 +66,15 @@ def check_ready(build_dir: str, simulator: str) -> bool:
             ok = False
     return ok
 
+# ----------------------------
+# W&B helpers
+# ----------------------------
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    val = os.getenv(name)
+    if val is None:
+        return default
+    return val not in ("0", "false", "False")
 
 # ----------------------------
 # Wind env mapping (optional)
@@ -108,10 +118,11 @@ def wind_env_from_config(wind_config: Dict[str, Any]) -> Dict[str, str]:
 # ----------------------------
 
 class SimpleGustRunner:
-    def __init__(self, config: Dict[str, Any], px4_root: Path, build_dir: Path, verbose: bool) -> None:
+    def __init__(self, config: Dict[str, Any], px4_root: Path, build_dir: Path, config_path: Path, verbose: bool) -> None:
         self.config = config
         self.px4_root = px4_root
         self.build_dir = build_dir
+        self.config_path = config_path
         self.verbose = verbose
 
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -144,6 +155,360 @@ class SimpleGustRunner:
         self.current_setpoint = {"lat": None, "lon": None, "alt_amsl": None}
         self.wind_fill_zero: bool = bool(self.config.get("wind_fill_zero", True))
         self.wind_stale_sec: float = float(self.config.get("wind_stale_sec", 1.0))
+
+        # Optional param overrides from env (JSON)
+        self.env_param_overrides: Dict[str, Any] = {}
+        for env_name in ("PREARM_PARAMS_JSON", "PX4_PARAM_OVERRIDES"):
+            raw = os.getenv(env_name)
+            if raw:
+                try:
+                    parsed = json.loads(raw)
+                    if isinstance(parsed, dict):
+                        self.env_param_overrides.update(parsed)
+                except Exception:
+                    self.logger.warning(f"Failed to parse {env_name} as JSON; ignore.")
+
+        # NocoDB integration (env-driven)
+        self.nocodb_enabled = _env_flag("NOCODB_ENABLE", False)
+        nocodb_cfg = self.config.get("nocodb", {}) if isinstance(self.config.get("nocodb", {}), dict) else {}
+        self.nocodb_table_id = nocodb_cfg.get("table_id") or os.getenv("NOCODB_TABLE_ID")
+        self.nocodb_view_id = nocodb_cfg.get("view_id") or os.getenv("NOCODB_VIEW_ID")
+        self.nocodb_token = nocodb_cfg.get("token") or os.getenv("NOCODB_TOKEN")
+        self.nocodb_base = nocodb_cfg.get("base_url") or os.getenv("NOCODB_BASE_URL", "https://app.nocodb.com")
+        try:
+            self.nocodb_max_records = int(nocodb_cfg.get("max_records") or os.getenv("NOCODB_MAX_RECORDS", 1000))
+        except Exception:
+            self.nocodb_max_records = 1000
+        if self.nocodb_table_id and self.nocodb_token:
+            self.nocodb_enabled = True
+        self._nocodb_selected: Optional[Dict[str, Any]] = None
+
+        # W&B
+        wandb_cfg = self.config.get("wandb", {}) if isinstance(self.config.get("wandb", {}), dict) else {}
+        env_enable = os.getenv("WANDB_ENABLE")
+        default_enable = bool(os.getenv("WANDB_API_KEY")) if env_enable is None else env_enable not in ("0", "false", "False")
+        self.wandb_enabled = bool(wandb_cfg.get("enable", default_enable))
+        self.wandb_project = wandb_cfg.get("project", os.getenv("WANDB_PROJECT", "px4_gust_eval"))
+        self.wandb_entity = wandb_cfg.get("entity", os.getenv("WANDB_ENTITY"))
+        self.wandb_run_name = wandb_cfg.get("run_name") or os.getenv("WANDB_RUN_NAME")
+        self.wandb_tags = wandb_cfg.get("tags") or []
+        self.wandb_upload_each_csv = bool(wandb_cfg.get("upload_each_csv", True if self.wandb_enabled else False))
+        self.wandb_table_each_csv = bool(wandb_cfg.get("table_each_csv", True if self.wandb_enabled else False))
+        self.wandb_param_names: Sequence[str] = wandb_cfg.get("param_snapshot", [])
+        if isinstance(self.wandb_param_names, str):
+            self.wandb_param_names = [self.wandb_param_names]
+        env_param_list = os.getenv("WANDB_PARAM_NAMES")
+        if env_param_list:
+            self.wandb_param_names = [p.strip() for p in env_param_list.split(",") if p.strip()]
+        self.wandb_param_all = bool(wandb_cfg.get("param_snapshot_all", False))
+        if _env_flag("WANDB_PARAM_ALL", False):
+            self.wandb_param_all = True
+        self._wandb_run = None
+        self._wandb_params_cached: Optional[Dict[str, Any]] = None
+        self.run_plots = _env_flag("RUN_PLOTS", True)
+
+    # ---- wandb integration ----
+    def _init_wandb(self, cfg: Dict[str, Any]) -> None:
+        if not self.wandb_enabled or self._wandb_run:
+            return
+
+        try:
+            import wandb  # type: ignore
+        except ImportError:
+            self.logger.warning("wandb not installed; disable WANDB_ENABLE or install wandb (`uv pip install wandb` or run with `uv run --with wandb`).")
+            self.wandb_enabled = False
+            return
+
+        run_name = self.wandb_run_name or f"gust-run-{self.run_dir.name}"
+        tags = list(self.wandb_tags) if isinstance(self.wandb_tags, (list, tuple, set)) else [self.wandb_tags]
+        tags.append("gust-eval")
+        base_cfg = {
+            "suite": cfg.get("test_suite", "gust_suite"),
+            "config_file": str(self.config_path),
+            "run_dir": str(self.run_dir),
+            "build_target": cfg.get("build_target"),
+            "simulator": cfg.get("simulator", "gazebo"),
+        }
+
+        self._wandb_run = wandb.init(
+            project=self.wandb_project,
+            entity=self.wandb_entity,
+            name=run_name,
+            tags=tags,
+            config=base_cfg,
+        )
+
+        # Attempt to fetch NocoDB overrides after run init (so we have run_id)
+        if self.nocodb_enabled:
+            try:
+                nocodb_params = self._maybe_fetch_nocodb_params()
+                if nocodb_params:
+                    # Merge into env overrides for later application
+                    self.env_param_overrides.update(nocodb_params)
+                if self._nocodb_selected and self._wandb_run:
+                    self._wandb_run.config.update({
+                        "nocodb_record": {
+                            "Id": self._nocodb_selected.get("Id"),
+                            "Title": self._nocodb_selected.get("Title"),
+                            "exp_times": self._nocodb_selected.get("exp_times"),
+                        }
+                    }, allow_val_change=True)
+                    self._update_nocodb_record(self._wandb_run.id)
+            except Exception as e:
+                self.logger.warning(f"NocoDB integration failed: {e}")
+
+    async def _get_param_value(self, name: str) -> Optional[float]:
+        if not self.drone:
+            return None
+        try:
+            return await self.drone.param.get_param_float(name)
+        except Exception:
+            pass
+        try:
+            return await self.drone.param.get_param_int(name)
+        except Exception:
+            return None
+
+    async def _get_all_params(self) -> Dict[str, Any]:
+        """Fetch all PX4 params (int + float)."""
+        if not self.drone:
+            return {}
+        try:
+            all_params = await self.drone.param.get_all_params()
+            snap: Dict[str, Any] = {}
+            for p in getattr(all_params, "float_params", []):
+                snap[p.name] = p.value
+            for p in getattr(all_params, "int_params", []):
+                snap[p.name] = p.value
+            return snap
+        except Exception as e:
+            self.logger.warning(f"Failed to fetch all PX4 params: {e}")
+            return {}
+
+    def _maybe_fetch_nocodb_params(self) -> Dict[str, Any]:
+        """Fetch parameter set from NocoDB (min exp_times, random among ties)."""
+        if not self.nocodb_enabled:
+            return {}
+        if not (self.nocodb_table_id and self.nocodb_token):
+            return {}
+
+        import urllib.request
+
+        url_base = f"{self.nocodb_base.rstrip('/')}/api/v2/tables/{self.nocodb_table_id}/records"
+        page_size = min(self.nocodb_max_records, int(os.getenv("NOCODB_PAGE_SIZE", 100)))
+        offset = 0
+        records: list[Dict[str, Any]] = []
+        while offset < self.nocodb_max_records:
+            limit = min(page_size, self.nocodb_max_records - len(records))
+            params = {"offset": offset, "limit": limit, "where": ""}
+            if self.nocodb_view_id:
+                params["viewId"] = self.nocodb_view_id
+            query = "&".join(f"{k}={urllib.parse.quote(str(v))}" for k, v in params.items())
+            full_url = f"{url_base}?{query}"
+            req = urllib.request.Request(full_url, headers={"xc-token": self.nocodb_token})
+            try:
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+            except Exception as e:
+                self.logger.warning(f"NocoDB fetch failed at offset {offset}: {e}")
+                break
+
+            page = data.get("list") or []
+            total = data.get("totalRows")
+            self.logger.info(f"NocoDB page: fetched {len(page)} record(s) (offset={offset}, limit={limit}, total={total})")
+            if not page:
+                break
+            records.extend(page)
+            offset += limit
+            if len(page) < limit:
+                break
+
+        if not records:
+            self.logger.info("NocoDB: no records returned")
+            return {}
+
+        def _exp_times(rec: Dict[str, Any]) -> float:
+            v = rec.get("exp_times", 0)
+            try:
+                return float(v)
+            except Exception:
+                return 0.0
+
+        min_exp = min(_exp_times(r) for r in records)
+        candidates = [r for r in records if _exp_times(r) == min_exp]
+        chosen = random.choice(candidates)
+        self._nocodb_selected = chosen
+        # Extract params: numeric values only, skip None/empty, skip meta fields
+        overrides: Dict[str, Any] = {}
+        meta_keys = {"Id", "nc_order", "Title", "exp_times", "wandb_runid"}
+        for k, v in chosen.items():
+            if k in meta_keys:
+                continue
+            if v is None or v == "":
+                continue
+            if isinstance(v, (int, float)):
+                overrides[k] = v
+        self.logger.info(f"NocoDB: selected record Id={chosen.get('Id')} Title={chosen.get('Title')} exp_times={chosen.get('exp_times')}")
+        return overrides
+
+    def _update_nocodb_record(self, wandb_run_id: str) -> None:
+        if not (self.nocodb_enabled and self._nocodb_selected and self.nocodb_token and self.nocodb_table_id):
+            return
+
+        import urllib.request
+
+        record_id = self._nocodb_selected.get("Id")
+        if record_id is None:
+            return
+        url = f"{self.nocodb_base.rstrip('/')}/api/v2/tables/{self.nocodb_table_id}/records"
+        # Merge existing wandb_runid array (if any) and append this run
+        new_entry = {
+            "run_id": wandb_run_id,
+            "run_at": datetime.utcnow().isoformat() + "Z",
+        }
+        existing_runs = []
+        try:
+            raw = self._nocodb_selected.get("wandb_runid")
+            parsed: Any = raw
+            if isinstance(raw, str) and raw.strip():
+                parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                parsed = [parsed]
+            if isinstance(parsed, list):
+                for item in parsed:
+                    if isinstance(item, dict) and item.get("run_id"):
+                        existing_runs.append(item)
+        except Exception:
+            pass
+        merged_runs = existing_runs + [new_entry]
+
+        payload_obj = {
+            "Id": record_id,
+            "wandb_runid": json.dumps(merged_runs),
+        }
+        try:
+            cur = self._nocodb_selected.get("exp_times", 0)
+            payload_obj["exp_times"] = float(cur) + 1
+        except Exception:
+            pass
+
+        data = json.dumps([payload_obj]).encode("utf-8")
+        req = urllib.request.Request(url, data=data, method="PATCH", headers={
+            "xc-token": self.nocodb_token,
+            "Content-Type": "application/json",
+        })
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                resp.read()
+            self.logger.info(f"NocoDB: updated record {record_id} with run_id={wandb_run_id}")
+        except Exception as e:
+            self.logger.warning(f"NocoDB update failed: {e}")
+
+    async def _maybe_capture_params_snapshot(self) -> None:
+        """Fetch selected PX4 params once and store in W&B config."""
+        if not self.wandb_enabled or not self._wandb_run:
+            return
+        if self._wandb_params_cached is not None:
+            return
+        if not self.drone:
+            return
+
+        snapshot: Dict[str, Any] = {}
+        if self.wandb_param_all:
+            snapshot = await self._get_all_params()
+        elif self.wandb_param_names:
+            for name in self.wandb_param_names:
+                val = await self._get_param_value(name)
+                if val is not None:
+                    snapshot[name] = val
+
+        self._wandb_params_cached = snapshot
+        if snapshot:
+            try:
+                self._wandb_run.config.update({"px4_params": snapshot}, allow_val_change=True)
+            except Exception:
+                pass
+            self.logger.info(f"W&B config updated with {len(snapshot)} PX4 params")
+
+    async def _maybe_upload_single_csv(self, test_id: str) -> None:
+        """Upload per-test CSV as an artifact for crash resilience."""
+        if not (self._wandb_run and self.wandb_upload_each_csv):
+            return
+
+        csv_path = self.run_dir / f"{test_id}.csv"
+        if not csv_path.is_file():
+            return
+
+        try:
+            import wandb  # type: ignore
+        except ImportError:
+            return
+
+        artifact_name = f"gust-csv-{self.run_dir.name}-{test_id}"
+        artifact = wandb.Artifact(artifact_name, type="gust-test-csv")
+        artifact.add_file(str(csv_path), name=csv_path.name)
+
+        # Optionally attach run log to each artifact for context
+        run_logs = list(self.run_dir.glob("gust_run_*.log"))
+        if run_logs:
+            artifact.add_file(str(run_logs[0]), name=run_logs[0].name)
+
+        try:
+            self._wandb_run.log_artifact(artifact)
+            self.logger.info(f"W&B: uploaded artifact {artifact_name}")
+        except Exception as e:
+            self.logger.warning(f"W&B upload failed for {artifact_name}: {e}")
+
+    async def _maybe_log_table_for_csv(self, test_id: str) -> None:
+        """Log the full CSV as a W&B table for easy browsing (no column drops)."""
+        if not (self._wandb_run and self.wandb_table_each_csv):
+            return
+
+        csv_path = self.run_dir / f"{test_id}.csv"
+        if not csv_path.is_file():
+            return
+
+        try:
+            import wandb  # type: ignore
+            import pandas as pd  # type: ignore
+        except ImportError:
+            return
+
+        try:
+            df = pd.read_csv(csv_path)
+            table = wandb.Table(dataframe=df)
+            self._wandb_run.log({f"csv_table/{test_id}": table})
+            self.logger.info(f"W&B: logged table for {test_id} ({len(df)} rows)")
+        except Exception as e:
+            self.logger.warning(f"W&B table log failed for {test_id}: {e}")
+
+    async def _run_post_plots(self) -> None:
+        """Optionally run plot_gust_levels.py and log into the same W&B run."""
+        if not self.run_plots:
+            return
+        try:
+            from plot_gust_levels import plot_levels  # type: ignore
+        except Exception as e:
+            self.logger.warning(f"Plotter import failed: {e}")
+            return
+
+        self.logger.info("Running post-plot inline (no extra W&B run)…")
+        try:
+            await asyncio.to_thread(
+                plot_levels,
+                self.config_path,
+                self.run_dir,
+                300,
+                self._wandb_run,
+                self.wandb_project,
+                self.wandb_entity,
+                self.wandb_run_name,
+                self.wandb_tags if isinstance(self.wandb_tags, list) else [self.wandb_tags] if self.wandb_tags else [],
+                True,
+                bool(self._wandb_run),
+            )
+        except Exception as e:
+            self.logger.warning(f"Post-plot step failed: {e}")
 
     # ---- lifecycle ----
     async def _wait_until_armable(self, timeout_sec: int, require_gps: bool = True) -> bool:
@@ -180,14 +545,18 @@ class SimpleGustRunner:
     async def _set_params(self, params: Dict[str, Any]) -> None:
         assert self.drone is not None
         for name, value in params.items():
+            ok = False
             try:
-                if isinstance(value, float):
-                    await self.drone.param.set_param_float(name, float(value))
-                else:
+                await self.drone.param.set_param_float(name, float(value))
+                ok = True
+            except Exception:
+                try:
                     await self.drone.param.set_param_int(name, int(value))
+                    ok = True
+                except Exception as e2:
+                    self.logger.warning(f"Param set failed {name}={value}: {e2}")
+            if ok:
                 await asyncio.sleep(0.05)
-            except Exception as e:
-                self.logger.debug(f"Param set failed {name}={value}: {e}")
 
     async def launch_px4(self, env_overrides: Dict[str, str]) -> bool:
         cmd = self.config.get("px4_sitl_command")
@@ -499,6 +868,8 @@ class SimpleGustRunner:
         if not check_ready(str(self.build_dir), simulator):
             return 2
 
+        self._init_wandb(self.config)
+
         # missions/tests
         tests: List[Dict[str, Any]] = []
         if "wind_gust_tests" in self.config:
@@ -543,14 +914,25 @@ class SimpleGustRunner:
 
                     # Optional user-provided params before arming
                     pre_params = self.config.get("prearm_params", {})
-                    if isinstance(pre_params, dict) and pre_params:
-                        self.logger.info("Applying prearm params from config…")
+                    if isinstance(pre_params, dict):
+                        pre_params = pre_params.copy()
+                    else:
+                        pre_params = {}
+                    if self.env_param_overrides:
+                        pre_params.update(self.env_param_overrides)
+                    if pre_params:
+                        self.logger.info(f"Applying prearm params ({len(pre_params)}) …")
                         await self._set_params(pre_params)
+                        await self._maybe_capture_params_snapshot()
+                    else:
+                        await self._maybe_capture_params_snapshot()
 
                     ok = await self.run_simple_mission(mission_cfg)
                     results.append({"test_id": test_id, "success": bool(ok)})
             finally:
                 await self._stop_recording()
+                await self._maybe_log_table_for_csv(test_id)
+                await self._maybe_upload_single_csv(test_id)
                 self.stop_px4()
                 await asyncio.sleep(3)
 
@@ -566,6 +948,16 @@ class SimpleGustRunner:
         passed = sum(1 for r in results if r.get("success"))
         total = len(results)
         self.logger.info(f"Summary: {passed}/{total} passed")
+        if self._wandb_run:
+            try:
+                self._wandb_run.log({"summary/passed": passed, "summary/total": total})
+            except Exception:
+                pass
+            await self._run_post_plots()
+            try:
+                self._wandb_run.finish()
+            except Exception:
+                pass
         return 0 if passed == total else 1
 
     # ----------------------------
@@ -937,6 +1329,7 @@ def main() -> None:
         config=config,
         px4_root=Path(args.px4_root).resolve(),
         build_dir=(Path(args.px4_root) / args.build_dir).resolve(),
+        config_path=Path(args.config_file).resolve(),
         verbose=args.verbose,
     )
 
