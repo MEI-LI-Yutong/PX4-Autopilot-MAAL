@@ -120,6 +120,8 @@ private:
 	void generate_trajectory_setpoint(float dt);
 	void reset_trajectory_setpoint(vehicle_local_position_s &_position);
 	void check_setpoint_validity(vehicle_local_position_s &_position);
+	void start_fallback_trajectory();
+	void update_fallback_trajectory();
 
 	// Subscriptions
 	uORB::SubscriptionInterval _parameter_update_sub{ORB_ID(parameter_update), 1_s};
@@ -159,6 +161,11 @@ private:
 	vehicle_attitude_s _attitude;
 	manual_control_setpoint_s _manual_control_setpoint{};
 	bool _mission_nn_enabled{false};
+	bool _fallback_active{false};
+	hrt_abstime _fallback_start_time{0};
+	matrix::Vector3f _fallback_start_pos{};
+	float _fallback_target_z{-5.0f};
+	float _fallback_duration{10.0f};
 
 	DEFINE_PARAMETERS(
 		(ParamInt<px4::params::MC_NN_MAX_RPM>) _param_max_rpm,

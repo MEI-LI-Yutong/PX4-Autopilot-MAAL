@@ -231,6 +231,39 @@ void MulticopterNeuralNetworkControl::reset_trajectory_setpoint(vehicle_local_po
 	_trajectory_setpoint.position[2] = _position.z;
 }
 
+void MulticopterNeuralNetworkControl::start_fallback_trajectory()
+{
+	// Build a simple internal trajectory: hold XY, ramp Z from current (~3 m) to ~10 m (NED: -3 -> -10)
+	_fallback_active = true;
+	_fallback_start_time = hrt_absolute_time();
+	_fallback_start_pos = matrix::Vector3f(_position.x, _position.y, _position.z);
+	_fallback_target_z = -10.0f; // absolute NED altitude target (~10 m above ground)
+	_trajectory_setpoint.timestamp = _fallback_start_time;
+	_trajectory_setpoint.position[0] = _fallback_start_pos(0);
+	_trajectory_setpoint.position[1] = _fallback_start_pos(1);
+	_trajectory_setpoint.position[2] = _fallback_start_pos(2);
+}
+
+void MulticopterNeuralNetworkControl::update_fallback_trajectory()
+{
+	if (!_fallback_active) {
+		return;
+	}
+
+	const hrt_abstime now = hrt_absolute_time();
+	const float elapsed = (now - _fallback_start_time) * 1e-6f;
+	const float alpha = math::constrain(elapsed / _fallback_duration, 0.0f, 1.0f);
+
+	_trajectory_setpoint.timestamp = now;
+	_trajectory_setpoint.position[0] = _fallback_start_pos(0);
+	_trajectory_setpoint.position[1] = _fallback_start_pos(1);
+	_trajectory_setpoint.position[2] = _fallback_start_pos(2) + (_fallback_target_z - _fallback_start_pos(2)) * alpha;
+
+	if (alpha >= 1.0f) {
+		_fallback_active = false;
+	}
+}
+
 void MulticopterNeuralNetworkControl::generate_trajectory_setpoint(float dt)
 {
 	// Update position setpoints based on manual control inputs
@@ -312,6 +345,7 @@ void MulticopterNeuralNetworkControl::PopulateInputTensor()
 	_trajectory_setpoint.position[2] = PX4_ISFINITE(_trajectory_setpoint.position[2]) ? _trajectory_setpoint.position[2] :
 					   -1.0f;
 	PX4_INFO("trajectory_setpoint.position: %f, %f, %f", (double)_trajectory_setpoint.position[0], (double)_trajectory_setpoint.position[1], (double)_trajectory_setpoint.position[2]);
+	PX4_INFO("current position: %f, %f, %f", (double)_position.x, (double)_position.y, (double)_position.z);
 
 	matrix::Vector3f position_local = matrix::Vector3f(_position.x, _position.y, _position.z);
 	position_local = frame_transf * frame_transf_2 * position_local;
@@ -539,7 +573,6 @@ void MulticopterNeuralNetworkControl::Run()
 
 	// run controller on angular velocity updates
 	if (_angular_velocity_sub.update(&_angular_velocity)) {
-		const float dt = math::constrain(((_angular_velocity.timestamp_sample - _last_run) * 1e-6f), 0.0002f, 0.02f);
 		_last_run = _angular_velocity.timestamp_sample;
 
 		if (_attitude_sub.updated()) {
@@ -557,28 +590,12 @@ void MulticopterNeuralNetworkControl::Run()
 			}
 		}
 
-		if (_param_manual_control.get()) {
-			// Run manual control mode
-			_manual_control_setpoint_sub.update(&_manual_control_setpoint);
-
-			// Ensure no nan and sufficiently recent setpoint
-			check_setpoint_validity(_position);
-
-			// Generate _trajectory_setpoint -> creates _trajectory_setpoint
-			generate_trajectory_setpoint(dt);
+		// Always use internal trajectory generator: hold XY, climb toward -10 m NED over _fallback_duration
+		if (_fallback_active) {
+			update_fallback_trajectory();
 
 		} else {
-			// Parse offboard trajectory setpoint
-			if (_trajectory_setpoint_sub.updated()) {
-				trajectory_setpoint_s _trajectory_setpoint_temp;
-				_trajectory_setpoint_sub.copy(&_trajectory_setpoint_temp);
-
-				// Make sure the trajectory setpoint is defined before using it
-				if (PX4_ISFINITE(_trajectory_setpoint_temp.position[0]) && PX4_ISFINITE(_trajectory_setpoint_temp.position[1]) &&
-				    PX4_ISFINITE(_trajectory_setpoint_temp.position[2])) {
-					_trajectory_setpoint = _trajectory_setpoint_temp;
-				}
-			}
+			start_fallback_trajectory();
 		}
 
 		PopulateInputTensor();
