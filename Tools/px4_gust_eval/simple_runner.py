@@ -175,6 +175,10 @@ class SimpleGustRunner:
         self.nocodb_view_id = nocodb_cfg.get("view_id") or os.getenv("NOCODB_VIEW_ID")
         self.nocodb_token = nocodb_cfg.get("token") or os.getenv("NOCODB_TOKEN")
         self.nocodb_base = nocodb_cfg.get("base_url") or os.getenv("NOCODB_BASE_URL", "https://app.nocodb.com")
+        try:
+            self.nocodb_max_records = int(nocodb_cfg.get("max_records") or os.getenv("NOCODB_MAX_RECORDS", 1000))
+        except Exception:
+            self.nocodb_max_records = 1000
         if self.nocodb_table_id and self.nocodb_token:
             self.nocodb_enabled = True
         self._nocodb_selected: Optional[Dict[str, Any]] = None
@@ -290,26 +294,35 @@ class SimpleGustRunner:
 
         import urllib.request
 
-        url = f"{self.nocodb_base.rstrip('/')}/api/v2/tables/{self.nocodb_table_id}/records"
-        params = {
-            "offset": 0,
-            "limit": 100,
-            "where": "",
-        }
-        if self.nocodb_view_id:
-            params["viewId"] = self.nocodb_view_id
-        query = "&".join(f"{k}={urllib.parse.quote(str(v))}" for k, v in params.items())
-        full_url = f"{url}?{query}"
-        req = urllib.request.Request(full_url, headers={"xc-token": self.nocodb_token})
+        url_base = f"{self.nocodb_base.rstrip('/')}/api/v2/tables/{self.nocodb_table_id}/records"
+        page_size = min(self.nocodb_max_records, int(os.getenv("NOCODB_PAGE_SIZE", 100)))
+        offset = 0
+        records: list[Dict[str, Any]] = []
+        while offset < self.nocodb_max_records:
+            limit = min(page_size, self.nocodb_max_records - len(records))
+            params = {"offset": offset, "limit": limit, "where": ""}
+            if self.nocodb_view_id:
+                params["viewId"] = self.nocodb_view_id
+            query = "&".join(f"{k}={urllib.parse.quote(str(v))}" for k, v in params.items())
+            full_url = f"{url_base}?{query}"
+            req = urllib.request.Request(full_url, headers={"xc-token": self.nocodb_token})
+            try:
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+            except Exception as e:
+                self.logger.warning(f"NocoDB fetch failed at offset {offset}: {e}")
+                break
 
-        try:
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-        except Exception as e:
-            self.logger.warning(f"NocoDB fetch failed: {e}")
-            return {}
+            page = data.get("list") or []
+            total = data.get("totalRows")
+            self.logger.info(f"NocoDB page: fetched {len(page)} record(s) (offset={offset}, limit={limit}, total={total})")
+            if not page:
+                break
+            records.extend(page)
+            offset += limit
+            if len(page) < limit:
+                break
 
-        records = data.get("list") or []
         if not records:
             self.logger.info("NocoDB: no records returned")
             return {}
