@@ -138,6 +138,7 @@ set(msg_files
 	MountOrientation.msg
 	NavigatorMissionItem.msg
 	NavigatorStatus.msg
+	ExperimentalControlStatus.msg
 	NormalizedUnsignedSetpoint.msg
 	NpfgStatus.msg
 	ObstacleDistance.msg

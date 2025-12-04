@@ -1,0 +1,12 @@
+menuconfig MODULES_EXPERIMENTAL_CONTROL
+	bool "experimental_control"
+	default n
+	---help---
+		Enable support for experimental_control
+
+menuconfig USER_EXPERIMENTAL_CONTROL
+	bool "experimental_control running as userspace module"
+	default n
+	depends on BOARD_PROTECTED && MODULES_EXPERIMENTAL_CONTROL
+	---help---
+		Put experimental_control in userspace memory

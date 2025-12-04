@@ -10,14 +10,9 @@
 #
 trim_selector start
 
-#
-# Start Control Allocator
-#
-control_allocator start
-
-#
+experimental_control start
 # Start Multicopter Rate Controller.
-#
+# (control_allocator disabled for experimental_control testing)
 mc_rate_control start
 
 #
