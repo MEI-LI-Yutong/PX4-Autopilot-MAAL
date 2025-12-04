@@ -29,6 +29,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
+from mpl_toolkits.mplot3d import Axes3D  # noqa: F401  # for 3D scatter
 
 try:
     import scienceplots  # type: ignore  # noqa: F401
@@ -57,7 +58,7 @@ def parse_args() -> argparse.Namespace:
         default=os.getenv("NOCODB_BASE_URL", "https://app.nocodb.com"),
         help="NocoDB base URL",
     )
-    p.add_argument("--max-records", type=int, default=200, help="Max NocoDB records to fetch")
+    p.add_argument("--max-records", type=int, default=1000, help="Max NocoDB records to fetch")
     p.add_argument(
         "--titles",
         nargs="*",
@@ -100,18 +101,34 @@ def fetch_nocodb_records(
     if not (table_id and token):
         raise SystemExit("NocoDB table id and token are required (set NOCODB_TABLE_ID / NOCODB_TOKEN).")
 
-    params = {"limit": max_records, "offset": 0}
-    if view_id:
-        params["viewId"] = view_id
-    query = urllib.parse.urlencode(params)
-    url = f"{base_url.rstrip('/')}/api/v2/tables/{table_id}/records?{query}"
-    req = urllib.request.Request(url, headers={"xc-token": token})
-    try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-        return data.get("list") or []
-    except Exception as exc:
-        raise SystemExit(f"Failed to fetch NocoDB records: {exc}") from exc
+    page_size = min(max_records, int(os.getenv("NOCODB_PAGE_SIZE", 100)))
+    url_base = f"{base_url.rstrip('/')}/api/v2/tables/{table_id}/records"
+    offset = 0
+    records: List[Dict[str, Any]] = []
+    while offset < max_records:
+        limit = min(page_size, max_records - len(records))
+        params = {"limit": limit, "offset": offset}
+        if view_id:
+            params["viewId"] = view_id
+        query = urllib.parse.urlencode(params)
+        url = f"{url_base}?{query}"
+        req = urllib.request.Request(url, headers={"xc-token": token})
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except Exception as exc:
+            raise SystemExit(f"Failed to fetch NocoDB records at offset {offset}: {exc}") from exc
+
+        page = data.get("list") or []
+        total = data.get("totalRows")
+        print(f"[info] NocoDB page: fetched {len(page)} (offset={offset}, limit={limit}, total={total})")
+        if not page:
+            break
+        records.extend(page)
+        offset += limit
+        if len(page) < limit:
+            break
+    return records
 
 
 def parse_run_entries(raw: Any) -> List[Dict[str, Any]]:
@@ -389,7 +406,29 @@ def compute_displacement_summary(df: pd.DataFrame) -> pd.DataFrame:
         .reset_index()
         .rename(columns={"disp_level": "avg_displacement"})
     )
+    agg["family"], agg["term"] = zip(*agg["param_name"].map(_parse_family_term))
     return agg
+
+
+def _is_unstable(grade: Any) -> bool:
+    if not isinstance(grade, str):
+        return False
+    g = grade.lower()
+    return ("unstable" in g) or ("not launched" in g) or ("crash" in g)
+
+
+def _parse_family_term(param: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
+    if not param or not isinstance(param, str):
+        return None, None
+    m = re.match(r"^MC_([A-Z]+?)(?:RATE)?_(P|I|D)$", param)
+    if not m:
+        return None, None
+    base = m.group(1)
+    term = m.group(2)
+    family = base.lower()
+    if "rate" in param.lower():
+        family = f"{family}rate"
+    return family.upper(), term
 
 
 def _is_unstable(grade: Any) -> bool:
@@ -428,8 +467,22 @@ def compute_failure_levels(df: pd.DataFrame, default_level: float = 12.0) -> pd.
             "variant": variant,
             "scale": scale,
             "failure_level": failure,
+            "family": _parse_family_term(param)[0],
+            "term": _parse_family_term(param)[1],
         })
     return pd.DataFrame(results)
+
+
+def _variant_labels(sub: pd.DataFrame) -> Tuple[List[str], List[str]]:
+    """Return tick labels (variant short) and text labels (value formatted)."""
+    labels = []
+    for scale, var in zip(sub["scale"], sub["variant"]):
+        try:
+            lbl = f"{float(scale):g}x"
+        except Exception:
+            lbl = var
+        labels.append(lbl)
+    return labels, [f"{v:.2f}" for v in sub["avg_displacement"]]
 
 
 def plot_displacement_bars(summary: pd.DataFrame, output_dir: Path, dpi: int) -> List[Path]:
@@ -445,11 +498,15 @@ def plot_displacement_bars(summary: pd.DataFrame, output_dir: Path, dpi: int) ->
             order = list(sub["variant"])
         fig, ax = plt.subplots(figsize=(9, 5))
         sns.barplot(data=sub, x="variant", y="avg_displacement", order=order, ax=ax, color="#4C72B0")
-        ax.set_xlabel("PID variant (Title)")
-        ax.set_ylabel("平均位移误差 (h_max_dev+v_max_dev 的风级均值)")
-        ax.set_title(f"{param} 平均位移误差")
+        ticks, texts = _variant_labels(sub if order is None else sub.set_index("variant").loc[order].reset_index())
+        ax.set_xticklabels(ticks, rotation=30, ha="right")
+        ax.set_xlabel("Scale")
+        ax.set_ylabel("Avg displacement (h_max_dev + v_max_dev)")
+        ax.set_title(f"{param} average displacement")
         ax.grid(True, axis="y", linestyle="--", alpha=0.4)
-        plt.xticks(rotation=30, ha="right")
+        for p, txt in zip(ax.patches, texts):
+            ax.annotate(txt, (p.get_x() + p.get_width() / 2, p.get_height()),
+                        ha="center", va="bottom", fontsize=8)
         fig.tight_layout()
         out = output_dir / f"{param}_avg_displacement.png"
         fig.savefig(out, dpi=dpi)
@@ -458,34 +515,31 @@ def plot_displacement_bars(summary: pd.DataFrame, output_dir: Path, dpi: int) ->
     return saved
 
 
-def plot_overview_grid(failure: pd.DataFrame, output_dir: Path, dpi: int) -> Optional[Path]:
-    """
-    大图：每个参数一个小图，方块颜色表示首次出现 unstable 的风级（未出现则视为 12）。
-    数字也标出该风级。
-    """
-    if failure.empty or "param_name" not in failure.columns:
+def _grid_for_metric(df: pd.DataFrame, value_col: str, title: str, cbar_label: str, output: Path, dpi: int) -> Optional[Path]:
+    if df.empty or "param_name" not in df.columns:
         return None
-    ensure_dirs(output_dir)
-    failure = failure.copy()
+    ensure_dirs(output.parent)
+    df = df.copy()
     try:
-        failure["scale_num"] = failure["scale"].astype(float)
+        df["scale_num"] = df["scale"].astype(float)
     except Exception:
-        failure["scale_num"] = np.nan
+        df["scale_num"] = np.nan
 
-    params = sorted([p for p in failure["param_name"].dropna().unique()])
+    params = sorted([p for p in df["param_name"].dropna().unique()])
     if not params:
         return None
 
-    vmin, vmax = 1, 12
-    cmap = plt.cm.RdYlGn  # 低值红，高值绿
-    ncols = 3
+    vmin = df[value_col].min()
+    vmax = df[value_col].max()
+    cmap = plt.cm.RdYlGn if value_col == "failure_level" else plt.cm.viridis
+    ncols = 4
     nrows = math.ceil(len(params) / ncols)
     fig, axes = plt.subplots(nrows, ncols, figsize=(4 * ncols, 2.8 * nrows), squeeze=False)
 
     last_im = None
     for idx, param in enumerate(params):
         ax = axes[idx // ncols][idx % ncols]
-        sub = failure[failure["param_name"] == param]
+        sub = df[df["param_name"] == param]
         if sub.empty:
             ax.axis("off")
             continue
@@ -493,27 +547,189 @@ def plot_overview_grid(failure: pd.DataFrame, output_dir: Path, dpi: int) -> Opt
             sub = sub.sort_values("scale_num")
         else:
             sub = sub.sort_values("variant")
-        values = sub["failure_level"].to_numpy()
+        values = sub[value_col].to_numpy()
         im_data = values.reshape(1, -1)
         last_im = ax.imshow(im_data, aspect="auto", cmap=cmap, vmin=vmin, vmax=vmax)
         ax.set_xticks(range(len(sub)))
-        ax.set_xticklabels(sub["variant"], rotation=30, ha="right", fontsize=8)
+        try:
+            xlabels = [f"{float(s):g}x" for s in sub["scale"]]
+        except Exception:
+            xlabels = list(sub["variant"])
+        ax.set_xticklabels(xlabels, rotation=30, ha="right", fontsize=8)
         ax.set_yticks([])
         ax.set_title(param, fontsize=11)
-        for x, val in enumerate(values):
-            ax.text(x, 0, f"{val:.0f}", ha="center", va="center", color="black", fontsize=8, fontweight="bold")
+        # 仅在 failure 图上标数字，displacement 图不标注
+        if value_col == "failure_level":
+            for x, val in enumerate(values):
+                ax.text(x, 0, f"{val:.0f}", ha="center", va="center", color="black", fontsize=8, fontweight="bold")
 
     for j in range(len(params), nrows * ncols):
         axes[j // ncols][j % ncols].axis("off")
 
+    fig.suptitle(title, fontsize=12)
+    # 留出右侧空间放色条，避免与子图重叠
+    fig.subplots_adjust(right=0.86, top=0.92)
     if last_im is not None:
-        cbar = fig.colorbar(last_im, ax=axes.ravel().tolist(), shrink=0.9, pad=0.02)
-        cbar.set_label("首次 unstable 的风级 (未出现则视为12)", fontsize=10)
-    fig.tight_layout()
-    out = output_dir / "overview_failure_grid.png"
-    fig.savefig(out, dpi=dpi)
+        cax = fig.add_axes([0.88, 0.15, 0.02, 0.7])
+        cbar = fig.colorbar(last_im, cax=cax)
+        cbar.set_label(cbar_label, fontsize=10)
+
+    fig.tight_layout(rect=[0, 0, 0.86, 0.90])
+    fig.savefig(output, dpi=dpi, bbox_inches="tight")
     plt.close(fig)
-    return out
+    return output
+
+
+def _family_heatmaps(summary: pd.DataFrame, value_col: str, title_prefix: str, cbar_label: str, output_dir: Path, dpi: int, annotate: bool) -> Optional[Path]:
+    if summary.empty or "family" not in summary.columns:
+        return None
+    ensure_dirs(output_dir)
+    families_all = sorted([f for f in summary["family"].dropna().unique()])
+    if not families_all:
+        return None
+    # Group into three buckets: PITCH/PITCHRATE, ROLL/ROLLRATE, YAW/YAWRATE (case-insensitive)
+    buckets = {
+        "PITCH": [f for f in families_all if f.upper().startswith("PITCH")],
+        "ROLL": [f for f in families_all if f.upper().startswith("ROLL")],
+        "YAW": [f for f in families_all if f.upper().startswith("YAW")],
+    }
+    # If some family did not match, keep them in a misc bucket
+    misc = [f for f in families_all if f not in buckets["PITCH"] + buckets["ROLL"] + buckets["YAW"]]
+
+    vmax = summary[value_col].max()
+    vmin = summary[value_col].min()
+    cmap = plt.cm.RdYlGn if value_col == "failure_level" else plt.cm.viridis
+
+    outputs = []
+    def draw_bucket(bucket_name: str, fams: list[str]) -> None:
+        if not fams:
+            return
+        ncols = min(2, len(fams))
+        nrows = math.ceil(len(fams) / ncols)
+        fig, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 3.5 * nrows), squeeze=False)
+        last_im = None
+        for idx, fam in enumerate(fams):
+            ax = axes[idx // ncols][idx % ncols]
+            sub = summary[summary["family"] == fam]
+            if sub.empty:
+                ax.axis("off")
+                continue
+            try:
+                sub["scale_num"] = sub["scale"].astype(float)
+            except Exception:
+                sub["scale_num"] = np.nan
+            scales = sorted([s for s in sub["scale_num"].unique() if not pd.isna(s)])
+            if not scales:
+                scales = list(range(len(sub)))
+            terms = ["P", "I", "D"]
+            pivot = sub.pivot_table(index="term", columns="scale_num", values=value_col, aggfunc="mean")
+            pivot = pivot.reindex(index=terms)
+            pivot = pivot[scales] if all(s in pivot.columns for s in scales) else pivot
+            im = sns.heatmap(
+                pivot,
+                ax=ax,
+                cmap=cmap,
+                vmin=vmin,
+                vmax=vmax,
+                cbar=False,
+                annot=annotate,
+                fmt=".1f" if value_col != "failure_level" else ".0f",
+                annot_kws={"fontsize": 8},
+            )
+            last_im = im.collections[0]
+            ax.set_title("")  # no title
+            ax.set_xlabel("Scale")
+            ax.set_ylabel("Term")
+
+        for j in range(len(fams), nrows * ncols):
+            axes[j // ncols][j % ncols].axis("off")
+
+        fig.subplots_adjust(right=0.88, top=0.92)
+        if last_im is not None:
+            cax = fig.add_axes([0.90, 0.15, 0.02, 0.7])
+            cbar = fig.colorbar(last_im, cax=cax)
+            cbar.set_label(cbar_label, fontsize=10)
+
+        fig.suptitle("")  # no suptitle
+        fig.tight_layout(rect=[0, 0, 0.88, 0.90])
+        out = output_dir / f"{value_col}_family_{bucket_name}.png"
+        fig.savefig(out, dpi=dpi, bbox_inches="tight")
+        plt.close(fig)
+        outputs.append(out)
+
+    draw_bucket("PITCH", buckets["PITCH"])
+    draw_bucket("ROLL", buckets["ROLL"])
+    draw_bucket("YAW", buckets["YAW"])
+    if misc:
+        draw_bucket("MISC", misc)
+
+    return outputs[0] if outputs else None
+
+
+def _scatter3d_by_family(merged: pd.DataFrame, output_dir: Path, dpi: int) -> List[Path]:
+    """
+    3D scatter: x=scale, y=failure_level, z=avg_displacement, color by term, per family.
+    Helps visualize resilience vs displacement across scales/terms.
+    """
+    saved: List[Path] = []
+    if merged.empty or "family" not in merged.columns:
+        return saved
+    ensure_dirs(output_dir)
+    for fam, sub in merged.groupby("family"):
+        if sub.empty:
+            continue
+        try:
+            sub["scale_num"] = sub["scale"].astype(float)
+        except Exception:
+            sub["scale_num"] = np.nan
+        fig = plt.figure(figsize=(7, 5))
+        ax = fig.add_subplot(111, projection="3d")
+        terms = sorted(sub["term"].dropna().unique())
+        colors = sns.color_palette("tab10", n_colors=len(terms))
+        color_map = {t: colors[i] for i, t in enumerate(terms)}
+        for _, row in sub.iterrows():
+            c = color_map.get(row.get("term"))
+            ax.scatter(
+                row.get("scale_num"),
+                row.get("failure_level"),
+                row.get("avg_displacement"),
+                color=c,
+                s=50,
+            )
+        ax.set_xlabel("Scale")
+        ax.set_ylabel("Failure level")
+        ax.set_zlabel("Avg displacement")
+        ax.set_title(f"{fam} 3D scatter")
+        legend_handles = [plt.Line2D([0], [0], marker="o", color=c, linestyle="", label=t) for t, c in color_map.items()]
+        ax.legend(handles=legend_handles, loc="best")
+        fig.tight_layout()
+        out = output_dir / f"{fam}_scatter3d.png"
+        fig.savefig(out, dpi=dpi, bbox_inches="tight")
+        plt.close(fig)
+        saved.append(out)
+    return saved
+
+
+def plot_overview_grid(failure: pd.DataFrame, output_dir: Path, dpi: int) -> Optional[Path]:
+    return _grid_for_metric(
+        failure,
+        value_col="failure_level",
+        title="Failure level by scale",
+        cbar_label="First unstable wind level (12 if none)",
+        output=output_dir / "overview_failure_grid.png",
+        dpi=dpi,
+    )
+
+
+def plot_displacement_grid(summary: pd.DataFrame, output_dir: Path, dpi: int) -> Optional[Path]:
+    return _grid_for_metric(
+        summary,
+        value_col="avg_displacement",
+        title="Average displacement by scale",
+        cbar_label="Avg displacement (h_max_dev + v_max_dev)",
+        output=output_dir / "overview_displacement_grid.png",
+        dpi=dpi,
+    )
 
 
 def main() -> None:
@@ -544,9 +760,20 @@ def main() -> None:
     failure_summary = compute_failure_levels(df)
     failure_csv = args.output_dir / "failure_levels.csv"
     failure_summary.to_csv(failure_csv, index=False)
+    merged = pd.merge(
+        disp_summary,
+        failure_summary,
+        on=["param_name", "variant", "scale", "family", "term"],
+        how="inner",
+        suffixes=("_disp", "_fail"),
+    )
 
     saved_imgs = plot_displacement_bars(disp_summary, args.output_dir, args.dpi)
-    overview = plot_overview_grid(failure_summary, args.output_dir, args.dpi)
+    overview_fail = plot_overview_grid(failure_summary, args.output_dir, args.dpi)
+    overview_disp = plot_displacement_grid(disp_summary, args.output_dir, args.dpi)
+    heatmap_fail = _family_heatmaps(failure_summary, "failure_level", "Failure level", "First unstable wind level (12 if none)", args.output_dir, args.dpi, annotate=True)
+    heatmap_disp = _family_heatmaps(disp_summary, "avg_displacement", "Average displacement", "Avg displacement (h_max_dev + v_max_dev)", args.output_dir, args.dpi, annotate=False)
+    scatter_imgs = _scatter3d_by_family(merged, args.output_dir, args.dpi)
 
     print(f"Aggregated {len(df)} rows from {df['run_id'].nunique()} runs across {df['variant'].nunique()} variants.")
     print(f"Saved raw CSV to {agg_csv}")
@@ -554,8 +781,16 @@ def main() -> None:
     print(f"Saved failure level summary to {failure_csv}")
     for img in saved_imgs:
         print(f"Saved plot: {img}")
-    if overview:
-        print(f"Saved overview grid: {overview}")
+    if overview_fail:
+        print(f"Saved failure overview grid: {overview_fail}")
+    if overview_disp:
+        print(f"Saved displacement overview grid: {overview_disp}")
+    if heatmap_fail:
+        print(f"Saved failure family heatmaps: {heatmap_fail}")
+    if heatmap_disp:
+        print(f"Saved displacement family heatmaps: {heatmap_disp}")
+    for img in scatter_imgs:
+        print(f"Saved 3D scatter: {img}")
 
 
 if __name__ == "__main__":

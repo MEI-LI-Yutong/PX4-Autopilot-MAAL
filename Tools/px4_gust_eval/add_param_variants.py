@@ -38,7 +38,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--step", type=float, help="Multiplier increment (e.g., 0.25)")
     p.add_argument("--start-scale", type=float, help="Start multiplier for new rows (defaults to max existing + step)")
     p.add_argument("--count", type=int, help="How many rows to add per parameter")
-    p.add_argument("--max-records", type=int, default=500, help="Max records to fetch for preview and duplicate detection")
+    p.add_argument("--max-records", type=int, default=1000, help="Max records to fetch for preview and duplicate detection")
     p.add_argument("--dry-run", action="store_true", help="Preview without POSTing new rows")
     return p.parse_args()
 
@@ -54,11 +54,25 @@ def _api_get(args: argparse.Namespace, path: str, params: Dict[str, Any]) -> Dic
 def fetch_records(args: argparse.Namespace) -> List[Dict[str, Any]]:
     if not (args.table_id and args.token):
         raise SystemExit("NOCODB_TABLE_ID and NOCODB_TOKEN are required.")
-    params = {"limit": args.max_records, "offset": 0}
-    if args.view_id:
-        params["viewId"] = args.view_id
-    data = _api_get(args, f"/api/v2/tables/{args.table_id}/records", params)
-    return data.get("list") or []
+    page_size = min(args.max_records, int(os.getenv("NOCODB_PAGE_SIZE", 100)))
+    records: List[Dict[str, Any]] = []
+    offset = 0
+    while offset < args.max_records:
+        limit = min(page_size, args.max_records - len(records))
+        params = {"limit": limit, "offset": offset}
+        if args.view_id:
+            params["viewId"] = args.view_id
+        data = _api_get(args, f"/api/v2/tables/{args.table_id}/records", params)
+        page = data.get("list") or []
+        total = data.get("totalRows")
+        print(f"[info] NocoDB page: fetched {len(page)} (offset={offset}, limit={limit}, total={total})")
+        if not page:
+            break
+        records.extend(page)
+        offset += limit
+        if len(page) < limit:
+            break
+    return records
 
 
 def post_records(args: argparse.Namespace, rows: List[Dict[str, Any]]) -> None:
