@@ -110,6 +110,7 @@ private:
 	void UpdatePositionControlGains();
 	void UpdateAttitudeControlGains();
 	void UpdateRateControlGains();
+	matrix::Vector3f ComputeLqrTorque(const matrix::Vector3f &rates, const matrix::Vector3f &rates_sp);
 	bool RunPositionControl(float dt, vehicle_attitude_setpoint_s &att_sp, matrix::Vector3f &thrust_sp);
 
 	uORB::SubscriptionInterval _parameter_update_sub{ORB_ID(parameter_update), 1_s};
@@ -155,6 +156,7 @@ private:
 
 	matrix::Vector3f _rates_sp{};
 	matrix::Vector3f _thrust_sp{};
+	matrix::Vector3f _lqr_gains{1.f, 1.f, 1.f};
 
 	DEFINE_PARAMETERS(
 		(ParamFloat<px4::params::MC_ROLL_P>) _param_mc_roll_p,

@@ -176,17 +176,16 @@ void MulticopterCustomControl::UpdateAttitudeControlGains()
 
 void MulticopterCustomControl::UpdateRateControlGains()
 {
-	const Vector3f rate_k(_param_mc_rollrate_k.get(), _param_mc_pitchrate_k.get(), _param_mc_yawrate_k.get());
-	_rate_control.setPidGains(
-		rate_k.emult(Vector3f(_param_mc_rollrate_p.get(), _param_mc_pitchrate_p.get(), _param_mc_yawrate_p.get())),
-		rate_k.emult(Vector3f(_param_mc_rollrate_i.get(), _param_mc_pitchrate_i.get(), _param_mc_yawrate_i.get())),
-		rate_k.emult(Vector3f(_param_mc_rollrate_d.get(), _param_mc_pitchrate_d.get(), _param_mc_yawrate_d.get())));
+	// 使用 MC_*RATE_K 作为简单对角 LQR 增益，便于快速试飞
+	_lqr_gains = Vector3f(_param_mc_rollrate_k.get(), _param_mc_pitchrate_k.get(), _param_mc_yawrate_k.get());
+}
 
-	_rate_control.setIntegratorLimit(Vector3f(_param_mc_rr_int_lim.get(), _param_mc_pr_int_lim.get(),
-						_param_mc_yr_int_lim.get()));
-
-	_rate_control.setFeedForwardGain(Vector3f(_param_mc_rollrate_ff.get(), _param_mc_pitchrate_ff.get(),
-					_param_mc_yawrate_ff.get()));
+matrix::Vector3f MulticopterCustomControl::ComputeLqrTorque(const matrix::Vector3f &rates,
+		const matrix::Vector3f &rates_sp)
+{
+	// u = -K * (rate - rate_sp)
+	const Vector3f rate_error = rates - rates_sp;
+	return -_lqr_gains.emult(rate_error);
 }
 
 bool MulticopterCustomControl::RunPositionControl(float dt, vehicle_attitude_setpoint_s &att_sp,
@@ -346,10 +345,7 @@ void MulticopterCustomControl::Run()
 		_thrust_sp.zero();
 	}
 
-	matrix::Vector3f angular_accel; // not available, leave zero
-	const bool landed = _land_detected.landed;
-	matrix::Vector3f torque_sp = _rate_control.update(Vector3f(_angular_velocity.xyz), _rates_sp, angular_accel, dt,
-					  landed);
+	const Vector3f torque_sp = ComputeLqrTorque(Vector3f(_angular_velocity.xyz), _rates_sp);
 
 	vehicle_rates_setpoint_s rates_setpoint{};
 	rates_setpoint.timestamp = hrt_absolute_time();
