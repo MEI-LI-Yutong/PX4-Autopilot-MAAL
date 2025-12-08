@@ -39,6 +39,22 @@ px4_add_module(
 	SRCS
 		mc_custom_control.cpp
 		mc_custom_control.hpp
+		../mc_att_control/AttitudeControl/AttitudeControl.cpp
+		../mc_att_control/AttitudeControl/AttitudeControl.hpp
+		../mc_att_control/AttitudeControl/AttitudeControlMath.hpp
+		../mc_pos_control/PositionControl/ControlMath.cpp
+		../mc_pos_control/PositionControl/ControlMath.hpp
+		../mc_pos_control/PositionControl/PositionControl.cpp
+		../mc_pos_control/PositionControl/PositionControl.hpp
+		../mc_pos_control/Takeoff/Takeoff.cpp
+		../mc_pos_control/Takeoff/Takeoff.hpp
+		../../lib/rate_control/rate_control.cpp
+		../../lib/rate_control/rate_control.hpp
+	INCLUDES
+		../mc_att_control/AttitudeControl
+		../mc_pos_control/PositionControl
+		../mc_pos_control/Takeoff
+		../../lib/rate_control
 	DEPENDS
 		mathlib
 		px4_work_queue
