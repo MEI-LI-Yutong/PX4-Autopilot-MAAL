@@ -14,7 +14,7 @@
 	  "advance_after_hover_sec": 2
 	},
 	"wind_gust_tests": [
-		{"test_id": "gust_lvl_12", "description": "Gust L12: |V|=32.70 m/s (mean=0)", "wind_config": {"model": "one_minus_cos_simp", "mean": [0,0,0], "direction": [-1,0,0], "A0": 32.70, "T": 10, "phase": 0.0 }}
+		{"test_id": "gust_lvl_06", "description": "Gust L6: |V|=10.80 m/s (mean=0)", "wind_config": {"model": "one_minus_cos_simp", "mean": [0,0,0], "direction": [-1,0,0], "A0": 10.80, "T": 10, "phase": 0.0 }}
 	],
 	"output_config": {
 	  "log_directory": "logs/levels",
