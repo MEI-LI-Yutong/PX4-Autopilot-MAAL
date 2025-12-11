@@ -1,0 +1,23 @@
+{
+  "test_suite": "Wind Levels (Sustained & Gust)",
+  "description": "26 gust-only tasks: 13 along -X and 13 along -Z. Uses one_minus_cos_simp with T=10s and A0 set to the target |V| level.",
+  "px4_sitl_command": "make px4_sitl gz_x500_windy",
+  "mission_type": "straight_line",
+  "wandb": {
+      "enable": true
+    },
+  "mission_config": {
+    "takeoff_altitude": 10.0,
+    "timeout_sec": 150,
+    "advance_distance_m": 100.0,
+    "advance_axis": "ned_y",
+    "advance_after_hover_sec": 2
+  },
+  "wind_gust_tests": [
+    {"test_id": "gust_lvl_x", "description": "Gust X-L10: |V|=10 m/s (mean=0, -X dir)", "wind_config": {"model": "one_minus_cos_simp", "mean": [0,0,0], "direction": [-1,0,0], "A0": 10, "T": 10, "phase": 0.0 }}
+  ],
+  "output_config": {
+    "log_directory": "logs/levels",
+    "save_flight_data": true
+  }
+}
