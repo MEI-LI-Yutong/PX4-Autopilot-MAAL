@@ -109,3 +109,8 @@ src/systemcmds/topic_listener/listener_generated.cpp
 # colcon
 log/
 keys/
+
+wandb/
+logs/
+cache/
+plots/
