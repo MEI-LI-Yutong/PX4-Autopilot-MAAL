@@ -1,0 +1,33 @@
+{
+  "test_suite": "Dryden + Boundary Layer (Z Levels)",
+  "description": "13 tests using gust_lvl_z magnitudes as bl_ref_wind.x; Dryden turbulence fixed; spatial boundary_layer enabled.",
+  "px4_sitl_command": "make px4_sitl gz_tiltrotor_windy",
+  "mission_type": "straight_line",
+  "mission_config": {
+    "takeoff_altitude": 10.0,
+    "timeout_sec": 150,
+    "advance_distance_m": 100.0,
+    "advance_axis": "ned_y",
+    "advance_after_hover_sec": 2
+  },
+  "wind_gust_tests": [
+    {"test_id": "dryden_bl_x_00", "description": "X-L0: bl_ref_wind.x=0.00 m/s; Dryden fixed",   "wind_config": {"model": "dryden", "mean": [0,0,0], "dryden_sigma": [2.0, 1.5, 1.0], "dryden_length": [200, 200, 50], "seed": 12345, "spatial_model": "boundary_layer", "tracked_model": "tiltrotor_0", "bl_ref_wind": [0.00, 0, 0],  "bl_ref_height": 10.0, "bl_exponent": 0.3}},
+    {"test_id": "dryden_bl_x_01", "description": "X-L1: bl_ref_wind.x=0.20 m/s; Dryden fixed",   "wind_config": {"model": "dryden", "mean": [0,0,0], "dryden_sigma": [2.0, 1.5, 1.0], "dryden_length": [200, 200, 50], "seed": 12345, "spatial_model": "boundary_layer", "tracked_model": "tiltrotor_0", "bl_ref_wind": [-0.20, 0, 0],  "bl_ref_height": 10.0, "bl_exponent": 0.3}},
+    {"test_id": "dryden_bl_x_02", "description": "X-L2: bl_ref_wind.x=0.60 m/s; Dryden fixed",   "wind_config": {"model": "dryden", "mean": [0,0,0], "dryden_sigma": [2.0, 1.5, 1.0], "dryden_length": [200, 200, 50], "seed": 12345, "spatial_model": "boundary_layer", "tracked_model": "tiltrotor_0", "bl_ref_wind": [-0.60, 0, 0],  "bl_ref_height": 10.0, "bl_exponent": 0.3}},
+    {"test_id": "dryden_bl_x_03", "description": "X-L3: bl_ref_wind.x=1.50 m/s; Dryden fixed",   "wind_config": {"model": "dryden", "mean": [0,0,0], "dryden_sigma": [2.0, 1.5, 1.0], "dryden_length": [200, 200, 50], "seed": 12345, "spatial_model": "boundary_layer", "tracked_model": "tiltrotor_0", "bl_ref_wind": [-1.50, 0, 0],  "bl_ref_height": 10.0, "bl_exponent": 0.3}},
+    {"test_id": "dryden_bl_x_04", "description": "X-L4: bl_ref_wind.x=2.60 m/s; Dryden fixed",   "wind_config": {"model": "dryden", "mean": [0,0,0], "dryden_sigma": [2.0, 1.5, 1.0], "dryden_length": [200, 200, 50], "seed": 12345, "spatial_model": "boundary_layer", "tracked_model": "tiltrotor_0", "bl_ref_wind": [-2.60, 0, 0],  "bl_ref_height": 10.0, "bl_exponent": 0.3}},
+    {"test_id": "dryden_bl_x_05", "description": "X-L5: bl_ref_wind.x=3.30 m/s; Dryden fixed",   "wind_config": {"model": "dryden", "mean": [0,0,0], "dryden_sigma": [2.0, 1.5, 1.0], "dryden_length": [200, 200, 50], "seed": 12345, "spatial_model": "boundary_layer", "tracked_model": "tiltrotor_0", "bl_ref_wind": [-3.30, 0, 0],  "bl_ref_height": 10.0, "bl_exponent": 0.3}},
+    {"test_id": "dryden_bl_x_06", "description": "X-L6: bl_ref_wind.x=4.40 m/s; Dryden fixed",   "wind_config": {"model": "dryden", "mean": [0,0,0], "dryden_sigma": [2.0, 1.5, 1.0], "dryden_length": [200, 200, 50], "seed": 12345, "spatial_model": "boundary_layer", "tracked_model": "tiltrotor_0", "bl_ref_wind": [-4.40, 0, 0],  "bl_ref_height": 10.0, "bl_exponent": 0.3}},
+    {"test_id": "dryden_bl_x_07", "description": "X-L7: bl_ref_wind.x=5.40 m/s; Dryden fixed",   "wind_config": {"model": "dryden", "mean": [0,0,0], "dryden_sigma": [2.0, 1.5, 1.0], "dryden_length": [200, 200, 50], "seed": 12345, "spatial_model": "boundary_layer", "tracked_model": "tiltrotor_0", "bl_ref_wind": [-5.40, 0, 0],  "bl_ref_height": 10.0, "bl_exponent": 0.3}},
+    {"test_id": "dryden_bl_x_08", "description": "X-L8: bl_ref_wind.x=7.90 m/s; Dryden fixed",   "wind_config": {"model": "dryden", "mean": [0,0,0], "dryden_sigma": [2.0, 1.5, 1.0], "dryden_length": [200, 200, 50], "seed": 12345, "spatial_model": "boundary_layer", "tracked_model": "tiltrotor_0", "bl_ref_wind": [-7.90, 0, 0],  "bl_ref_height": 10.0, "bl_exponent": 0.3}},
+    {"test_id": "dryden_bl_x_09", "description": "X-L9: bl_ref_wind.x=10.70 m/s; Dryden fixed",  "wind_config": {"model": "dryden", "mean": [0,0,0], "dryden_sigma": [2.0, 1.5, 1.0], "dryden_length": [200, 200, 50], "seed": 12345, "spatial_model": "boundary_layer", "tracked_model": "tiltrotor_0", "bl_ref_wind": [-10.70, 0, 0], "bl_ref_height": 10.0, "bl_exponent": 0.3}},
+    {"test_id": "dryden_bl_x_10", "description": "X-L10: bl_ref_wind.x=13.80 m/s; Dryden fixed", "wind_config": {"model": "dryden", "mean": [0,0,0], "dryden_sigma": [2.0, 1.5, 1.0], "dryden_length": [200, 200, 50], "seed": 12345, "spatial_model": "boundary_layer", "tracked_model": "tiltrotor_0", "bl_ref_wind": [-13.80, 0, 0], "bl_ref_height": 10.0, "bl_exponent": 0.3}},
+    {"test_id": "dryden_bl_x_11", "description": "X-L11: bl_ref_wind.x=17.10 m/s; Dryden fixed", "wind_config": {"model": "dryden", "mean": [0,0,0], "dryden_sigma": [2.0, 1.5, 1.0], "dryden_length": [200, 200, 50], "seed": 12345, "spatial_model": "boundary_layer", "tracked_model": "tiltrotor_0", "bl_ref_wind": [-17.10, 0, 0], "bl_ref_height": 10.0, "bl_exponent": 0.3}},
+    {"test_id": "dryden_bl_x_12", "description": "X-L12: bl_ref_wind.x=20.70 m/s; Dryden fixed", "wind_config": {"model": "dryden", "mean": [0,0,0], "dryden_sigma": [2.0, 1.5, 1.0], "dryden_length": [200, 200, 50], "seed": 12345, "spatial_model": "boundary_layer", "tracked_model": "tiltrotor_0", "bl_ref_wind": [-20.70, 0, 0], "bl_ref_height": 10.0, "bl_exponent": 0.3}}
+  ],
+  "output_config": {
+    "log_directory": "Tools/px4_gust_eval/logs/dryden_boundary_layer",
+    "save_flight_data": true
+  }
+}
+
