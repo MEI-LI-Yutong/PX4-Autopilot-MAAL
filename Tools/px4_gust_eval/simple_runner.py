@@ -29,6 +29,8 @@ from typing import Any, Dict, List, Optional, Sequence
 
 import psutil  # type: ignore
 from mavsdk import System  # type: ignore
+from mavsdk.mission import MissionError  # type: ignore
+from mavsdk.mission_raw import MissionRawError  # type: ignore
 import shlex
 import math
 import xml.etree.ElementTree as ET
@@ -542,6 +544,30 @@ class SimpleGustRunner:
 
         return False
 
+    async def _ensure_prearm_ready(self, mission_cfg: Dict[str, Any]) -> bool:
+        """Block until the vehicle is armable or apply relaxed prearm params if requested."""
+        require_gps = bool(mission_cfg.get("require_gps", True))
+        ready_timeout = int(mission_cfg.get("ready_timeout_sec", 60))
+        force_arm = bool(mission_cfg.get("force_arm_if_unready", True))
+        ready = await self._wait_until_armable(timeout_sec=ready_timeout, require_gps=require_gps)
+        if not ready:
+            self.logger.warning("Vehicle not armable within timeout")
+            if force_arm:
+                self.logger.info("Applying minimal prearm parameters for SITL (COM_ARM_WO_GPS=1)…")
+                await self._set_params({"COM_ARM_WO_GPS": 1})
+        return ready
+
+    def _resolve_path(self, raw_path: str) -> Path:
+        """Resolve mission/asset paths relative to the config file."""
+        candidate = Path(os.path.expandvars(os.path.expanduser(raw_path)))
+        if not candidate.is_absolute():
+            candidate = (self.config_path.parent / candidate).resolve()
+        return candidate
+
+    def _get_plan_key(self, mission_cfg: Dict[str, Any]) -> Optional[str]:
+        plan_key = mission_cfg.get("plan_file") or mission_cfg.get("mission_plan") or mission_cfg.get("qgc_plan")
+        return str(plan_key) if plan_key else None
+
     async def _set_params(self, params: Dict[str, Any]) -> None:
         assert self.drone is not None
         for name, value in params.items():
@@ -773,6 +799,148 @@ class SimpleGustRunner:
         await asyncio.sleep(min(30, max(5, flight_sec // 3)))
         return True
 
+    async def run_qgc_mission(self, mission_cfg: Dict[str, Any]) -> bool:
+        """Upload a QGC mission plan and let PX4 execute it."""
+        assert self.drone is not None
+
+        plan_key = mission_cfg.get("plan_file") or mission_cfg.get("mission_plan") or mission_cfg.get("qgc_plan")
+        if not plan_key:
+            self.logger.error("Mission config missing 'plan_file'/'mission_plan' key for QGC mission.")
+            return False
+
+        plan_path = self._resolve_path(str(plan_key))
+        if not plan_path.is_file():
+            self.logger.error(f"Mission plan not found: {plan_path}")
+            return False
+
+        timeout_sec = int(mission_cfg.get("timeout_sec", 600))
+        post_wait = int(mission_cfg.get("post_mission_wait_sec", 20))
+        rtl_after = bool(mission_cfg.get("rtl_after_mission", True))
+        force_arm = bool(mission_cfg.get("force_arm_if_unready", True))
+
+        self.logger.info(f"Importing QGC mission from {plan_path}")
+        try:
+            import_data = await self.drone.mission_raw.import_qgroundcontrol_mission(str(plan_path))
+        except MissionRawError as e:
+            self.logger.error(f"Failed to import mission from {plan_path}: {e}")
+            return False
+        except Exception as e:
+            self.logger.error(f"Unexpected mission import error for {plan_path}: {e}")
+            return False
+
+        mission_items = list(getattr(import_data, "mission_items", []))
+        if not mission_items:
+            self.logger.error(f"No mission items found in {plan_path}")
+            return False
+
+        try:
+            await self.drone.mission_raw.clear_mission()
+        except Exception:
+            pass
+
+        try:
+            await self.drone.mission_raw.upload_mission(mission_items)
+        except MissionRawError as e:
+            self.logger.error(f"Mission upload failed: {e}")
+            return False
+        except Exception as e:
+            self.logger.error(f"Unexpected mission upload error: {e}")
+            return False
+
+        try:
+            await self.drone.mission.set_return_to_launch_after_mission(rtl_after)
+        except MissionError as e:
+            self.logger.warning(f"Failed to set RTL after mission ({rtl_after}): {e}")
+        except Exception as e:
+            self.logger.warning(f"Unexpected RTL-after-mission error: {e}")
+
+        await self._ensure_prearm_ready(mission_cfg)
+
+        try:
+            await self.drone.action.arm()
+        except Exception as e:
+            if force_arm:
+                self.logger.warning(f"Arm failed: {e}; retrying with relaxed params for SITL…")
+                await self._set_params({
+                    "COM_ARM_WO_GPS": 1,
+                    "NAV_RCL_ACT": 0,
+                    "NAV_DLL_ACT": 0,
+                })
+                await asyncio.sleep(1.0)
+                try:
+                    await self.drone.action.arm()
+                except Exception as e2:
+                    self.logger.error(f"Arm failed after retry: {e2}")
+                    return False
+            else:
+                self.logger.error(f"Arm failed: {e}")
+                return False
+
+        try:
+            await self.drone.mission.start_mission()
+        except MissionError as e:
+            self.logger.error(f"Mission start failed: {e}")
+            return False
+        except Exception as e:
+            self.logger.error(f"Unexpected mission start failure: {e}")
+            return False
+
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + max(30, timeout_sec)
+        mission_completed = False
+        progress_stream = None
+        try:
+            progress_stream = self.drone.mission.mission_progress()
+        except Exception:
+            progress_stream = None
+
+        self.logger.info("Mission started; monitoring progress…")
+        while loop.time() < deadline:
+            if progress_stream is not None:
+                try:
+                    progress = await asyncio.wait_for(progress_stream.__anext__(), timeout=1.0)
+                    self.logger.info(f"Mission progress {progress.current}/{progress.total}")
+                except asyncio.TimeoutError:
+                    pass
+                except StopAsyncIteration:
+                    progress_stream = None
+                except Exception as e:
+                    self.logger.debug(f"Mission progress stream error: {e}")
+                    progress_stream = None
+            try:
+                finished = await self.drone.mission.is_mission_finished()
+            except MissionError:
+                finished = False
+            except Exception:
+                finished = False
+            if finished:
+                mission_completed = True
+                break
+            await asyncio.sleep(0.5)
+
+        if progress_stream is not None:
+            try:
+                await progress_stream.aclose()
+            except Exception:
+                pass
+
+        if not mission_completed:
+            self.logger.error(f"Mission timeout after {timeout_sec} seconds")
+            return False
+
+        if post_wait > 0:
+            land_deadline = loop.time() + post_wait
+            while loop.time() < land_deadline:
+                try:
+                    ia = await self.drone.telemetry.in_air().__anext__()
+                except Exception:
+                    ia = True
+                if not ia:
+                    break
+                await asyncio.sleep(0.5)
+
+        return True
+
     def stop_px4(self) -> None:
         # Try to terminate whole process group (px4 + gazebo)
         if self.proc:
@@ -884,7 +1052,8 @@ class SimpleGustRunner:
                 "wind_config": self.config.get("wind_config", {}),
             }]
 
-        mission_cfg = self.config.get("mission_config", self.config.get("mission", {}))
+        mission_cfg_raw = self.config.get("mission_config", self.config.get("mission", {}))
+        mission_cfg = mission_cfg_raw if isinstance(mission_cfg_raw, dict) else {}
         mavlink_url = self.config.get("mavlink_url", "udp://:14540")
 
         results: List[Dict[str, Any]] = []
@@ -927,7 +1096,10 @@ class SimpleGustRunner:
                     else:
                         await self._maybe_capture_params_snapshot()
 
-                    ok = await self.run_simple_mission(mission_cfg)
+                    if self._get_plan_key(mission_cfg):
+                        ok = await self.run_qgc_mission(mission_cfg)
+                    else:
+                        ok = await self.run_simple_mission(mission_cfg)
                     results.append({"test_id": test_id, "success": bool(ok)})
             finally:
                 await self._stop_recording()
