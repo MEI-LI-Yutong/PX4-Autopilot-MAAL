@@ -94,6 +94,51 @@ uv run main.py tasks/severe_weather_tests.json --verbose
 }
 ```
 
+如果需要在 QGroundControl 中为固定翼（或任意类型）规划完整任务，只需在 `mission_config` 中提供 `.plan` 文件路径：
+
+```json
+"mission_config": {
+  "plan_file": "missions/fixedwing_box.plan",
+  "timeout_sec": 420,
+  "rtl_after_mission": true,
+  "post_mission_wait_sec": 30,
+  "mission_start_attempts": 2,
+  "min_mission_runtime_sec": 8.0
+}
+```
+
+`plan_file` 支持相对（相对于任务配置 JSON）或绝对路径。simple_runner 会自动导入任务、上传到 PX4 并执行 `start mission`，`timeout_sec` 控制任务必须完成的时间窗口，`post_mission_wait_sec` 用于任务结束后等待飞机降落/解锁的时间。若保留旧字段（如 `takeoff_altitude`、`waypoints`），将继续执行默认的起飞→前飞→降落逻辑。
+
+固定翼 SITL 经常需要两次 `start mission` 才会真正进入任务，因此 `mission_start_attempts`（或向后兼容的 `mission_start_retries`）默认值为 2，可按需增减。`min_mission_runtime_sec` 用来判断“假启动”——如果第一次任务在该时间前完成且没有实际起飞/航点进度，simple_runner 会自动重启任务。通过这些选项，无需手动在 QGC 连续点击两次。
+
+### ULog 后处理/绘图
+
+simple_runner 在每个测试结束后会调用 `postprocess_ulog.py`：
+
+- 自动查找 `build/px4_sitl_default/rootfs/log/<日期>/<时间>` 下最新 `.ulg`，提取 `trajectory_setpoint`/`vehicle_local_position_setpoint`。
+- 将轨迹期望（经纬度/高度/局部坐标）写入 `run_*/<test_id>.csv`，新增 `traj_sp_*`、`track_err_*` 列，可供二次分析。
+- 输出两张图：`*_path.png`（实际 vs 任务航迹）、`*_tracking_error.png`（水平/垂直误差随时间），方便快速验证。
+
+脚本也可以独立运行，例如：
+
+```bash
+python Tools/px4_gust_eval/postprocess_ulog.py \
+  --run-dir Tools/px4_gust_eval/logs/basic_validation/run_20251229_112933 \
+  --test-id no_wind_baseline \
+  --log-root build/px4_sitl_default/rootfs/log
+```
+
+或直接指定单个文件：
+
+```bash
+python Tools/px4_gust_eval/postprocess_ulog.py \
+  --csv run_xxx/no_wind_baseline.csv \
+  --ulog build/px4_sitl_default/rootfs/log/2025-12-29/11_29_33.ulg
+```
+
+可通过 `--no-plots`、`--tolerance`、`--time-offset` 控制对齐策略。
+同时，`plot_gust_levels.py` 会优先使用这些 `track_err_*` 列计算 `h_max_dev_*`/`v_max_dev_*`，确保条形图展示真实的轨迹偏差，而非固定距离的近似。
+
 ### 风阵模型配置
 
 #### 正弦波模型

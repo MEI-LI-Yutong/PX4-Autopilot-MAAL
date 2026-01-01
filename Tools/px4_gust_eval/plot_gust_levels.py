@@ -51,6 +51,9 @@ ANG_MAX = 45.0   # deg - max roll/pitch
 # Recovery window for Wind-Recoverable
 RECOVER_T = 10.0  # seconds
 
+# Fixed analysis window (seconds)
+ANALYSIS_WINDOW = (30.0, 60.0)
+
 # Grade colors
 COLORS = {
     "Wind-Resilient": "#2ecc71",      # Green
@@ -309,6 +312,16 @@ def latlon_to_xy(df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
     return x, y
 
 
+def _apply_time_window(df: pd.DataFrame) -> pd.DataFrame:
+    """Restrict dataframe to the fixed analysis window if enough samples exist."""
+    if "t_s" not in df.columns:
+        return df
+    mask = (df["t_s"] >= ANALYSIS_WINDOW[0]) & (df["t_s"] <= ANALYSIS_WINDOW[1])
+    if mask.sum() >= 5:
+        return df[mask].reset_index(drop=True)
+    return df
+
+
 def _segment_mask_from_x(x: np.ndarray) -> np.ndarray:
     """Return boolean mask for mid-flight segment (5m <= x <= 95m)."""
     if x.size == 0 or not np.isfinite(x).any():
@@ -327,31 +340,57 @@ def compute_metrics_for_test(df: pd.DataFrame) -> Optional[Dict[str, float]]:
     """Compute stability metrics on mid-flight segment."""
     if df.empty or not {"lat_deg", "lon_deg"}.issubset(df.columns):
         return None
+    df = _apply_time_window(df)
+    if df.empty:
+        return None
 
     x, y = latlon_to_xy(df)
-    t = df.get("t_s", pd.Series(dtype=float)).to_numpy(dtype=float) if "t_s" in df.columns else np.arange(len(x), dtype=float)
     mask = _segment_mask_from_x(x)
+    if mask.sum() < 5 and "track_err_h_m" in df.columns:
+        track_mask = df["track_err_h_m"].notna().to_numpy(dtype=bool)
+        if track_mask.sum() >= 5:
+            mask = track_mask
     if mask.sum() < 5:
         return None
 
-    # Horizontal deviation (Y deviation from reference)
-    y_seg = y[mask]
-    y_ref = np.nanmedian(y_seg)
-    h_dev = y_seg - y_ref
-    h_max = float(np.nanmax(np.abs(h_dev))) if y_seg.size else float("nan")
-    h_std = float(np.nanstd(h_dev)) if y_seg.size else float("nan")
+    # Prefer directly logged tracking errors if present
+    h_series = df.get("track_err_h_m")
+    v_series = df.get("track_err_v_m")
 
-    # Vertical deviation (relative altitude) vs 10m reference
-    if "rel_alt_m" in df.columns:
-        z = df["rel_alt_m"].to_numpy(dtype=float)
-        z_seg = z[mask]
-        z_ref = 10.0
-        v_dev = z_seg - z_ref
-        v_max = float(np.nanmax(np.abs(v_dev))) if z_seg.size else float("nan")
-        v_std = float(np.nanstd(v_dev)) if z_seg.size else float("nan")
-    else:
-        v_max = float("nan")
-        v_std = float("nan")
+    h_max = float("nan")
+    h_std = float("nan")
+    if h_series is not None and h_series.notna().sum() >= 5:
+        errs = h_series.to_numpy(dtype=float)
+        finite = np.isfinite(errs)
+        if finite.sum() >= 5:
+            h_max = float(np.nanmax(np.abs(errs[finite])))
+            h_std = float(np.nanstd(errs[finite]))
+
+    v_max = float("nan")
+    v_std = float("nan")
+    if v_series is not None and v_series.notna().sum() >= 5:
+        errs_v = v_series.to_numpy(dtype=float)
+        finite_v = np.isfinite(errs_v)
+        if finite_v.sum() >= 5:
+            v_max = float(np.nanmax(np.abs(errs_v[finite_v])))
+            v_std = float(np.nanstd(errs_v[finite_v]))
+
+    # Fallback to legacy lat/lon baseline when tracking error columns are missing
+    if math.isnan(h_max) or math.isnan(h_std):
+        y_seg = y[mask]
+        y_ref = np.nanmedian(y_seg)
+        h_dev = y_seg - y_ref
+        h_max = float(np.nanmax(np.abs(h_dev))) if y_seg.size else float("nan")
+        h_std = float(np.nanstd(h_dev)) if y_seg.size else float("nan")
+
+    if math.isnan(v_max) or math.isnan(v_std):
+        if "rel_alt_m" in df.columns:
+            z = df["rel_alt_m"].to_numpy(dtype=float)
+            z_seg = z[mask]
+            z_ref = 10.0
+            v_dev = z_seg - z_ref
+            v_max = float(np.nanmax(np.abs(v_dev))) if z_seg.size else float("nan")
+            v_std = float(np.nanstd(v_dev)) if z_seg.size else float("nan")
 
     # Attitude (within segment)
     def _max_abs(col: str) -> float:
@@ -387,6 +426,9 @@ def compute_grade_dimensional(df: pd.DataFrame, dim: str) -> str:
     """
     if df.empty or not {"lat_deg", "lon_deg"}.issubset(df.columns):
         return "Not launched"
+    df = _apply_time_window(df)
+    if df.empty:
+        return "Not launched"
 
     if dim == 'v' and "rel_alt_m" not in df.columns:
         return "Not launched"
@@ -410,34 +452,43 @@ def compute_grade_dimensional(df: pd.DataFrame, dim: str) -> str:
         return "Wind-Resilient"
 
     # Check recovery for Wind-Recoverable (dimension-specific)
-    if "t_s" in df.columns and {"lat_deg", "lon_deg"}.issubset(df.columns):
+    track_col = "track_err_h_m" if dim == 'h' else "track_err_v_m"
+    has_track = track_col in df.columns and df[track_col].notna().sum() >= 5
+
+    if "t_s" in df.columns and ({"lat_deg", "lon_deg"}.issubset(df.columns) or has_track):
         x, y = latlon_to_xy(df)
         t = df["t_s"].to_numpy(dtype=float)
-        mask = _segment_mask_from_x(x)
+        mask = _segment_mask_from_x(x) if x.size else np.zeros(len(df), dtype=bool)
 
         if mask.any():
             # Build exceedance flag for the selected dimension
-            exceed_dim = np.zeros_like(mask, dtype=bool)
-            try:
-                if dim == 'h':
-                    x_seg = x[mask]
-                    y_seg = y[mask]
-                    finite_xy = np.isfinite(x_seg) & np.isfinite(y_seg)
-                    if finite_xy.sum() >= 2:
-                        k, b = np.polyfit(x_seg[finite_xy], y_seg[finite_xy], 1)
-                        y_pred = k * x + b
-                    else:
-                        y_med = float(np.nanmedian(y_seg)) if y_seg.size else 0.0
-                        y_pred = np.full_like(y, y_med)
-                    y_dev_full = y - y_pred
-                    exceed_dim = np.abs(y_dev_full) > H_MAX
-                else:  # 'v'
-                    z = df["rel_alt_m"].to_numpy(dtype=float)
-                    z_ref = 10.0
-                    v_dev_full = z - z_ref
-                    exceed_dim = np.abs(v_dev_full) > V_MAX
-            except Exception:
-                pass
+            exceed_dim = np.zeros(len(df), dtype=bool)
+            if has_track:
+                err = df[track_col].to_numpy(dtype=float)
+                finite = np.isfinite(err)
+                threshold = H_MAX if dim == 'h' else V_MAX
+                exceed_dim[mask & finite] = np.abs(err[mask & finite]) > threshold
+            else:
+                try:
+                    if dim == 'h':
+                        x_seg = x[mask]
+                        y_seg = y[mask]
+                        finite_xy = np.isfinite(x_seg) & np.isfinite(y_seg)
+                        if finite_xy.sum() >= 2:
+                            k, b = np.polyfit(x_seg[finite_xy], y_seg[finite_xy], 1)
+                            y_pred = k * x + b
+                        else:
+                            y_med = float(np.nanmedian(y_seg)) if y_seg.size else 0.0
+                            y_pred = np.full_like(y, y_med)
+                        y_dev_full = y - y_pred
+                        exceed_dim = np.abs(y_dev_full) > H_MAX
+                    else:  # 'v'
+                        z = df["rel_alt_m"].to_numpy(dtype=float)
+                        z_ref = 10.0
+                        v_dev_full = z - z_ref
+                        exceed_dim = np.abs(v_dev_full) > V_MAX
+                except Exception:
+                    pass
 
             exceed_any = exceed_dim & mask
 

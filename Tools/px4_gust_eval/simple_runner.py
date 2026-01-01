@@ -512,6 +512,33 @@ class SimpleGustRunner:
         except Exception as e:
             self.logger.warning(f"Post-plot step failed: {e}")
 
+    async def _postprocess_with_ulog(self, test_id: str) -> None:
+        """Augment CSV with ULog-derived setpoints and plot tracking errors."""
+        csv_path = self.run_dir / f"{test_id}.csv"
+        if not csv_path.is_file():
+            return
+        log_root_cfg = self.config.get("ulog_root")
+        log_root = Path(log_root_cfg).expanduser().resolve() if log_root_cfg else (self.build_dir / "rootfs/log")
+        try:
+            import postprocess_ulog  # type: ignore
+        except Exception as e:
+            self.logger.warning(f"Failed to import postprocess_ulog: {e}")
+            return
+        try:
+            await asyncio.to_thread(
+                postprocess_ulog.process_single_test,
+                self.run_dir,
+                test_id,
+                log_root,
+                None,
+                True,
+                self.logger,
+            )
+        except FileNotFoundError as e:
+            self.logger.warning(f"ULog postprocess skipped ({e})")
+        except Exception as e:
+            self.logger.warning(f"ULog postprocess failed for {test_id}: {e}")
+
     # ---- lifecycle ----
     async def _wait_until_armable(self, timeout_sec: int, require_gps: bool = True) -> bool:
         """Wait until vehicle reports armable. Logs health periodically."""
@@ -876,56 +903,121 @@ class SimpleGustRunner:
                 self.logger.error(f"Arm failed: {e}")
                 return False
 
-        try:
-            await self.drone.mission.start_mission()
-        except MissionError as e:
-            self.logger.error(f"Mission start failed: {e}")
-            return False
-        except Exception as e:
-            self.logger.error(f"Unexpected mission start failure: {e}")
-            return False
-
         loop = asyncio.get_event_loop()
-        deadline = loop.time() + max(30, timeout_sec)
-        mission_completed = False
-        progress_stream = None
-        try:
-            progress_stream = self.drone.mission.mission_progress()
-        except Exception:
-            progress_stream = None
+        max_attempts = int(mission_cfg.get("mission_start_attempts", mission_cfg.get("mission_start_retries", 2)))
+        max_attempts = max(1, max_attempts)
+        min_runtime = float(mission_cfg.get("min_mission_runtime_sec", 8.0))
 
-        self.logger.info("Mission started; monitoring progress…")
-        while loop.time() < deadline:
+        attempt = 0
+        success = False
+
+        while attempt < max_attempts and not success:
+            attempt += 1
+            if attempt > 1:
+                self.logger.info(f"Retrying mission start attempt {attempt}/{max_attempts}")
+                try:
+                    await self.drone.mission.set_current_mission_item(0)
+                except MissionError as e:
+                    self.logger.warning(f"Failed to reset mission item before retry: {e}")
+                except Exception as e:
+                    self.logger.warning(f"Unexpected error resetting mission item: {e}")
+                await asyncio.sleep(1.0)
+
+            try:
+                await self.drone.mission.start_mission()
+            except MissionError as e:
+                self.logger.error(f"Mission start failed: {e}")
+                if attempt >= max_attempts:
+                    return False
+                await asyncio.sleep(2.0)
+                continue
+            except Exception as e:
+                self.logger.error(f"Unexpected mission start failure: {e}")
+                if attempt >= max_attempts:
+                    return False
+                await asyncio.sleep(2.0)
+                continue
+
+            attempt_start = loop.time()
+            attempt_deadline = attempt_start + max(30, timeout_sec)
+            progress_stream = None
+            in_air_stream = None
+            try:
+                progress_stream = self.drone.mission.mission_progress()
+            except Exception:
+                progress_stream = None
+            try:
+                in_air_stream = self.drone.telemetry.in_air()
+            except Exception:
+                in_air_stream = None
+
+            progress_started = False
+            ever_in_air = False
+            finished_flag = False
+
+            self.logger.info(f"Mission started; monitoring progress (attempt {attempt}/{max_attempts})…")
+            while loop.time() < attempt_deadline:
+                if progress_stream is not None:
+                    try:
+                        progress = await asyncio.wait_for(progress_stream.__anext__(), timeout=0.5)
+                        self.logger.info(f"Mission progress {progress.current}/{progress.total}")
+                        if getattr(progress, "current", 0) > 0:
+                            progress_started = True
+                    except asyncio.TimeoutError:
+                        pass
+                    except StopAsyncIteration:
+                        progress_stream = None
+                    except Exception as e:
+                        self.logger.debug(f"Mission progress stream error: {e}")
+                        progress_stream = None
+
+                if in_air_stream is not None:
+                    try:
+                        ia = await asyncio.wait_for(in_air_stream.__anext__(), timeout=0.1)
+                        if ia:
+                            ever_in_air = True
+                    except asyncio.TimeoutError:
+                        pass
+                    except StopAsyncIteration:
+                        in_air_stream = None
+                    except Exception:
+                        in_air_stream = None
+
+                try:
+                    finished = await self.drone.mission.is_mission_finished()
+                except MissionError:
+                    finished = False
+                except Exception:
+                    finished = False
+                if finished:
+                    finished_flag = True
+                    break
+
+                await asyncio.sleep(0.3)
+
             if progress_stream is not None:
                 try:
-                    progress = await asyncio.wait_for(progress_stream.__anext__(), timeout=1.0)
-                    self.logger.info(f"Mission progress {progress.current}/{progress.total}")
-                except asyncio.TimeoutError:
+                    await progress_stream.aclose()
+                except Exception:
                     pass
-                except StopAsyncIteration:
-                    progress_stream = None
-                except Exception as e:
-                    self.logger.debug(f"Mission progress stream error: {e}")
-                    progress_stream = None
-            try:
-                finished = await self.drone.mission.is_mission_finished()
-            except MissionError:
-                finished = False
-            except Exception:
-                finished = False
-            if finished:
-                mission_completed = True
-                break
-            await asyncio.sleep(0.5)
+            if in_air_stream is not None:
+                try:
+                    await in_air_stream.aclose()
+                except Exception:
+                    pass
 
-        if progress_stream is not None:
-            try:
-                await progress_stream.aclose()
-            except Exception:
-                pass
+            runtime = loop.time() - attempt_start
+            if not finished_flag:
+                self.logger.error(f"Mission timeout after {timeout_sec} seconds (attempt {attempt}/{max_attempts})")
+                return False
 
-        if not mission_completed:
-            self.logger.error(f"Mission timeout after {timeout_sec} seconds")
+            if progress_started or ever_in_air or runtime >= min_runtime or attempt >= max_attempts:
+                success = True
+            else:
+                self.logger.warning("Mission finished without movement; retrying start to overcome PX4 initialization quirk…")
+                await asyncio.sleep(2.0)
+
+        if not success:
             return False
 
         if post_wait > 0:
@@ -1103,6 +1195,7 @@ class SimpleGustRunner:
                     results.append({"test_id": test_id, "success": bool(ok)})
             finally:
                 await self._stop_recording()
+                await self._postprocess_with_ulog(test_id)
                 await self._maybe_log_table_for_csv(test_id)
                 await self._maybe_upload_single_csv(test_id)
                 self.stop_px4()
