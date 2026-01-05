@@ -224,7 +224,7 @@
          dir.Normalize();
      }
      const double T = _simp_T;
-     const double t0 = 40.0; // gust start time (s)
+     const double t0 = 26.0; // gust start time (s)
      double wg = 0.0;
      if (T > 1e-6 && t >= t0 && t <= t0 + T) {
          const double tau = t - t0;
