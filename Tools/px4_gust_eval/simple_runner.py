@@ -531,7 +531,7 @@ class SimpleGustRunner:
                 test_id,
                 log_root,
                 None,
-                True,
+                False,
                 self.logger,
             )
         except FileNotFoundError as e:

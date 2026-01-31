@@ -9,7 +9,6 @@ import math
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from pyulog import ULog  # type: ignore
@@ -83,6 +82,34 @@ def _extract_setpoints(ulog: ULog) -> pd.DataFrame:
         if all(axis in df.columns for axis in ("x", "y", "z")):
             return df[["timestamp", "t_rel_s", "x", "y", "z"]]
     return pd.DataFrame()
+
+
+def _extract_actuator_outputs(ulog: ULog) -> pd.DataFrame:
+    """Extract actuator outputs (u1..u16) from ULog if available."""
+    # Prefer instance 0 if present, otherwise fall back to first actuator_outputs dataset.
+    candidates = [d for d in ulog.data_list if d.name.startswith("actuator_outputs")]
+    if not candidates:
+        return pd.DataFrame()
+    chosen = None
+    for d in candidates:
+        if d.name in ("actuator_outputs", "actuator_outputs_0"):
+            chosen = d
+            break
+    if chosen is None:
+        chosen = candidates[0]
+    df = _dataset_to_df(chosen)
+    if df.empty:
+        return pd.DataFrame()
+    out = pd.DataFrame()
+    out["timestamp"] = df["timestamp"]
+    out["t_rel_s"] = df["t_rel_s"]
+    found = False
+    for idx in range(16):
+        col = f"output_{idx}"
+        if col in df.columns:
+            out[f"u{idx + 1}"] = df[col]
+            found = True
+    return out if found else pd.DataFrame()
 
 
 def _local_to_global(df: pd.DataFrame, home_lat: float, home_lon: float, home_alt: float) -> pd.DataFrame:
@@ -164,6 +191,10 @@ def _apply_tracking_errors(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _save_plots(df: pd.DataFrame, test_id: str, out_dir: Path) -> List[Path]:
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
     out_dir.mkdir(parents=True, exist_ok=True)
     generated: List[Path] = []
     mask_cols = {"lat_deg", "lon_deg", "traj_sp_lat_deg", "traj_sp_lon_deg"}
@@ -226,6 +257,7 @@ def augment_csv_with_ulog(
     ulog = ULog(str(ulog_path))
     global_df = _extract_global_positions(ulog)
     setpoints = _extract_setpoints(ulog)
+    outputs = _extract_actuator_outputs(ulog)
     if setpoints.empty:
         raise RuntimeError("ULog does not contain trajectory/local position setpoints")
     home_lat, home_lon, home_alt = _extract_home_reference(ulog)
@@ -236,6 +268,9 @@ def augment_csv_with_ulog(
     setpoints["t_aligned_s"] = setpoints["t_rel_s"] + float(time_offset)
 
     merged = _merge_setpoints(csv_df, setpoints, tolerance)
+    if not outputs.empty:
+        outputs["t_aligned_s"] = outputs["t_rel_s"] + float(time_offset)
+        merged = _merge_setpoints(merged, outputs, tolerance)
     merged = _apply_tracking_errors(merged)
     merged.to_csv(csv_path, index=False)
     return merged, setpoints
