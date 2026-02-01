@@ -46,8 +46,10 @@ from utils.gust_plotting import (
     load_csv,
     log_plots_to_wandb,
     plot_metric_bar_chart,
+    plot_radar_chart,
     upload_data_artifact,
 )
+from utils.gust_dimensions import compute_dimension_scores
 
 try:
     import scienceplots  # noqa: F401
@@ -282,6 +284,7 @@ def plot_levels(
         h_max_devs = []
         grades_v = []
         grades_h = []
+        dim_scores_list = []
 
         for test in group_tests:
             test_id = test.get("test_id", "")
@@ -311,12 +314,14 @@ def plot_levels(
 
             grade_h = compute_grade_dimensional(df, 'h')
             grade_v = compute_grade_dimensional(df, 'v')
+            dim_scores = compute_dimension_scores(df)
 
             levels.append(level)
             v_max_devs.append(metrics.get("v_max_dev", float("nan")))
             h_max_devs.append(metrics.get("h_max_dev", float("nan")))
             grades_v.append(grade_v)
             grades_h.append(grade_h)
+            dim_scores_list.append(dim_scores)
             summary_rows.append({
                 "task_type": task_type,
                 "test_id": test_id,
@@ -325,6 +330,7 @@ def plot_levels(
                 "h_max_dev": _clean_value(metrics.get("h_max_dev", float("nan"))),
                 "grade_v": grade_v,
                 "grade_h": grade_h,
+                "dimension_scores": dim_scores,
             })
 
         if not levels:
@@ -350,6 +356,20 @@ def plot_levels(
             h_output, dpi
         )
         images_to_upload.append((f"plots/{h_output.name}", h_output))
+
+        # Radar summary (min + mean)
+        if dim_scores_list:
+            keys = ["track_h", "track_v", "attitude", "actuator", "recovery", "wind_sense"]
+            min_scores = {}
+            mean_scores = {}
+            for k in keys:
+                vals = [s.get(k, float("nan")) for s in dim_scores_list]
+                vals = [v for v in vals if v == v]
+                min_scores[k] = min(vals) if vals else float("nan")
+                mean_scores[k] = float(sum(vals) / len(vals)) if vals else float("nan")
+            radar_output = results_dir_resolved / f"radar_{axis}_summary.png"
+            plot_radar_chart([min_scores, mean_scores], ["min", "mean"], radar_output, dpi)
+            images_to_upload.append((f"plots/{radar_output.name}", radar_output))
 
     if summary_rows:
         summary_path = results_dir_resolved / "gust_levels_summary.json"

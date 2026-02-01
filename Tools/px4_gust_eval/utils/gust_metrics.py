@@ -63,7 +63,7 @@ def _segment_mask_from_x(x: np.ndarray) -> np.ndarray:
     return mask2
 
 
-def _compute_track_errors_from_raw(df: pd.DataFrame) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+def compute_track_errors_from_raw(df: pd.DataFrame) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
     """Compute tracking errors from raw columns (ignoring lon error)."""
     h_err = None
     v_err = None
@@ -84,6 +84,11 @@ def _compute_track_errors_from_raw(df: pd.DataFrame) -> Tuple[Optional[np.ndarra
             if alt.size and alt_sp.size:
                 v_err = alt - alt_sp
     return h_err, v_err
+
+
+def _compute_track_errors_from_raw(df: pd.DataFrame) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+    """Backward-compatible wrapper."""
+    return compute_track_errors_from_raw(df)
 
 
 def _select_analysis_window_by_wind(df: pd.DataFrame) -> Optional[Tuple[float, float]]:
@@ -138,10 +143,8 @@ def _select_analysis_window_by_wind(df: pd.DataFrame) -> Optional[Tuple[float, f
     return seg_start, seg_end + 10.0
 
 
-def compute_metrics_for_test(df: pd.DataFrame) -> Optional[Dict[str, float]]:
-    """Compute stability metrics on selected window."""
-    if df.empty or not {"lat_deg", "lon_deg"}.issubset(df.columns):
-        return None
+def select_analysis_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Select analysis window based on time window + wind rules."""
     df = _apply_time_window(df)
     wind_window = _select_analysis_window_by_wind(df)
     if wind_window is not None and "t_s" in df.columns:
@@ -149,6 +152,14 @@ def compute_metrics_for_test(df: pd.DataFrame) -> Optional[Dict[str, float]]:
         time_mask = (df["t_s"] >= t0) & (df["t_s"] <= t1)
         if time_mask.sum() >= 5:
             df = df[time_mask].reset_index(drop=True)
+    return df
+
+
+def compute_metrics_for_test(df: pd.DataFrame) -> Optional[Dict[str, float]]:
+    """Compute stability metrics on selected window."""
+    if df.empty or not {"lat_deg", "lon_deg"}.issubset(df.columns):
+        return None
+    df = select_analysis_df(df)
     if df.empty:
         return None
 
@@ -217,13 +228,7 @@ def compute_grade_dimensional(df: pd.DataFrame, dim: str) -> str:
     """Compute stability grade for a single test, per dimension."""
     if df.empty or not {"lat_deg", "lon_deg"}.issubset(df.columns):
         return "Not launched"
-    df = _apply_time_window(df)
-    wind_window = _select_analysis_window_by_wind(df)
-    if wind_window is not None and "t_s" in df.columns:
-        t0, t1 = wind_window
-        time_mask = (df["t_s"] >= t0) & (df["t_s"] <= t1)
-        if time_mask.sum() >= 5:
-            df = df[time_mask].reset_index(drop=True)
+    df = select_analysis_df(df)
     if df.empty:
         return "Not launched"
 
