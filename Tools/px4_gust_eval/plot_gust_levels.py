@@ -56,6 +56,9 @@ RECOVER_T = 10.0  # seconds
 # Fixed analysis window (seconds)
 ANALYSIS_WINDOW = (30.0, 60.0)
 
+# Earth radius for lat->meters conversion
+EARTH_RADIUS_M = 6378137.0
+
 # Grade colors
 COLORS = {
     "Wind-Resilient": "#2ecc71",      # Green
@@ -338,31 +341,106 @@ def _segment_mask_from_x(x: np.ndarray) -> np.ndarray:
     return mask2
 
 
+def _compute_track_errors_from_raw(df: pd.DataFrame) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+    """Compute tracking errors from raw columns (ignoring lon error)."""
+    h_err = None
+    v_err = None
+    if {"lat_deg", "traj_sp_lat_deg"}.issubset(df.columns):
+        lat = pd.to_numeric(df["lat_deg"], errors="coerce").to_numpy(dtype=float)
+        lat_sp = pd.to_numeric(df["traj_sp_lat_deg"], errors="coerce").to_numpy(dtype=float)
+        if lat.size and lat_sp.size:
+            h_err = (lat - lat_sp) * (EARTH_RADIUS_M * (np.pi / 180.0))
+    if "traj_sp_abs_alt_m" in df.columns:
+        if "abs_alt_m" in df.columns:
+            alt = pd.to_numeric(df["abs_alt_m"], errors="coerce").to_numpy(dtype=float)
+        elif "rel_alt_m" in df.columns:
+            alt = pd.to_numeric(df["rel_alt_m"], errors="coerce").to_numpy(dtype=float)
+        else:
+            alt = None
+        if alt is not None:
+            alt_sp = pd.to_numeric(df["traj_sp_abs_alt_m"], errors="coerce").to_numpy(dtype=float)
+            if alt.size and alt_sp.size:
+                v_err = alt - alt_sp
+    return h_err, v_err
+
+
+def _select_analysis_window_by_wind(df: pd.DataFrame) -> Optional[Tuple[float, float]]:
+    """Select analysis time window based on wind segment and rules."""
+    if "t_s" not in df.columns or "wind_m_s" not in df.columns:
+        return None
+    t = pd.to_numeric(df["t_s"], errors="coerce").to_numpy(dtype=float)
+    wind = pd.to_numeric(df["wind_m_s"], errors="coerce").to_numpy(dtype=float)
+    if t.size == 0 or wind.size == 0:
+        return None
+    finite = np.isfinite(t)
+    if not finite.any():
+        return None
+    t_min = float(np.nanmin(t))
+    t_max = float(np.nanmax(t))
+    total = t_max - t_min
+    if total <= 0.0:
+        return None
+
+    wind_mask = wind > 0.01
+    if wind_mask.sum() < 5:
+        return None
+
+    idx = np.where(wind_mask)[0]
+    # Split into contiguous segments by index gaps
+    splits = np.where(np.diff(idx) > 1)[0]
+    segments = []
+    start = 0
+    for s in splits:
+        segments.append(idx[start:s + 1])
+        start = s + 1
+    segments.append(idx[start:])
+    # Pick segment with longest duration
+    best = max(segments, key=lambda seg: t[seg[-1]] - t[seg[0]])
+    seg_start = float(t[best[0]])
+    seg_end = float(t[best[-1]])
+    seg_duration = seg_end - seg_start
+
+    if seg_duration / total > 0.5:
+        # Use mid-route time ±10s
+        x, _ = latlon_to_xy(df)
+        if x.size:
+            mid_mask = _segment_mask_from_x(x)
+            if mid_mask.sum() >= 5:
+                mid_t = float(np.nanmedian(t[mid_mask]))
+            else:
+                mid_t = float(np.nanmedian(t))
+        else:
+            mid_t = float(np.nanmedian(t))
+        return mid_t - 10.0, mid_t + 10.0
+
+    return seg_start, seg_end + 10.0
+
+
 def compute_metrics_for_test(df: pd.DataFrame) -> Optional[Dict[str, float]]:
     """Compute stability metrics on mid-flight segment."""
     if df.empty or not {"lat_deg", "lon_deg"}.issubset(df.columns):
         return None
     df = _apply_time_window(df)
+    wind_window = _select_analysis_window_by_wind(df)
+    if wind_window is not None and "t_s" in df.columns:
+        t0, t1 = wind_window
+        time_mask = (df["t_s"] >= t0) & (df["t_s"] <= t1)
+        if time_mask.sum() >= 5:
+            df = df[time_mask].reset_index(drop=True)
     if df.empty:
         return None
 
     x, y = latlon_to_xy(df)
-    mask = _segment_mask_from_x(x)
-    if mask.sum() < 5 and "track_err_h_m" in df.columns:
-        track_mask = df["track_err_h_m"].notna().to_numpy(dtype=bool)
-        if track_mask.sum() >= 5:
-            mask = track_mask
+    mask = np.ones_like(x, dtype=bool) if x.size else np.ones(len(df), dtype=bool)
     if mask.sum() < 5:
         return None
 
-    # Prefer directly logged tracking errors if present
-    h_series = df.get("track_err_h_m")
-    v_series = df.get("track_err_v_m")
+    h_err, v_err = _compute_track_errors_from_raw(df)
 
     h_max = float("nan")
     h_std = float("nan")
-    if h_series is not None and h_series.notna().sum() >= 5:
-        errs = h_series.to_numpy(dtype=float)
+    if h_err is not None:
+        errs = h_err
         finite = np.isfinite(errs)
         if finite.sum() >= 5:
             h_max = float(np.nanmax(np.abs(errs[finite])))
@@ -370,8 +448,8 @@ def compute_metrics_for_test(df: pd.DataFrame) -> Optional[Dict[str, float]]:
 
     v_max = float("nan")
     v_std = float("nan")
-    if v_series is not None and v_series.notna().sum() >= 5:
-        errs_v = v_series.to_numpy(dtype=float)
+    if v_err is not None:
+        errs_v = v_err
         finite_v = np.isfinite(errs_v)
         if finite_v.sum() >= 5:
             v_max = float(np.nanmax(np.abs(errs_v[finite_v])))
@@ -429,10 +507,16 @@ def compute_grade_dimensional(df: pd.DataFrame, dim: str) -> str:
     if df.empty or not {"lat_deg", "lon_deg"}.issubset(df.columns):
         return "Not launched"
     df = _apply_time_window(df)
+    wind_window = _select_analysis_window_by_wind(df)
+    if wind_window is not None and "t_s" in df.columns:
+        t0, t1 = wind_window
+        time_mask = (df["t_s"] >= t0) & (df["t_s"] <= t1)
+        if time_mask.sum() >= 5:
+            df = df[time_mask].reset_index(drop=True)
     if df.empty:
         return "Not launched"
 
-    if dim == 'v' and "rel_alt_m" not in df.columns:
+    if dim == 'v' and "traj_sp_abs_alt_m" not in df.columns:
         return "Not launched"
 
     m = compute_metrics_for_test(df)
@@ -454,8 +538,9 @@ def compute_grade_dimensional(df: pd.DataFrame, dim: str) -> str:
         return "Wind-Resilient"
 
     # Check recovery for Wind-Recoverable (dimension-specific)
-    track_col = "track_err_h_m" if dim == 'h' else "track_err_v_m"
-    has_track = track_col in df.columns and df[track_col].notna().sum() >= 5
+    h_err, v_err = _compute_track_errors_from_raw(df)
+    err = h_err if dim == 'h' else v_err
+    has_track = err is not None and np.isfinite(err).sum() >= 5
 
     if "t_s" in df.columns and ({"lat_deg", "lon_deg"}.issubset(df.columns) or has_track):
         x, y = latlon_to_xy(df)
@@ -466,7 +551,6 @@ def compute_grade_dimensional(df: pd.DataFrame, dim: str) -> str:
             # Build exceedance flag for the selected dimension
             exceed_dim = np.zeros(len(df), dtype=bool)
             if has_track:
-                err = df[track_col].to_numpy(dtype=float)
                 finite = np.isfinite(err)
                 threshold = H_MAX if dim == 'h' else V_MAX
                 exceed_dim[mask & finite] = np.abs(err[mask & finite]) > threshold
@@ -547,6 +631,16 @@ def detect_task_type(test_config: Dict) -> str:
         return "Horizontal (X)"
 
     return "Unknown"
+
+
+def _wind_axis_from_task_type(task_type: str) -> str:
+    if "(X)" in task_type:
+        return "x"
+    if "(Y)" in task_type:
+        return "y"
+    if "(Z)" in task_type:
+        return "z"
+    return "unknown"
 
 
 def group_tests_by_type(tests: List[Dict]) -> Dict[str, List[Dict]]:
@@ -716,11 +810,10 @@ def plot_levels(
             print(f"  No valid data for {task_type}, skipping...")
             continue
 
-        # Generate safe filename
-        safe_type = task_type.replace(" ", "_").replace("(", "").replace(")", "").lower()
+        axis = _wind_axis_from_task_type(task_type)
 
         # Plot V max dev
-        v_output = results_dir_resolved / f"v_max_dev_{safe_type}.png"
+        v_output = results_dir_resolved / f"vertical_max_{axis}.png"
         plot_metric_bar_chart(
             levels, v_max_devs, grades_v,
             V_MAX, "Vertical Max Deviation", task_type,
@@ -729,7 +822,7 @@ def plot_levels(
         images_to_upload.append((f"plots/{v_output.name}", v_output))
 
         # Plot H max dev
-        h_output = results_dir_resolved / f"h_max_dev_{safe_type}.png"
+        h_output = results_dir_resolved / f"horizontal_max_{axis}.png"
         plot_metric_bar_chart(
             levels, h_max_devs, grades_h,
             H_MAX, "Horizontal Max Deviation", task_type,
