@@ -64,20 +64,20 @@ def _segment_mask_from_x(x: np.ndarray) -> np.ndarray:
 
 
 def compute_track_errors_from_raw(df: pd.DataFrame) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
-    """Compute tracking errors from raw columns (prefers explicit tracking error columns)."""
+    """Compute tracking errors from raw columns (prefer lat-based horizontal error)."""
     h_err = None
     v_err = None
 
-    if "track_err_h_m" in df.columns:
-        h_err = pd.to_numeric(df["track_err_h_m"], errors="coerce").to_numpy(dtype=float)
-    if "track_err_v_m" in df.columns:
-        v_err = pd.to_numeric(df["track_err_v_m"], errors="coerce").to_numpy(dtype=float)
-
-    if h_err is None and {"lat_deg", "traj_sp_lat_deg"}.issubset(df.columns):
+    if {"lat_deg", "traj_sp_lat_deg"}.issubset(df.columns):
         lat = pd.to_numeric(df["lat_deg"], errors="coerce").to_numpy(dtype=float)
         lat_sp = pd.to_numeric(df["traj_sp_lat_deg"], errors="coerce").to_numpy(dtype=float)
         if lat.size and lat_sp.size:
             h_err = (lat - lat_sp) * (EARTH_RADIUS_M * (np.pi / 180.0))
+    elif "track_err_h_m" in df.columns:
+        h_err = pd.to_numeric(df["track_err_h_m"], errors="coerce").to_numpy(dtype=float)
+
+    if "track_err_v_m" in df.columns:
+        v_err = pd.to_numeric(df["track_err_v_m"], errors="coerce").to_numpy(dtype=float)
 
     if v_err is None and "traj_sp_abs_alt_m" in df.columns:
         if "abs_alt_m" in df.columns:
@@ -151,15 +151,35 @@ def _select_analysis_window_by_wind(df: pd.DataFrame) -> Optional[Tuple[float, f
 
 
 def select_analysis_df(df: pd.DataFrame) -> pd.DataFrame:
-    """Select analysis window based on time window + wind rules."""
-    df = _apply_time_window(df)
+    """Select analysis window based on wind rules, fall back to fixed time window."""
     wind_window = _select_analysis_window_by_wind(df)
     if wind_window is not None and "t_s" in df.columns:
         t0, t1 = wind_window
         time_mask = (df["t_s"] >= t0) & (df["t_s"] <= t1)
         if time_mask.sum() >= 5:
-            df = df[time_mask].reset_index(drop=True)
-    return df
+            return df[time_mask].reset_index(drop=True)
+
+    df_time = _apply_time_window(df)
+    return df_time
+
+
+def compute_analysis_window(df: pd.DataFrame) -> Optional[Tuple[float, float]]:
+    """Return analysis window (t0, t1) consistent with select_analysis_df."""
+    if "t_s" not in df.columns:
+        return None
+
+    wind_window = _select_analysis_window_by_wind(df)
+    if wind_window is not None:
+        t0, t1 = wind_window
+        time_mask = (df["t_s"] >= t0) & (df["t_s"] <= t1)
+        if time_mask.sum() >= 5:
+            return t0, t1
+
+    mask = (df["t_s"] >= ANALYSIS_WINDOW[0]) & (df["t_s"] <= ANALYSIS_WINDOW[1])
+    if mask.sum() >= 5:
+        return ANALYSIS_WINDOW
+
+    return None
 
 
 def compute_metrics_for_test(df: pd.DataFrame) -> Optional[Dict[str, float]]:

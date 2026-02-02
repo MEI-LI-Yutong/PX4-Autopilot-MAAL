@@ -34,9 +34,11 @@ import matplotlib.pyplot as plt
 from utils.gust_metrics import (
     H_MAX,
     V_MAX,
+    compute_analysis_window,
     compute_metrics_for_test,
     compute_grade_dimensional,
     extract_gust_level,
+    latlon_to_xy,
 )
 from utils.gust_grouping import (
     group_tests_by_type,
@@ -291,6 +293,7 @@ def plot_levels(
         dim_scores_list = []
         dim_scores_by_level: Dict[int, List[Dict[str, float]]] = {}
         dim_raw_by_level: Dict[int, List[Dict[str, float]]] = {}
+        debug_series = []
 
         for test in group_tests:
             test_id = test.get("test_id", "")
@@ -345,6 +348,21 @@ def plot_levels(
                 "dimension_raw": dim_raw,
                 "dimension_overall": _clean_value(overall_score),
             })
+
+            if level != 0 and "t_s" in df.columns and "rel_alt_m" in df.columns:
+                t_s = df["t_s"].to_numpy(dtype=float)
+                rel_alt = df["rel_alt_m"].to_numpy(dtype=float)
+                x_pos, y_pos = latlon_to_xy(df)
+                horiz = y_pos if y_pos.size == t_s.size else None
+                window = compute_analysis_window(df)
+                if horiz is not None:
+                    debug_series.append({
+                        "level": level,
+                        "t_s": t_s,
+                        "rel_alt": rel_alt,
+                        "horiz": horiz,
+                        "window": window,
+                    })
 
         if not levels:
             print(f"  No valid data for {task_type}, skipping...")
@@ -495,6 +513,36 @@ def plot_levels(
                 rmax=1.0,
             )
             images_to_upload.append((f"plots/{radar_levels_output.name}", radar_levels_output))
+
+        if debug_series:
+            debug_series.sort(key=lambda s: s["level"])
+            cmap = plt.cm.get_cmap("viridis", max(2, len(debug_series)))
+            colors = [cmap(i) for i in range(len(debug_series))]
+            fig, (ax_alt, ax_h) = plt.subplots(2, 1, figsize=(10, 7), sharex=True)
+            for idx, series in enumerate(debug_series):
+                level = series["level"]
+                t_s = series["t_s"]
+                rel_alt = series["rel_alt"]
+                horiz = series["horiz"]
+                color = colors[idx % len(colors)]
+                ax_alt.plot(t_s, rel_alt, color=color, linewidth=1.5, label=f"L{level:02d}")
+                ax_h.plot(t_s, horiz, color=color, linewidth=1.5, label=f"L{level:02d}")
+                if series["window"] is not None:
+                    t0, t1 = series["window"]
+                    ax_alt.axvspan(t0, t1, color=color, alpha=0.08)
+                    ax_h.axvspan(t0, t1, color=color, alpha=0.08)
+
+            ax_alt.set_ylabel("rel_alt_m", fontsize=12, fontweight="bold")
+            ax_h.set_ylabel("horizontal_pos_m", fontsize=12, fontweight="bold")
+            ax_h.set_xlabel("time (s)", fontsize=12, fontweight="bold")
+            ax_alt.grid(True, axis="y", alpha=0.3, linestyle=":", linewidth=0.8)
+            ax_h.grid(True, axis="y", alpha=0.3, linestyle=":", linewidth=0.8)
+            ax_alt.legend(loc="upper right", frameon=True, fontsize=9, ncol=3)
+            fig.tight_layout()
+            debug_output = results_dir_resolved / f"debug_{axis}_alt_horiz.png"
+            fig.savefig(debug_output, dpi=dpi, bbox_inches="tight")
+            plt.close(fig)
+            images_to_upload.append((f"plots/{debug_output.name}", debug_output))
 
             trend_output = results_dir_resolved / f"trend_{axis}_levels_baseline.png"
             fig, ax = plt.subplots(figsize=(9, 5))

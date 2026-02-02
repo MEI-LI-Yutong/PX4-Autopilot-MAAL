@@ -18,7 +18,7 @@ from .gust_metrics import (
 
 # Limits for scoring
 ACTUATOR_MAX = 1000.0
-WIND_CORR_MAX = 0.8
+WIND_CORR_MAX = 1.0
 
 DIM_ORDER = [
     "h_max",
