@@ -49,7 +49,11 @@ from utils.gust_plotting import (
     plot_radar_chart,
     upload_data_artifact,
 )
-from utils.gust_dimensions import compute_dimension_scores
+from utils.gust_dimensions import (
+    DIM_LABELS,
+    DIM_ORDER,
+    compute_dimension_breakdown,
+)
 
 try:
     import scienceplots  # noqa: F401
@@ -285,6 +289,8 @@ def plot_levels(
         grades_v = []
         grades_h = []
         dim_scores_list = []
+        dim_scores_by_level: Dict[int, List[Dict[str, float]]] = {}
+        dim_raw_by_level: Dict[int, List[Dict[str, float]]] = {}
 
         for test in group_tests:
             test_id = test.get("test_id", "")
@@ -314,7 +320,10 @@ def plot_levels(
 
             grade_h = compute_grade_dimensional(df, 'h')
             grade_v = compute_grade_dimensional(df, 'v')
-            dim_scores = compute_dimension_scores(df)
+            breakdown = compute_dimension_breakdown(df)
+            dim_scores = breakdown.get("scores", {})
+            dim_raw = breakdown.get("raw", {})
+            overall_score = breakdown.get("overall", float("nan"))
 
             levels.append(level)
             v_max_devs.append(metrics.get("v_max_dev", float("nan")))
@@ -322,6 +331,8 @@ def plot_levels(
             grades_v.append(grade_v)
             grades_h.append(grade_h)
             dim_scores_list.append(dim_scores)
+            dim_scores_by_level.setdefault(level, []).append(dim_scores)
+            dim_raw_by_level.setdefault(level, []).append(dim_raw)
             summary_rows.append({
                 "task_type": task_type,
                 "test_id": test_id,
@@ -331,6 +342,8 @@ def plot_levels(
                 "grade_v": grade_v,
                 "grade_h": grade_h,
                 "dimension_scores": dim_scores,
+                "dimension_raw": dim_raw,
+                "dimension_overall": _clean_value(overall_score),
             })
 
         if not levels:
@@ -359,17 +372,155 @@ def plot_levels(
 
         # Radar summary (min + mean)
         if dim_scores_list:
-            keys = ["track_h", "track_v", "attitude", "actuator", "recovery", "wind_sense"]
             min_scores = {}
             mean_scores = {}
-            for k in keys:
+            for k in DIM_ORDER:
                 vals = [s.get(k, float("nan")) for s in dim_scores_list]
                 vals = [v for v in vals if v == v]
                 min_scores[k] = min(vals) if vals else float("nan")
                 mean_scores[k] = float(sum(vals) / len(vals)) if vals else float("nan")
             radar_output = results_dir_resolved / f"radar_{axis}_summary.png"
-            plot_radar_chart([min_scores, mean_scores], ["min", "mean"], radar_output, dpi)
+            plot_radar_chart(
+                [min_scores, mean_scores],
+                ["worst", "mean"],
+                radar_output,
+                dpi,
+                dims=DIM_ORDER,
+                dim_labels=DIM_LABELS,
+            )
             images_to_upload.append((f"plots/{radar_output.name}", radar_output))
+
+        if dim_scores_by_level:
+            target_levels = [0, 2, 4, 6, 8, 10, 12]
+            levels_sorted = [lvl for lvl in target_levels if lvl in dim_scores_by_level]
+            if not levels_sorted:
+                levels_sorted = sorted(dim_scores_by_level.keys())
+
+            def _mean_scores(bucket: List[Dict[str, float]]) -> Dict[str, float]:
+                scores_mean = {}
+                for k in DIM_ORDER:
+                    vals = [s.get(k, float("nan")) for s in bucket]
+                    vals = [v for v in vals if v == v]
+                    scores_mean[k] = float(sum(vals) / len(vals)) if vals else float("nan")
+                return scores_mean
+
+            def _mean_raw(bucket: List[Dict[str, float]]) -> Dict[str, float]:
+                if not bucket:
+                    return {}
+                keys = set()
+                for b in bucket:
+                    keys.update(b.keys())
+                raw_mean = {}
+                for k in keys:
+                    vals = [b.get(k, float("nan")) for b in bucket]
+                    vals = [v for v in vals if v == v]
+                    raw_mean[k] = float(sum(vals) / len(vals)) if vals else float("nan")
+                return raw_mean
+
+            level_means: List[Dict[str, float]] = []
+            level_labels: List[str] = []
+            for lvl in levels_sorted:
+                level_means.append(_mean_scores(dim_scores_by_level.get(lvl, [])))
+                level_labels.append(f"L{lvl:02d}")
+
+            baseline_scores = None
+            baseline_raw = None
+            if 0 in dim_scores_by_level:
+                baseline_scores = _mean_scores(dim_scores_by_level.get(0, []))
+                baseline_raw = _mean_raw(dim_raw_by_level.get(0, []))
+
+            raw_map = {
+                "h_max": "h_max_dev_m",
+                "h_std": "h_std_m",
+                "v_max": "v_max_dev_m",
+                "v_std": "v_std_m",
+                "att_max": "att_max_deg",
+                "act_margin": "actuator_delta",
+                "recovery": "recovery_time_s",
+                "wind_sense": "wind_err_corr",
+            }
+
+            def _normalize(scores: Dict[str, float], raw: Dict[str, float], baseline: Dict[str, float] | None, baseline_raw: Dict[str, float] | None, is_baseline: bool) -> Dict[str, float]:
+                if not baseline and not baseline_raw:
+                    return scores
+                out = {}
+                for k in DIM_ORDER:
+                    if is_baseline:
+                        out[k] = 1.0
+                    else:
+                        raw_key = raw_map.get(k)
+                        b_raw = baseline_raw.get(raw_key, float("nan")) if baseline_raw else float("nan")
+                        v_raw = raw.get(raw_key, float("nan"))
+                        if b_raw == b_raw and v_raw == v_raw and v_raw > 0:
+                            out[k] = max(0.0, min(1.0, b_raw / v_raw))
+                        else:
+                            b = baseline.get(k, float("nan")) if baseline else float("nan")
+                            v = scores.get(k, float("nan"))
+                            if b == b and b > 0 and v == v:
+                                out[k] = max(0.0, min(1.0, v / b))
+                            else:
+                                out[k] = v
+                return out
+
+            raw_means = [
+                _mean_raw(dim_raw_by_level.get(lvl, []))
+                for lvl in levels_sorted
+            ]
+            normalized_levels = [
+                _normalize(s, r, baseline_scores, baseline_raw, lvl == 0)
+                for s, r, lvl in zip(level_means, raw_means, levels_sorted)
+            ]
+
+            cmap = plt.cm.get_cmap("viridis", max(2, len(levels_sorted)))
+            colors = [cmap(i) for i in range(len(levels_sorted))]
+
+            radar_levels_output = results_dir_resolved / f"radar_{axis}_levels_baseline.png"
+            plot_labels = [f"L{lvl:02d}" for lvl in levels_sorted if lvl != 0]
+            plot_scores = [
+                s for s, lvl in zip(normalized_levels, levels_sorted)
+                if lvl != 0
+            ]
+            plot_colors = [
+                c for c, lvl in zip(colors, levels_sorted)
+                if lvl != 0
+            ]
+            plot_radar_chart(
+                plot_scores,
+                plot_labels,
+                radar_levels_output,
+                dpi,
+                dims=DIM_ORDER,
+                dim_labels=DIM_LABELS,
+                colors=plot_colors,
+                rmax=1.0,
+            )
+            images_to_upload.append((f"plots/{radar_levels_output.name}", radar_levels_output))
+
+            trend_output = results_dir_resolved / f"trend_{axis}_levels_baseline.png"
+            fig, ax = plt.subplots(figsize=(9, 5))
+            for k, label in zip(DIM_ORDER, DIM_LABELS):
+                series = []
+                for scores, lvl in zip(normalized_levels, levels_sorted):
+                    if lvl == 0:
+                        continue
+                    series.append(scores.get(k, float("nan")))
+                ax.plot(
+                    [lvl for lvl in levels_sorted if lvl != 0],
+                    series,
+                    marker="o",
+                    linewidth=2,
+                    label=label,
+                )
+            ax.set_xlabel("Gust Level", fontsize=16, fontweight="bold")
+            ax.set_ylabel("Relative Score (vs L0)", fontsize=16, fontweight="bold")
+            ax.set_ylim(0.0, 1.05)
+            ax.set_xticks([lvl for lvl in levels_sorted if lvl != 0])
+            ax.grid(True, axis="y", alpha=0.3, linestyle=":", linewidth=0.8)
+            ax.legend(loc="upper right", frameon=True, fontsize=10, ncol=2)
+            fig.tight_layout()
+            fig.savefig(trend_output, dpi=dpi, bbox_inches="tight")
+            plt.close(fig)
+            images_to_upload.append((f"plots/{trend_output.name}", trend_output))
 
     if summary_rows:
         summary_path = results_dir_resolved / "gust_levels_summary.json"
@@ -379,6 +530,49 @@ def plot_levels(
             print(f"Saved summary JSON: {summary_path}")
         except Exception as e:
             print(f"Warning: failed to write summary JSON: {e}")
+
+        breakdown_csv = results_dir_resolved / "gust_levels_breakdown.csv"
+        try:
+            import csv
+            dim_score_cols = [f"score_{k}" for k in DIM_ORDER]
+            raw_cols = [
+                "h_max_dev_m",
+                "h_std_m",
+                "v_max_dev_m",
+                "v_std_m",
+                "att_max_deg",
+                "actuator_peak",
+                "actuator_baseline",
+                "actuator_delta",
+                "recovery_time_s",
+                "wind_err_corr",
+            ]
+            fieldnames = [
+                "task_type",
+                "test_id",
+                "level",
+                "dimension_overall",
+            ] + dim_score_cols + raw_cols
+            with open(breakdown_csv, "w", encoding="utf-8", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                for row in summary_rows:
+                    scores = row.get("dimension_scores", {}) or {}
+                    raw = row.get("dimension_raw", {}) or {}
+                    out = {
+                        "task_type": row.get("task_type"),
+                        "test_id": row.get("test_id"),
+                        "level": row.get("level"),
+                        "dimension_overall": row.get("dimension_overall"),
+                    }
+                    for k in DIM_ORDER:
+                        out[f"score_{k}"] = scores.get(k)
+                    for k in raw_cols:
+                        out[k] = raw.get(k)
+                    writer.writerow(out)
+            print(f"Saved breakdown CSV: {breakdown_csv}")
+        except Exception as e:
+            print(f"Warning: failed to write breakdown CSV: {e}")
 
         if wandb_run_local:
             try:

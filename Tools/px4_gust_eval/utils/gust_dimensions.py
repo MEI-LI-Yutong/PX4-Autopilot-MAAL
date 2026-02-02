@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 
 from .gust_metrics import (
+    ANG_MAX,
     H_MAX,
     H_STD,
     V_MAX,
@@ -18,6 +19,28 @@ from .gust_metrics import (
 # Limits for scoring
 ACTUATOR_MAX = 1000.0
 WIND_CORR_MAX = 0.8
+
+DIM_ORDER = [
+    "h_max",
+    "h_std",
+    "v_max",
+    "v_std",
+    "att_max",
+    "act_margin",
+    "recovery",
+    "wind_sense",
+]
+
+DIM_LABELS = [
+    "H-Max",
+    "H-Std",
+    "V-Max",
+    "V-Std",
+    "Att-Max",
+    "Act-Margin",
+    "Recovery",
+    "Wind-Corr",
+]
 
 
 def _clamp01(value: float) -> float:
@@ -108,63 +131,67 @@ def _wind_sensitivity(df: pd.DataFrame, h_err: Optional[np.ndarray], v_err: Opti
     return float(max(corrs))
 
 
-def compute_dimension_scores(df: pd.DataFrame) -> Dict[str, float]:
-    """Compute 6D capability scores (0-1)."""
+def compute_dimension_breakdown(df: pd.DataFrame) -> Dict[str, Dict[str, float]]:
+    """Compute 8D capability scores (0-1) with raw metric breakdown."""
     df = select_analysis_df(df)
     if df.empty:
-        return {}
+        return {"scores": {}, "raw": {}, "overall": float("nan")}
 
     h_err, v_err = compute_track_errors_from_raw(df)
 
-    # 1) Horizontal tracking
     h_max = float(np.nanmax(np.abs(h_err))) if h_err is not None and np.isfinite(h_err).any() else float("nan")
     h_std = float(np.nanstd(h_err)) if h_err is not None and np.isfinite(h_err).any() else float("nan")
-    score_h = _mean_ignore_nan([
-        _score_inverse(h_max, H_MAX),
-        _score_inverse(h_std, H_STD),
-    ])
-
-    # 2) Vertical tracking
     v_max = float(np.nanmax(np.abs(v_err))) if v_err is not None and np.isfinite(v_err).any() else float("nan")
     v_std = float(np.nanstd(v_err)) if v_err is not None and np.isfinite(v_err).any() else float("nan")
-    score_v = _mean_ignore_nan([
-        _score_inverse(v_max, V_MAX),
-        _score_inverse(v_std, V_STD),
-    ])
 
-    # 3) Attitude stability
     roll = pd.to_numeric(df.get("roll_deg"), errors="coerce") if "roll_deg" in df.columns else None
     pitch = pd.to_numeric(df.get("pitch_deg"), errors="coerce") if "pitch_deg" in df.columns else None
-    max_abs = float("nan")
+    att_max = float("nan")
     if roll is not None and pitch is not None:
-        max_abs = float(np.nanmax([np.nanmax(np.abs(roll)), np.nanmax(np.abs(pitch))]))
+        att_max = float(np.nanmax([np.nanmax(np.abs(roll)), np.nanmax(np.abs(pitch))]))
     elif roll is not None:
-        max_abs = float(np.nanmax(np.abs(roll)))
+        att_max = float(np.nanmax(np.abs(roll)))
     elif pitch is not None:
-        max_abs = float(np.nanmax(np.abs(pitch)))
-    score_att = _score_inverse(max_abs, 45.0)
+        att_max = float(np.nanmax(np.abs(pitch)))
 
-    # 4) Actuator margin (baseline-normalized)
     max_u = _extract_actuator_max(df)
     base_u = _extract_actuator_baseline(df, samples=25)
-    if max_u is not None and base_u is not None and ACTUATOR_MAX > base_u:
-        score_act = _score_inverse(max_u - base_u, ACTUATOR_MAX - base_u)
-    else:
-        score_act = float("nan")
+    act_delta = float("nan")
+    if max_u is not None and base_u is not None:
+        act_delta = float(max_u - base_u)
 
-    # 5) Recovery capability
     t_rec = _recovery_time(df, h_err, v_err)
-    score_rec = _score_inverse(t_rec, RECOVER_T) if t_rec is not None else float("nan")
-
-    # 6) Wind sensitivity
     corr = _wind_sensitivity(df, h_err, v_err)
-    score_wind = _score_inverse(corr, WIND_CORR_MAX) if corr is not None else float("nan")
 
-    return {
-        "track_h": float(score_h),
-        "track_v": float(score_v),
-        "attitude": float(score_att),
-        "actuator": float(score_act),
-        "recovery": float(score_rec),
-        "wind_sense": float(score_wind),
+    scores = {
+        "h_max": _score_inverse(h_max, H_MAX),
+        "h_std": _score_inverse(h_std, H_STD),
+        "v_max": _score_inverse(v_max, V_MAX),
+        "v_std": _score_inverse(v_std, V_STD),
+        "att_max": _score_inverse(att_max, ANG_MAX),
+        "act_margin": _score_inverse(act_delta, ACTUATOR_MAX - base_u) if base_u is not None and ACTUATOR_MAX > base_u else float("nan"),
+        "recovery": _score_inverse(t_rec, RECOVER_T) if t_rec is not None else float("nan"),
+        "wind_sense": _score_inverse(corr, WIND_CORR_MAX) if corr is not None else float("nan"),
     }
+
+    overall = _mean_ignore_nan([scores.get(k, float("nan")) for k in DIM_ORDER])
+
+    raw = {
+        "h_max_dev_m": h_max,
+        "h_std_m": h_std,
+        "v_max_dev_m": v_max,
+        "v_std_m": v_std,
+        "att_max_deg": att_max,
+        "actuator_peak": float(max_u) if max_u is not None else float("nan"),
+        "actuator_baseline": float(base_u) if base_u is not None else float("nan"),
+        "actuator_delta": act_delta,
+        "recovery_time_s": float(t_rec) if t_rec is not None else float("nan"),
+        "wind_err_corr": float(corr) if corr is not None else float("nan"),
+    }
+
+    return {"scores": scores, "raw": raw, "overall": float(overall)}
+
+
+def compute_dimension_scores(df: pd.DataFrame) -> Dict[str, float]:
+    """Backward-compatible wrapper returning only scores."""
+    return compute_dimension_breakdown(df).get("scores", {})

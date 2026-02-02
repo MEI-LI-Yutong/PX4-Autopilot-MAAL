@@ -132,15 +132,23 @@ def plot_radar_chart(
     labels: List[str],
     output_path: Path,
     dpi: int = 300,
+    dims: List[str] | None = None,
+    dim_labels: List[str] | None = None,
+    colors: List[str] | None = None,
+    rmax: float = 1.0,
 ) -> None:
-    dims = ["track_h", "track_v", "attitude", "actuator", "recovery", "wind_sense"]
+    if dims is None:
+        dims = ["track_h", "track_v", "attitude", "actuator", "recovery", "wind_sense"]
+    if dim_labels is None:
+        dim_labels = dims
     angles = np.linspace(0, 2 * np.pi, len(dims), endpoint=False).tolist()
     angles += angles[:1]
 
-    fig = plt.figure(figsize=(6, 6))
+    fig = plt.figure(figsize=(7, 7))
     ax = plt.subplot(111, polar=True)
 
-    colors = [COLORS["Unstable"], COLORS["Wind-Resilient"]]
+    if colors is None:
+        colors = [COLORS["Unstable"], COLORS["Wind-Resilient"]]
     for idx, scores in enumerate(series):
         values = [scores.get(k, float("nan")) for k in dims]
         values = [0.0 if not np.isfinite(v) else float(v) for v in values]
@@ -149,13 +157,13 @@ def plot_radar_chart(
         ax.plot(angles, values, linewidth=2, color=colors[idx % len(colors)], label=label)
         ax.fill(angles, values, alpha=0.2, color=colors[idx % len(colors)])
 
-    ax.set_thetagrids(np.degrees(angles[:-1]), dims, fontsize=18, fontweight="bold")
-    ax.set_ylim(0, 1.0)
-    ax.set_yticks([0.25, 0.5, 0.75, 1.0])
-    ax.tick_params(axis="y", labelsize=18)
+    ax.set_thetagrids(np.degrees(angles[:-1]), dim_labels, fontsize=16, fontweight="bold")
+    ax.set_ylim(0, rmax)
+    ax.set_yticks([rmax * 0.25, rmax * 0.5, rmax * 0.75, rmax])
+    ax.tick_params(axis="y", labelsize=14)
     ax.grid(True, alpha=0.3)
     if labels:
-        ax.legend(loc="upper right", bbox_to_anchor=(1.3, 1.1), frameon=True, fontsize=18)
+        ax.legend(loc="upper right", bbox_to_anchor=(1.25, 1.1), frameon=True, fontsize=14)
 
     fig.tight_layout()
     fig.savefig(output_path, dpi=dpi, bbox_inches="tight")

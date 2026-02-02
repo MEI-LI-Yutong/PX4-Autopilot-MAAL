@@ -64,15 +64,22 @@ def _segment_mask_from_x(x: np.ndarray) -> np.ndarray:
 
 
 def compute_track_errors_from_raw(df: pd.DataFrame) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
-    """Compute tracking errors from raw columns (ignoring lon error)."""
+    """Compute tracking errors from raw columns (prefers explicit tracking error columns)."""
     h_err = None
     v_err = None
-    if {"lat_deg", "traj_sp_lat_deg"}.issubset(df.columns):
+
+    if "track_err_h_m" in df.columns:
+        h_err = pd.to_numeric(df["track_err_h_m"], errors="coerce").to_numpy(dtype=float)
+    if "track_err_v_m" in df.columns:
+        v_err = pd.to_numeric(df["track_err_v_m"], errors="coerce").to_numpy(dtype=float)
+
+    if h_err is None and {"lat_deg", "traj_sp_lat_deg"}.issubset(df.columns):
         lat = pd.to_numeric(df["lat_deg"], errors="coerce").to_numpy(dtype=float)
         lat_sp = pd.to_numeric(df["traj_sp_lat_deg"], errors="coerce").to_numpy(dtype=float)
         if lat.size and lat_sp.size:
             h_err = (lat - lat_sp) * (EARTH_RADIUS_M * (np.pi / 180.0))
-    if "traj_sp_abs_alt_m" in df.columns:
+
+    if v_err is None and "traj_sp_abs_alt_m" in df.columns:
         if "abs_alt_m" in df.columns:
             alt = pd.to_numeric(df["abs_alt_m"], errors="coerce").to_numpy(dtype=float)
         elif "rel_alt_m" in df.columns:
