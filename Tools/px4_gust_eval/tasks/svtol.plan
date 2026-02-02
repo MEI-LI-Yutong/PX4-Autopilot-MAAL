@@ -16,10 +16,10 @@
         "items": [
             {
                 "AMSLAltAboveTerrain": null,
-                "Altitude": 10,
+                "Altitude": 25,
                 "AltitudeMode": 1,
                 "autoContinue": true,
-                "command": 22,
+                "command": 84,
                 "doJumpId": 1,
                 "frame": 3,
                 "params": [
@@ -27,15 +27,15 @@
                     0,
                     0,
                     null,
-                    47.39797536113828,
-                    8.546606056503265,
-                    10
+                    47.39797694328358,
+                    8.547757147440336,
+                    25
                 ],
                 "type": "SimpleItem"
             },
             {
                 "AMSLAltAboveTerrain": null,
-                "Altitude": 10,
+                "Altitude": 25,
                 "AltitudeMode": 1,
                 "autoContinue": true,
                 "command": 16,
@@ -46,17 +46,36 @@
                     0,
                     0,
                     null,
-                    47.39798819852364,
-                    8.549093759394992,
-                    10
+                    47.39792713425562,
+                    8.556977259385235,
+                    25
+                ],
+                "type": "SimpleItem"
+            },
+            {
+                "AMSLAltAboveTerrain": null,
+                "Altitude": 0,
+                "AltitudeMode": 1,
+                "autoContinue": true,
+                "command": 85,
+                "doJumpId": 3,
+                "frame": 3,
+                "params": [
+                    0,
+                    0,
+                    null,
+                    null,
+                    47.39792713366141,
+                    8.557780680566566,
+                    0
                 ],
                 "type": "SimpleItem"
             }
         ],
         "plannedHomePosition": [
-            47.397971,
-            8.5461639,
-            0.224
+            47.3979709,
+            8.5461637,
+            491
         ],
         "vehicleType": 20,
         "version": 2

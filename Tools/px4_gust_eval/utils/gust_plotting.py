@@ -145,7 +145,8 @@ def plot_radar_chart(
         values = [scores.get(k, float("nan")) for k in dims]
         values = [0.0 if not np.isfinite(v) else float(v) for v in values]
         values += values[:1]
-        ax.plot(angles, values, linewidth=2, color=colors[idx % len(colors)])
+        label = labels[idx] if idx < len(labels) else f"series_{idx}"
+        ax.plot(angles, values, linewidth=2, color=colors[idx % len(colors)], label=label)
         ax.fill(angles, values, alpha=0.2, color=colors[idx % len(colors)])
 
     ax.set_thetagrids(np.degrees(angles[:-1]), dims, fontsize=18, fontweight="bold")
@@ -154,7 +155,7 @@ def plot_radar_chart(
     ax.tick_params(axis="y", labelsize=18)
     ax.grid(True, alpha=0.3)
     if labels:
-        ax.legend(labels, loc="upper right", bbox_to_anchor=(1.3, 1.1), frameon=True, fontsize=18)
+        ax.legend(loc="upper right", bbox_to_anchor=(1.3, 1.1), frameon=True, fontsize=18)
 
     fig.tight_layout()
     fig.savefig(output_path, dpi=dpi, bbox_inches="tight")
