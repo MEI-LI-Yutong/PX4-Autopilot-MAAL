@@ -574,6 +574,20 @@ def plot_levels(
             )
             images_to_upload.append((f"plots/{radar_levels_output.name}", radar_levels_output))
 
+            radar_raw_output = results_dir_resolved / f"radar_{axis}_levels_scores.png"
+            raw_labels = [f"L{lvl:02d}" for lvl in levels_sorted]
+            plot_radar_chart(
+                level_means,
+                raw_labels,
+                radar_raw_output,
+                dpi,
+                dims=DIM_ORDER,
+                dim_labels=DIM_LABELS,
+                colors=colors,
+                rmax=1.0,
+            )
+            images_to_upload.append((f"plots/{radar_raw_output.name}", radar_raw_output))
+
         if debug_series:
             debug_series.sort(key=lambda s: s["level"])
             cmap = plt.cm.get_cmap("viridis", max(2, len(debug_series)))
@@ -629,6 +643,28 @@ def plot_levels(
             fig.savefig(trend_output, dpi=dpi, bbox_inches="tight")
             plt.close(fig)
             images_to_upload.append((f"plots/{trend_output.name}", trend_output))
+
+            trend_raw_output = results_dir_resolved / f"trend_{axis}_levels_scores.png"
+            fig, ax = plt.subplots(figsize=(9, 5))
+            for k, label in zip(DIM_ORDER, DIM_LABELS):
+                series = [scores.get(k, float("nan")) for scores in level_means]
+                ax.plot(
+                    levels_sorted,
+                    series,
+                    marker="o",
+                    linewidth=2,
+                    label=label,
+                )
+            ax.set_xlabel("Gust Level", fontsize=16, fontweight="bold")
+            ax.set_ylabel("Score (raw)", fontsize=16, fontweight="bold")
+            ax.set_ylim(0.0, 1.05)
+            ax.set_xticks(levels_sorted)
+            ax.grid(True, axis="y", alpha=0.3, linestyle=":", linewidth=0.8)
+            ax.legend(loc="upper right", frameon=True, fontsize=10, ncol=2)
+            fig.tight_layout()
+            fig.savefig(trend_raw_output, dpi=dpi, bbox_inches="tight")
+            plt.close(fig)
+            images_to_upload.append((f"plots/{trend_raw_output.name}", trend_raw_output))
 
         merged_actuator_series: Dict[str, List[Dict[str, Any]]] = {}
         for kind in ("u", "s"):
