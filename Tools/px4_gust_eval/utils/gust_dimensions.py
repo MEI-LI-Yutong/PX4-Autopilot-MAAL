@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+import re
 
 from .gust_metrics import (
     ANG_MAX,
@@ -18,7 +19,10 @@ from .gust_metrics import (
 
 # Limits for scoring
 ACTUATOR_MAX = 1000.0
+SERVO_MAX = 1.0
 WIND_CORR_MAX = 1.0
+ACTUATOR_SAT_RATIO = 0.98
+SERVO_SAT_RATIO = 0.98
 
 DIM_ORDER = [
     "h_max",
@@ -60,8 +64,13 @@ def _mean_ignore_nan(values: list[float]) -> float:
     return float(np.mean(vals))
 
 
-def _extract_actuator_baseline(df: pd.DataFrame, samples: int = 25) -> Optional[float]:
-    cols = [c for c in df.columns if c.startswith("u")]
+def _actuator_columns(df: pd.DataFrame, prefix: str) -> list[str]:
+    pattern = re.compile(rf"^{re.escape(prefix)}\d+$")
+    return [c for c in df.columns if pattern.match(c)]
+
+
+def _extract_actuator_baseline(df: pd.DataFrame, prefix: str, samples: int = 25) -> Optional[float]:
+    cols = _actuator_columns(df, prefix)
     if not cols:
         return None
     arr = df[cols].to_numpy(dtype=float)
@@ -73,14 +82,24 @@ def _extract_actuator_baseline(df: pd.DataFrame, samples: int = 25) -> Optional[
     return float(np.nanmean(np.abs(head)))
 
 
-def _extract_actuator_max(df: pd.DataFrame) -> Optional[float]:
-    cols = [c for c in df.columns if c.startswith("u")]
+def _extract_actuator_max(df: pd.DataFrame, prefix: str) -> Optional[float]:
+    cols = _actuator_columns(df, prefix)
     if not cols:
         return None
     arr = df[cols].to_numpy(dtype=float)
     if arr.size == 0:
         return None
     return float(np.nanmax(np.abs(arr)))
+
+
+def _actuator_margin_score(base: Optional[float], peak: Optional[float], limit: float) -> Tuple[float, float]:
+    if base is None or peak is None:
+        return float("nan"), float("nan")
+    delta = float(peak - base)
+    if limit <= base:
+        return float("nan"), delta
+    score = _score_inverse(delta, limit - base)
+    return score, delta
 
 
 def _recovery_time(df: pd.DataFrame, h_err: Optional[np.ndarray], v_err: Optional[np.ndarray]) -> Optional[float]:
@@ -154,11 +173,23 @@ def compute_dimension_breakdown(df: pd.DataFrame) -> Dict[str, Dict[str, float]]
     elif pitch is not None:
         att_max = float(np.nanmax(np.abs(pitch)))
 
-    max_u = _extract_actuator_max(df)
-    base_u = _extract_actuator_baseline(df, samples=25)
-    act_delta = float("nan")
-    if max_u is not None and base_u is not None:
-        act_delta = float(max_u - base_u)
+    max_u = _extract_actuator_max(df, "u")
+    base_u = _extract_actuator_baseline(df, "u", samples=25)
+    score_u, delta_u = _actuator_margin_score(base_u, max_u, ACTUATOR_MAX)
+
+    max_s = _extract_actuator_max(df, "s")
+    base_s = _extract_actuator_baseline(df, "s", samples=25)
+    score_s, delta_s = _actuator_margin_score(base_s, max_s, SERVO_MAX)
+
+    act_scores = [s for s in (score_u, score_s) if np.isfinite(s)]
+    act_margin_score = float(min(act_scores)) if act_scores else float("nan")
+    act_delta_effective = float("nan")
+    if np.isfinite(score_u) and np.isfinite(score_s):
+        act_delta_effective = float(delta_u if score_u <= score_s else delta_s)
+    elif np.isfinite(score_u):
+        act_delta_effective = float(delta_u)
+    elif np.isfinite(score_s):
+        act_delta_effective = float(delta_s)
 
     t_rec = _recovery_time(df, h_err, v_err)
     corr = _wind_sensitivity(df, h_err, v_err)
@@ -169,7 +200,7 @@ def compute_dimension_breakdown(df: pd.DataFrame) -> Dict[str, Dict[str, float]]
         "v_max": _score_inverse(v_max, V_MAX),
         "v_std": _score_inverse(v_std, V_STD),
         "att_max": _score_inverse(att_max, ANG_MAX),
-        "act_margin": _score_inverse(act_delta, ACTUATOR_MAX - base_u) if base_u is not None and ACTUATOR_MAX > base_u else float("nan"),
+        "act_margin": act_margin_score,
         "recovery": _score_inverse(t_rec, RECOVER_T) if t_rec is not None else float("nan"),
         "wind_sense": _score_inverse(corr, WIND_CORR_MAX) if corr is not None else float("nan"),
     }
@@ -184,7 +215,11 @@ def compute_dimension_breakdown(df: pd.DataFrame) -> Dict[str, Dict[str, float]]
         "att_max_deg": att_max,
         "actuator_peak": float(max_u) if max_u is not None else float("nan"),
         "actuator_baseline": float(base_u) if base_u is not None else float("nan"),
-        "actuator_delta": act_delta,
+        "actuator_delta": float(delta_u) if np.isfinite(delta_u) else float("nan"),
+        "servo_peak": float(max_s) if max_s is not None else float("nan"),
+        "servo_baseline": float(base_s) if base_s is not None else float("nan"),
+        "servo_delta": float(delta_s) if np.isfinite(delta_s) else float("nan"),
+        "actuator_delta_effective": act_delta_effective,
         "recovery_time_s": float(t_rec) if t_rec is not None else float("nan"),
         "wind_err_corr": float(corr) if corr is not None else float("nan"),
     }
@@ -195,3 +230,50 @@ def compute_dimension_breakdown(df: pd.DataFrame) -> Dict[str, Dict[str, float]]
 def compute_dimension_scores(df: pd.DataFrame) -> Dict[str, float]:
     """Backward-compatible wrapper returning only scores."""
     return compute_dimension_breakdown(df).get("scores", {})
+
+
+def compute_actuator_saturation_stats(df: pd.DataFrame) -> Dict[str, Dict[str, Dict[str, float]]]:
+    """Compute per-actuator saturation stats for outputs (u*) and servos (s*)."""
+    df = select_analysis_df(df)
+    if df.empty or "t_s" not in df.columns:
+        return {}
+    t = pd.to_numeric(df["t_s"], errors="coerce").to_numpy(dtype=float)
+    if t.size < 2 or not np.isfinite(t).any():
+        return {}
+    dt = np.diff(t, prepend=t[0])
+    total_time = float(max(0.0, t[-1] - t[0]))
+
+    def _stats_for(prefix: str, limit: float, ratio: float) -> Dict[str, Dict[str, float]]:
+        cols = _actuator_columns(df, prefix)
+        if not cols:
+            return {}
+        out: Dict[str, Dict[str, float]] = {}
+        threshold = limit * ratio
+        for col in cols:
+            values = pd.to_numeric(df[col], errors="coerce").to_numpy(dtype=float)
+            if values.size == 0:
+                continue
+            mask = np.isfinite(values)
+            sat = np.zeros_like(values, dtype=bool)
+            sat[mask] = np.abs(values[mask]) >= threshold
+            if sat.any():
+                first_idx = int(np.argmax(sat))
+                first_t = float(t[first_idx])
+                duration = float(np.sum(dt[sat]))
+            else:
+                first_t = float("nan")
+                duration = 0.0
+            ratio_time = float(duration / total_time) if total_time > 0 else float("nan")
+            out[col] = {
+                "sat_any": float(bool(sat.any())),
+                "sat_first_s": first_t,
+                "sat_duration_s": duration,
+                "sat_ratio": ratio_time,
+            }
+        return out
+
+    return {
+        "u": _stats_for("u", ACTUATOR_MAX, ACTUATOR_SAT_RATIO),
+        "s": _stats_for("s", SERVO_MAX, SERVO_SAT_RATIO),
+        "meta": {"total_time_s": float(total_time)},
+    }

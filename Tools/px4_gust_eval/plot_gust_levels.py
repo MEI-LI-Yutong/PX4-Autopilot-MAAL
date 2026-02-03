@@ -30,8 +30,11 @@ from typing import Dict, List, Tuple, Optional, Any
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import pandas as pd
+import numpy as np
 
 from utils.gust_metrics import (
+    select_analysis_df,
     H_MAX,
     V_MAX,
     compute_analysis_window,
@@ -49,11 +52,17 @@ from utils.gust_plotting import (
     log_plots_to_wandb,
     plot_metric_bar_chart,
     plot_radar_chart,
+    plot_actuator_timeseries,
     upload_data_artifact,
 )
 from utils.gust_dimensions import (
+    ACTUATOR_MAX,
+    ACTUATOR_SAT_RATIO,
     DIM_LABELS,
     DIM_ORDER,
+    SERVO_MAX,
+    SERVO_SAT_RATIO,
+    compute_actuator_saturation_stats,
     compute_dimension_breakdown,
 )
 
@@ -279,6 +288,7 @@ def plot_levels(
     wandb_run_local = start_wandb_if_requested(args, suite, results_dir_resolved, existing_run=wandb_run)
     images_to_upload: List[Tuple[str, Path]] = []
     summary_rows: List[Dict[str, Any]] = []
+    actuator_sat_rows: List[Dict[str, Any]] = []
 
     # Process each group
     for task_type, group_tests in test_groups.items():
@@ -294,6 +304,8 @@ def plot_levels(
         dim_scores_by_level: Dict[int, List[Dict[str, float]]] = {}
         dim_raw_by_level: Dict[int, List[Dict[str, float]]] = {}
         debug_series = []
+        group_actuator_rows: List[Dict[str, Any]] = []
+        actuator_series: Dict[str, Dict[str, List[Dict[str, Any]]]] = {"u": {}, "s": {}}
 
         for test in group_tests:
             test_id = test.get("test_id", "")
@@ -314,6 +326,7 @@ def plot_levels(
             df = load_csv(csv_path)
             if "t_s" in df.columns:
                 df = df[df["t_s"].notna()]
+            df_act = select_analysis_df(df)
 
             # Compute metrics and per-dimension grades
             metrics = compute_metrics_for_test(df)
@@ -327,6 +340,7 @@ def plot_levels(
             dim_scores = breakdown.get("scores", {})
             dim_raw = breakdown.get("raw", {})
             overall_score = breakdown.get("overall", float("nan"))
+            sat_stats = compute_actuator_saturation_stats(df)
 
             levels.append(level)
             v_max_devs.append(metrics.get("v_max_dev", float("nan")))
@@ -347,7 +361,54 @@ def plot_levels(
                 "dimension_scores": dim_scores,
                 "dimension_raw": dim_raw,
                 "dimension_overall": _clean_value(overall_score),
+                "actuator_saturation": sat_stats,
             })
+            if sat_stats:
+                total_time = sat_stats.get("meta", {}).get("total_time_s", float("nan"))
+                for kind in ("u", "s"):
+                    for actuator, stats in (sat_stats.get(kind, {}) or {}).items():
+                        row = {
+                            "task_type": task_type,
+                            "test_id": test_id,
+                            "level": level,
+                            "kind": kind,
+                            "actuator": actuator,
+                            "sat_any": stats.get("sat_any", float("nan")),
+                            "sat_first_s": stats.get("sat_first_s", float("nan")),
+                            "sat_duration_s": stats.get("sat_duration_s", float("nan")),
+                            "sat_ratio": stats.get("sat_ratio", float("nan")),
+                            "total_time_s": total_time,
+                        }
+                        actuator_sat_rows.append(row)
+                        group_actuator_rows.append(row)
+
+            if not df_act.empty and "t_s" in df_act.columns:
+                t_vals = pd.to_numeric(df_act["t_s"], errors="coerce").to_numpy(dtype=float)
+                if t_vals.size >= 2:
+                    for kind, limit, ratio, valid_eps in (
+                        ("u", ACTUATOR_MAX, ACTUATOR_SAT_RATIO, 1.0),
+                        ("s", SERVO_MAX, SERVO_SAT_RATIO, 1e-3),
+                    ):
+                        cols = [
+                            c for c in df_act.columns
+                            if c.startswith(kind) and c[len(kind):].isdigit()
+                        ]
+                        for col in cols:
+                            v_vals = pd.to_numeric(df_act[col], errors="coerce").to_numpy(dtype=float)
+                            mask = np.isfinite(t_vals) & np.isfinite(v_vals)
+                            if mask.sum() < 2:
+                                continue
+                            if not np.any(np.abs(v_vals[mask]) > valid_eps):
+                                continue
+                            t = t_vals[mask]
+                            v = v_vals[mask]
+                            sat = np.abs(v) >= (limit * ratio)
+                            actuator_series[kind].setdefault(col, []).append({
+                                "level": level,
+                                "t": t,
+                                "v": v,
+                                "sat": sat,
+                            })
 
             if level != 0 and "t_s" in df.columns and "rel_alt_m" in df.columns:
                 t_s = df["t_s"].to_numpy(dtype=float)
@@ -453,7 +514,7 @@ def plot_levels(
                 "v_max": "v_max_dev_m",
                 "v_std": "v_std_m",
                 "att_max": "att_max_deg",
-                "act_margin": "actuator_delta",
+                "act_margin": "actuator_delta_effective",
                 "recovery": "recovery_time_s",
                 "wind_sense": "wind_err_corr",
             }
@@ -570,6 +631,27 @@ def plot_levels(
             plt.close(fig)
             images_to_upload.append((f"plots/{trend_output.name}", trend_output))
 
+        merged_actuator_series: Dict[str, List[Dict[str, Any]]] = {}
+        for kind in ("u", "s"):
+            for actuator, series_list in actuator_series.get(kind, {}).items():
+                merged_actuator_series.setdefault(actuator, []).extend(series_list)
+
+        if merged_actuator_series:
+            thresholds: Dict[str, float] = {}
+            for actuator in merged_actuator_series.keys():
+                if actuator.startswith("u"):
+                    thresholds[actuator] = ACTUATOR_MAX * ACTUATOR_SAT_RATIO
+                elif actuator.startswith("s"):
+                    thresholds[actuator] = SERVO_MAX * SERVO_SAT_RATIO
+            act_ts = results_dir_resolved / f"actuator_timeseries_{axis}.png"
+            plot_actuator_timeseries(
+                merged_actuator_series,
+                act_ts,
+                dpi=dpi,
+                sat_thresholds=thresholds,
+            )
+            images_to_upload.append((f"plots/{act_ts.name}", act_ts))
+
     if summary_rows:
         summary_path = results_dir_resolved / "gust_levels_summary.json"
         try:
@@ -592,6 +674,10 @@ def plot_levels(
                 "actuator_peak",
                 "actuator_baseline",
                 "actuator_delta",
+                "servo_peak",
+                "servo_baseline",
+                "servo_delta",
+                "actuator_delta_effective",
                 "recovery_time_s",
                 "wind_err_corr",
             ]
@@ -622,10 +708,34 @@ def plot_levels(
         except Exception as e:
             print(f"Warning: failed to write breakdown CSV: {e}")
 
+        if actuator_sat_rows:
+            saturation_csv = results_dir_resolved / "gust_levels_actuator_saturation.csv"
+            try:
+                import csv
+                fieldnames = [
+                    "task_type",
+                    "test_id",
+                    "level",
+                    "kind",
+                    "actuator",
+                    "sat_any",
+                    "sat_first_s",
+                    "sat_duration_s",
+                    "sat_ratio",
+                    "total_time_s",
+                ]
+                with open(saturation_csv, "w", encoding="utf-8", newline="") as f:
+                    writer = csv.DictWriter(f, fieldnames=fieldnames)
+                    writer.writeheader()
+                    for row in actuator_sat_rows:
+                        writer.writerow(row)
+                print(f"Saved actuator saturation CSV: {saturation_csv}")
+            except Exception as e:
+                print(f"Warning: failed to write actuator saturation CSV: {e}")
+
         if wandb_run_local:
             try:
                 import wandb  # type: ignore
-                import pandas as pd  # type: ignore
                 df_summary = pd.DataFrame(summary_rows)
                 wandb_run_local.log({"gust_summary/table": wandb.Table(dataframe=df_summary)})
             except Exception as e:

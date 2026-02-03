@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 import pandas as pd
 import numpy as np
@@ -165,6 +165,175 @@ def plot_radar_chart(
     if labels:
         ax.legend(loc="upper right", bbox_to_anchor=(1.25, 1.1), frameon=True, fontsize=14)
 
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=dpi, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_actuator_saturation_summary(
+    rows: List[Dict[str, float]],
+    output_path: Path,
+    dpi: int = 300,
+    title: str = "Actuator Saturation Summary",
+) -> None:
+    if not rows:
+        return
+
+    grouped: Dict[str, Dict[str, List[float]]] = {}
+    kinds: Dict[str, str] = {}
+    for row in rows:
+        actuator = str(row.get("actuator"))
+        if not actuator:
+            continue
+        grouped.setdefault(actuator, {"duration": [], "sat_any": []})
+        grouped[actuator]["duration"].append(float(row.get("sat_duration_s", 0.0)))
+        grouped[actuator]["sat_any"].append(float(row.get("sat_any", 0.0)))
+        kinds[actuator] = str(row.get("kind", ""))
+
+    if not grouped:
+        return
+
+    def _sort_key(name: str) -> Tuple[int, int, str]:
+        kind = kinds.get(name, "")
+        order = 0 if kind == "u" else 1
+        m = re.search(r"\d+", name)
+        idx = int(m.group(0)) if m else 0
+        return (order, idx, name)
+
+    actuators = sorted(grouped.keys(), key=_sort_key)
+    mean_durations = []
+    sat_rates = []
+    for act in actuators:
+        durs = grouped[act]["duration"]
+        rates = grouped[act]["sat_any"]
+        mean_durations.append(float(np.mean(durs)) if durs else 0.0)
+        sat_rates.append(float(np.mean(rates)) if rates else 0.0)
+
+    cmap = plt.cm.get_cmap("viridis")
+    colors = [cmap(rate) for rate in sat_rates]
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.bar(actuators, mean_durations, color=colors, edgecolor="black", linewidth=0.8)
+    ax.set_xlabel("Actuator", fontsize=14, fontweight="bold")
+    ax.set_ylabel("Mean Saturation Duration (s)", fontsize=14, fontweight="bold")
+    ax.set_title(title, fontsize=14, fontweight="bold")
+    ax.grid(True, axis="y", alpha=0.3, linestyle=":", linewidth=0.8)
+    ax.set_axisbelow(True)
+    ax.tick_params(axis="x", labelrotation=45)
+
+    sm = plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(vmin=0.0, vmax=1.0))
+    sm.set_array([])
+    cbar = fig.colorbar(sm, ax=ax, pad=0.02)
+    cbar.set_label("Saturation Rate", fontsize=12, fontweight="bold")
+
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=dpi, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_actuator_timeseries(
+    series_by_actuator: Dict[str, List[Dict[str, Any]]],
+    output_path: Path,
+    dpi: int = 300,
+    sat_thresholds: Dict[str, float] | None = None,
+) -> None:
+    if not series_by_actuator:
+        return
+
+    actuators = sorted(series_by_actuator.keys())
+    if not actuators:
+        return
+
+    levels = sorted({int(s["level"]) for series in series_by_actuator.values() for s in series if "level" in s})
+    cmap = plt.cm.get_cmap("viridis", max(2, len(levels)))
+    level_colors = {lvl: cmap(idx) for idx, lvl in enumerate(levels)}
+
+    n_rows = len(actuators)
+    fig, axes = plt.subplots(n_rows, 1, figsize=(10, max(3, n_rows * 2.2)), sharex=True)
+    if n_rows == 1:
+        axes = [axes]
+
+    global_limits: Dict[str, Tuple[float, float]] = {}
+    for prefix in ("u", "s"):
+        all_vals: List[float] = []
+        for actuator in actuators:
+            if not actuator.startswith(prefix):
+                continue
+            for series in series_by_actuator.get(actuator, []):
+                v = series.get("v")
+                if v is None:
+                    continue
+                vals = np.asarray(v, dtype=float)
+                vals = vals[np.isfinite(vals)]
+                if vals.size:
+                    all_vals.extend(vals.tolist())
+        if all_vals:
+            vals = np.asarray(all_vals, dtype=float)
+            vals = vals[np.isfinite(vals)]
+            if vals.size:
+                y_lo = float(np.nanmin(vals))
+                y_hi = float(np.nanmax(vals))
+                if y_hi == y_lo:
+                    pad = max(1.0, abs(y_hi) * 0.05)
+                else:
+                    pad = max((y_hi - y_lo) * 0.08, 1e-6)
+                global_limits[prefix] = (y_lo - pad, y_hi + pad)
+
+    for ax, actuator in zip(axes, actuators):
+        series_list = sorted(series_by_actuator.get(actuator, []), key=lambda s: s.get("level", 0))
+        y_values: List[float] = []
+        for series in series_list:
+            t = series.get("t")
+            v = series.get("v")
+            sat = series.get("sat")
+            level = int(series.get("level", 0))
+            if t is None or v is None or sat is None:
+                continue
+            color = level_colors.get(level, "#333333")
+            ax.plot(t, v, linewidth=1.3, color=color, label=f"L{level:02d}")
+            ax.fill_between(t, v, where=sat, color=color, alpha=0.15)
+            y_values.extend(np.asarray(v, dtype=float).tolist())
+        if y_values:
+            y_vals = np.asarray(y_values, dtype=float)
+            y_vals = y_vals[np.isfinite(y_vals)]
+            if y_vals.size:
+                prefix = actuator[0] if actuator else ""
+                if prefix in global_limits:
+                    y_lo, y_hi = global_limits[prefix]
+                else:
+                    y_lo = float(np.nanmin(y_vals))
+                    y_hi = float(np.nanmax(y_vals))
+                    if y_hi == y_lo:
+                        pad = max(1.0, abs(y_hi) * 0.05)
+                    else:
+                        pad = max((y_hi - y_lo) * 0.08, 1e-6)
+                    y_lo -= pad
+                    y_hi += pad
+                thr = None
+                if sat_thresholds and actuator in sat_thresholds:
+                    thr = float(sat_thresholds[actuator])
+                    if y_lo <= thr <= y_hi:
+                        ax.axhline(thr, color="#555555", linestyle="--", linewidth=1.0)
+                        ax.axhline(-thr, color="#555555", linestyle="--", linewidth=1.0)
+                    else:
+                        ax.text(
+                            0.98,
+                            0.92,
+                            f"sat ±{thr:g} (off-scale)",
+                            transform=ax.transAxes,
+                            ha="right",
+                            va="top",
+                            fontsize=9,
+                            color="#555555",
+                        )
+                ax.set_ylim(y_lo, y_hi)
+        ax.set_ylabel(actuator, fontsize=24, fontweight="bold")
+        ax.grid(True, axis="y", alpha=0.3, linestyle=":", linewidth=0.8)
+
+    axes[-1].set_xlabel("time (s)", fontsize=24, fontweight="bold")
+    handles, labels = axes[0].get_legend_handles_labels()
+    if handles:
+        fig.legend(handles, labels, loc="upper right", bbox_to_anchor=(0.98, 0.98), frameon=True, fontsize=12, ncol=2)
     fig.tight_layout()
     fig.savefig(output_path, dpi=dpi, bbox_inches="tight")
     plt.close(fig)
