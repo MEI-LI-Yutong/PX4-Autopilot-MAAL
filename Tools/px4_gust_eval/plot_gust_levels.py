@@ -516,7 +516,6 @@ def plot_levels(
                 "att_max": "att_max_deg",
                 "act_margin": "actuator_delta_effective",
                 "recovery": "recovery_time_s",
-                "wind_sense": "wind_err_corr",
             }
 
             def _normalize(scores: Dict[str, float], raw: Dict[str, float], baseline: Dict[str, float] | None, baseline_raw: Dict[str, float] | None, is_baseline: bool) -> Dict[str, float]:
@@ -679,7 +678,6 @@ def plot_levels(
                 "servo_delta",
                 "actuator_delta_effective",
                 "recovery_time_s",
-                "wind_err_corr",
             ]
             fieldnames = [
                 "task_type",

@@ -20,7 +20,6 @@ from .gust_metrics import (
 # Limits for scoring
 ACTUATOR_MAX = 1000.0
 SERVO_MAX = 1.0
-WIND_CORR_MAX = 1.0
 ACTUATOR_SAT_RATIO = 0.98
 SERVO_SAT_RATIO = 0.98
 
@@ -32,7 +31,6 @@ DIM_ORDER = [
     "att_max",
     "act_margin",
     "recovery",
-    "wind_sense",
 ]
 
 DIM_LABELS = [
@@ -43,7 +41,6 @@ DIM_LABELS = [
     "Att-Max",
     "Act-Margin",
     "Recovery",
-    "Wind-Corr",
 ]
 
 
@@ -128,27 +125,6 @@ def _recovery_time(df: pd.DataFrame, h_err: Optional[np.ndarray], v_err: Optiona
     return float(max(0.0, t1 - t0))
 
 
-def _wind_sensitivity(df: pd.DataFrame, h_err: Optional[np.ndarray], v_err: Optional[np.ndarray]) -> Optional[float]:
-    if "wind_m_s" not in df.columns:
-        return None
-    wind = pd.to_numeric(df["wind_m_s"], errors="coerce").to_numpy(dtype=float)
-    if wind.size == 0 or not np.isfinite(wind).any():
-        return None
-
-    corrs = []
-    for err in (h_err, v_err):
-        if err is None:
-            continue
-        mask = np.isfinite(wind) & np.isfinite(err)
-        if mask.sum() < 5:
-            continue
-        c = np.corrcoef(wind[mask], err[mask])[0, 1]
-        if np.isfinite(c):
-            corrs.append(abs(c))
-    if not corrs:
-        return None
-    return float(max(corrs))
-
 
 def compute_dimension_breakdown(df: pd.DataFrame) -> Dict[str, Dict[str, float]]:
     """Compute 8D capability scores (0-1) with raw metric breakdown."""
@@ -192,7 +168,6 @@ def compute_dimension_breakdown(df: pd.DataFrame) -> Dict[str, Dict[str, float]]
         act_delta_effective = float(delta_s)
 
     t_rec = _recovery_time(df, h_err, v_err)
-    corr = _wind_sensitivity(df, h_err, v_err)
 
     scores = {
         "h_max": _score_inverse(h_max, H_MAX),
@@ -202,7 +177,6 @@ def compute_dimension_breakdown(df: pd.DataFrame) -> Dict[str, Dict[str, float]]
         "att_max": _score_inverse(att_max, ANG_MAX),
         "act_margin": act_margin_score,
         "recovery": _score_inverse(t_rec, RECOVER_T) if t_rec is not None else float("nan"),
-        "wind_sense": _score_inverse(corr, WIND_CORR_MAX) if corr is not None else float("nan"),
     }
 
     overall = _mean_ignore_nan([scores.get(k, float("nan")) for k in DIM_ORDER])
@@ -221,7 +195,6 @@ def compute_dimension_breakdown(df: pd.DataFrame) -> Dict[str, Dict[str, float]]
         "servo_delta": float(delta_s) if np.isfinite(delta_s) else float("nan"),
         "actuator_delta_effective": act_delta_effective,
         "recovery_time_s": float(t_rec) if t_rec is not None else float("nan"),
-        "wind_err_corr": float(corr) if corr is not None else float("nan"),
     }
 
     return {"scores": scores, "raw": raw, "overall": float(overall)}
