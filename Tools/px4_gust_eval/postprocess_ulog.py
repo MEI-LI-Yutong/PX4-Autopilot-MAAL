@@ -112,6 +112,24 @@ def _extract_actuator_outputs(ulog: ULog) -> pd.DataFrame:
     return out if found else pd.DataFrame()
 
 
+def _extract_actuator_servos(ulog: ULog) -> pd.DataFrame:
+    """Extract actuator servo controls (s1..s16) from ULog if available."""
+    dataset = _dataset_by_name(ulog, "actuator_servos")
+    df = _dataset_to_df(dataset)
+    if df.empty:
+        return pd.DataFrame()
+    out = pd.DataFrame()
+    out["timestamp"] = df["timestamp"]
+    out["t_rel_s"] = df["t_rel_s"]
+    found = False
+    for idx in range(16):
+        col = f"control_{idx}"
+        if col in df.columns:
+            out[f"s{idx + 1}"] = df[col]
+            found = True
+    return out if found else pd.DataFrame()
+
+
 def _local_to_global(df: pd.DataFrame, home_lat: float, home_lon: float, home_alt: float) -> pd.DataFrame:
     if df.empty:
         return df
@@ -258,6 +276,10 @@ def augment_csv_with_ulog(
     global_df = _extract_global_positions(ulog)
     setpoints = _extract_setpoints(ulog)
     outputs = _extract_actuator_outputs(ulog)
+    try:
+        servos = _extract_actuator_servos(ulog)
+    except Exception:  # Some logs do not contain actuator_servos
+        servos = pd.DataFrame()
     if setpoints.empty:
         raise RuntimeError("ULog does not contain trajectory/local position setpoints")
     home_lat, home_lon, home_alt = _extract_home_reference(ulog)
@@ -271,6 +293,9 @@ def augment_csv_with_ulog(
     if not outputs.empty:
         outputs["t_aligned_s"] = outputs["t_rel_s"] + float(time_offset)
         merged = _merge_setpoints(merged, outputs, tolerance)
+    if not servos.empty:
+        servos["t_aligned_s"] = servos["t_rel_s"] + float(time_offset)
+        merged = _merge_setpoints(merged, servos, tolerance)
     merged = _apply_tracking_errors(merged)
     merged.to_csv(csv_path, index=False)
     return merged, setpoints
