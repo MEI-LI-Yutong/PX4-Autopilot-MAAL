@@ -66,13 +66,23 @@ def _actuator_columns(df: pd.DataFrame, prefix: str) -> list[str]:
     return [c for c in df.columns if pattern.match(c)]
 
 
-def _extract_actuator_baseline(df: pd.DataFrame, prefix: str, samples: int = 25) -> Optional[float]:
+def _extract_actuator_baseline(
+    df: pd.DataFrame,
+    prefix: str,
+    samples: int = 25,
+    eps: float = 0.0,
+) -> Optional[float]:
     cols = _actuator_columns(df, prefix)
     if not cols:
         return None
     arr = df[cols].to_numpy(dtype=float)
     if arr.size == 0:
         return None
+    if eps > 0.0:
+        active_mask = np.nanmax(np.abs(arr), axis=0) >= eps
+        if not np.any(active_mask):
+            return None
+        arr = arr[:, active_mask]
     head = arr[:samples, :]
     if head.size == 0:
         return None
@@ -150,11 +160,11 @@ def compute_dimension_breakdown(df: pd.DataFrame) -> Dict[str, Dict[str, float]]
         att_max = float(np.nanmax(np.abs(pitch)))
 
     max_u = _extract_actuator_max(df, "u")
-    base_u = _extract_actuator_baseline(df, "u", samples=25)
+    base_u = _extract_actuator_baseline(df, "u", samples=25, eps=0.01)
     score_u, delta_u = _actuator_margin_score(base_u, max_u, ACTUATOR_MAX)
 
     max_s = _extract_actuator_max(df, "s")
-    base_s = _extract_actuator_baseline(df, "s", samples=25)
+    base_s = _extract_actuator_baseline(df, "s", samples=25, eps=0.01)
     score_s, delta_s = _actuator_margin_score(base_s, max_s, SERVO_MAX)
 
     act_scores = [s for s in (score_u, score_s) if np.isfinite(s)]
