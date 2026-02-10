@@ -36,6 +36,9 @@
 #include <gz/plugin/Register.hh>
 #include <gz/sim/EntityComponentManager.hh>
 
+#include <chrono>
+#include <iostream>
+
 using namespace custom;
 
 GZ_ADD_PLUGIN(
@@ -53,8 +56,14 @@ void RotorWindDragSystem::Configure(const gz::sim::Entity &_entity,
 	_model_entity = _entity;
 
 	if (_sdf) {
+		_model_name = _sdf->Get<std::string>("model_name", _model_name).first;
 		_base_link_name = _sdf->Get<std::string>("base_link", _base_link_name).first;
 		_drag_coeff = _sdf->Get<double>("drag_coeff", _drag_coeff).first;
+		_debug_interval_s = _sdf->Get<double>("debug_interval", _debug_interval_s).first;
+		_wind_topic = _sdf->Get<std::string>("wind_topic", _wind_topic).first;
+		_wind_stale_sec = _sdf->Get<double>("wind_stale_sec", _wind_stale_sec).first;
+		_motor_speed_topic = _sdf->Get<std::string>("motor_speed_topic", _motor_speed_topic).first;
+		_motor_speed_stale_sec = _sdf->Get<double>("motor_speed_stale_sec", _motor_speed_stale_sec).first;
 
 		for (auto rotor_elem = _sdf->FindElement("rotor_link"); rotor_elem;
 		     rotor_elem = rotor_elem->GetNextElement("rotor_link")) {
@@ -66,7 +75,42 @@ void RotorWindDragSystem::Configure(const gz::sim::Entity &_entity,
 		_rotor_link_names = {"rotor_0", "rotor_1", "rotor_2", "rotor_3"};
 	}
 
+	if (_model_name.empty()) {
+		const auto name_comp = _ecm.Component<gz::sim::components::Name>(_model_entity);
+		if (name_comp) {
+			_model_name = name_comp->Data();
+		}
+	}
+
 	_configured = ResolveEntities(_ecm);
+	std::cerr << "RotorWindDragSystem loaded: model=" << (_model_name.empty() ? "<entity>" : _model_name)
+		  << ", base_link=" << _base_link_name
+		  << ", rotors=" << _rotor_link_names.size()
+		  << ", drag_coeff=" << _drag_coeff << std::endl;
+
+	if (!_wind_topic.empty()) {
+		_wind_topic_subscribed = _node.Subscribe(_wind_topic, &RotorWindDragSystem::OnWindMsg, this);
+		if (!_wind_topic_subscribed) {
+			std::cerr << "RotorWindDragSystem: failed to subscribe wind topic: " << _wind_topic << std::endl;
+		}
+	}
+
+	if (_motor_speed_topic.empty() && !_model_name.empty()) {
+		_motor_speed_topic = "/" + _model_name + "/command/motor_speed";
+	}
+
+	if (!_motor_speed_topic.empty()) {
+		_motor_speed_subscribed = _node.Subscribe(_motor_speed_topic, &RotorWindDragSystem::OnMotorSpeedMsg, this);
+		if (!_motor_speed_subscribed) {
+			std::cerr << "RotorWindDragSystem: failed to subscribe motor speed topic: " << _motor_speed_topic << std::endl;
+		} else {
+			std::cerr << "RotorWindDragSystem: subscribed motor speed topic: " << _motor_speed_topic << std::endl;
+		}
+	}
+
+	if (_drag_coeff <= 0.0) {
+		std::cerr << "RotorWindDragSystem: drag_coeff <= 0, force will be zero." << std::endl;
+	}
 }
 
 void RotorWindDragSystem::PreUpdate(const gz::sim::UpdateInfo &_info,
@@ -80,19 +124,48 @@ void RotorWindDragSystem::PreUpdate(const gz::sim::UpdateInfo &_info,
 		return;
 	}
 
-	const auto wind_vel_comp = _ecm.Component<gz::sim::components::WorldLinearVelocity>(_wind_entity);
-	if (!wind_vel_comp) {
-		return;
+	gz::math::Vector3d wind{};
+	bool wind_from_topic = false;
+	if (_wind_topic_subscribed) {
+		std::lock_guard<std::mutex> lock(_wind_mutex);
+		const double now_s = std::chrono::duration<double>(
+			std::chrono::steady_clock::now().time_since_epoch()).count();
+		if (_wind_from_topic_time_s >= 0.0 &&
+		    (now_s - _wind_from_topic_time_s) <= _wind_stale_sec) {
+			wind = _wind_from_topic;
+			wind_from_topic = true;
+		}
 	}
 
-	const gz::math::Vector3d wind = wind_vel_comp->Data();
+	if (!wind_from_topic) {
+		const auto wind_vel_comp = _ecm.Component<gz::sim::components::WorldLinearVelocity>(_wind_entity);
+		if (!wind_vel_comp) {
+			if (!_warned_missing_wind) {
+				std::cerr << "RotorWindDragSystem: missing wind velocity component." << std::endl;
+				_warned_missing_wind = true;
+			}
+			return;
+		}
+		wind = wind_vel_comp->Data();
+	}
+
 	const double wind_speed = wind.Length();
-	if (wind_speed <= 1e-6) {
-		return;
+	const double rotor_speed = ComputeAverageRotorSpeed(_ecm);
+
+	if (_debug_interval_s > 0.0) {
+		const double now_s = std::chrono::duration<double>(_info.simTime).count();
+		if (_last_debug_time_s < 0.0 || (now_s - _last_debug_time_s) >= _debug_interval_s) {
+			std::cerr << "RotorWindDragSystem: wind=" << wind_speed
+				  << " m/s, rotor_avg=" << rotor_speed
+				  << " rad/s, drag_coeff=" << _drag_coeff
+				  << ", wind_src=" << (wind_from_topic ? "topic" : "component")
+				  << ", rotor_src=" << (_motor_speed_subscribed ? "topic" : "link")
+				  << std::endl;
+			_last_debug_time_s = now_s;
+		}
 	}
 
-	const double rotor_speed = ComputeAverageRotorSpeed(_ecm);
-	if (rotor_speed <= 1e-6) {
+	if (wind_speed <= 1e-6 || rotor_speed <= 1e-6) {
 		return;
 	}
 
@@ -106,7 +179,18 @@ void RotorWindDragSystem::PreUpdate(const gz::sim::UpdateInfo &_info,
 bool RotorWindDragSystem::ResolveEntities(gz::sim::EntityComponentManager &_ecm)
 {
 	if (_model_entity == gz::sim::kNullEntity) {
-		return false;
+		if (!_model_name.empty()) {
+			_model_entity = _ecm.EntityByComponents(
+				gz::sim::components::Model(),
+				gz::sim::components::Name(_model_name));
+		}
+		if (_model_entity == gz::sim::kNullEntity) {
+			if (!_warned_missing_model) {
+				std::cerr << "RotorWindDragSystem: model not found: " << _model_name << std::endl;
+				_warned_missing_model = true;
+			}
+			return false;
+		}
 	}
 
 	gz::sim::Model model(_model_entity);
@@ -131,11 +215,51 @@ bool RotorWindDragSystem::ResolveEntities(gz::sim::EntityComponentManager &_ecm)
 		_wind_entity = _ecm.EntityByComponents(gz::sim::components::Wind());
 	}
 
+	if (_wind_entity == gz::sim::kNullEntity && !_warned_missing_wind) {
+		std::cerr << "RotorWindDragSystem: wind entity not found." << std::endl;
+		_warned_missing_wind = true;
+	}
+
 	return _wind_entity != gz::sim::kNullEntity;
+}
+
+void RotorWindDragSystem::OnWindMsg(const gz::msgs::Vector3d &_msg)
+{
+	std::lock_guard<std::mutex> lock(_wind_mutex);
+	_wind_from_topic = gz::math::Vector3d(_msg.x(), _msg.y(), _msg.z());
+	_wind_from_topic_time_s = std::chrono::duration<double>(
+		std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+void RotorWindDragSystem::OnMotorSpeedMsg(const gz::msgs::Actuators &_msg)
+{
+	std::lock_guard<std::mutex> lock(_motor_mutex);
+	_motor_speed_from_topic.clear();
+	_motor_speed_from_topic.reserve(static_cast<size_t>(_msg.velocity_size()));
+	for (int i = 0; i < _msg.velocity_size(); ++i) {
+		_motor_speed_from_topic.push_back(_msg.velocity(i));
+	}
+	_motor_speed_time_s = std::chrono::duration<double>(
+		std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
 double RotorWindDragSystem::ComputeAverageRotorSpeed(const gz::sim::EntityComponentManager &_ecm) const
 {
+	if (_motor_speed_subscribed) {
+		std::lock_guard<std::mutex> lock(_motor_mutex);
+		const double now_s = std::chrono::duration<double>(
+			std::chrono::steady_clock::now().time_since_epoch()).count();
+		if (_motor_speed_time_s >= 0.0 &&
+		    (now_s - _motor_speed_time_s) <= _motor_speed_stale_sec &&
+		    !_motor_speed_from_topic.empty()) {
+			double sum = 0.0;
+			for (const double v : _motor_speed_from_topic) {
+				sum += v;
+			}
+			return sum / static_cast<double>(_motor_speed_from_topic.size());
+		}
+	}
+
 	double sum = 0.0;
 	size_t count = 0;
 

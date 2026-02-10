@@ -38,10 +38,16 @@
 #include <gz/sim/Link.hh>
 #include <gz/sim/Model.hh>
 #include <gz/sim/System.hh>
+#include <gz/sim/components/Model.hh>
+#include <gz/sim/components/Name.hh>
 #include <gz/sim/components/Wind.hh>
 #include <gz/sim/components/LinearVelocity.hh>
+#include <gz/transport/Node.hh>
+#include <gz/msgs/actuators.pb.h>
+#include <gz/msgs/vector3d.pb.h>
 #include <sdf/sdf.hh>
 
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -64,6 +70,8 @@ public:
 private:
 	bool ResolveEntities(gz::sim::EntityComponentManager &_ecm);
 	double ComputeAverageRotorSpeed(const gz::sim::EntityComponentManager &_ecm) const;
+	void OnWindMsg(const gz::msgs::Vector3d &_msg);
+	void OnMotorSpeedMsg(const gz::msgs::Actuators &_msg);
 
 	gz::sim::Entity _model_entity{gz::sim::kNullEntity};
 	gz::sim::Link _base_link;
@@ -73,7 +81,27 @@ private:
 	gz::sim::Entity _wind_entity{gz::sim::kNullEntity};
 
 	std::string _base_link_name{"base_link"};
+	std::string _model_name{};
+	std::string _wind_topic{"/world/windy/wind_gust"};
+	std::string _motor_speed_topic{};
 	double _drag_coeff{0.02};
+	double _wind_stale_sec{1.0};
+	double _motor_speed_stale_sec{1.0};
 	bool _configured{false};
+	double _debug_interval_s{1.0};
+	double _last_debug_time_s{-1.0};
+	bool _warned_missing_wind{false};
+	bool _warned_missing_model{false};
+
+	gz::transport::Node _node;
+	mutable std::mutex _wind_mutex;
+	gz::math::Vector3d _wind_from_topic{};
+	double _wind_from_topic_time_s{-1.0};
+	bool _wind_topic_subscribed{false};
+
+	mutable std::mutex _motor_mutex;
+	std::vector<double> _motor_speed_from_topic{};
+	double _motor_speed_time_s{-1.0};
+	bool _motor_speed_subscribed{false};
 };
 } // namespace custom
