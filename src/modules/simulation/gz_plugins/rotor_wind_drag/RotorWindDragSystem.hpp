@@ -47,6 +47,7 @@
 #include <gz/msgs/vector3d.pb.h>
 #include <sdf/sdf.hh>
 
+#include <map>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -69,9 +70,12 @@ public:
 
 private:
 	bool ResolveEntities(gz::sim::EntityComponentManager &_ecm);
-	double ComputeAverageRotorSpeed(const gz::sim::EntityComponentManager &_ecm) const;
+	double ComputeEtaBar(const gz::sim::EntityComponentManager &_ecm,
+			     std::vector<double> &eta_rpm_out) const;
 	void OnWindMsg(const gz::msgs::Vector3d &_msg);
 	void OnMotorSpeedMsg(const gz::msgs::Actuators &_msg);
+	bool LoadDragTable(const std::string &path);
+	double LookupDragK(double rpm, double gamma_deg) const;
 
 	gz::sim::Entity _model_entity{gz::sim::kNullEntity};
 	gz::sim::Link _base_link;
@@ -84,7 +88,9 @@ private:
 	std::string _model_name{};
 	std::string _wind_topic{"/world/windy/wind_gust"};
 	std::string _motor_speed_topic{};
-	double _drag_coeff{0.02};
+	std::string _drag_table_path{};
+	double _rho{1.22};
+	double _k_scale{1.0};
 	double _wind_stale_sec{1.0};
 	double _motor_speed_stale_sec{1.0};
 	bool _configured{false};
@@ -103,5 +109,10 @@ private:
 	std::vector<double> _motor_speed_from_topic{};
 	double _motor_speed_time_s{-1.0};
 	bool _motor_speed_subscribed{false};
+
+	std::vector<double> _rpm_grid;
+	std::vector<double> _pitch_grid;
+	std::map<std::pair<double, double>, double> _drag_table;
+	bool _drag_table_loaded{false};
 };
 } // namespace custom

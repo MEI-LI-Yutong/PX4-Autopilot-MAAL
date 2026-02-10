@@ -36,10 +36,44 @@
 #include <gz/plugin/Register.hh>
 #include <gz/sim/EntityComponentManager.hh>
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <fstream>
 #include <iostream>
+#include <numeric>
+#include <sstream>
 
 using namespace custom;
+
+namespace
+{
+std::string DefaultDragTablePath()
+{
+	const std::string file_path = __FILE__;
+	const auto pos = file_path.find_last_of('/');
+	if (pos == std::string::npos) {
+		return "data/figure20_drag.csv";
+	}
+	return file_path.substr(0, pos) + "/data/figure20_drag.csv";
+}
+
+std::string ResolveDragTablePath(const std::string &path)
+{
+	if (path.empty()) {
+		return DefaultDragTablePath();
+	}
+	if (!path.empty() && path.front() == '/') {
+		return path;
+	}
+	const std::string base = DefaultDragTablePath();
+	const auto pos = base.find_last_of('/');
+	if (pos == std::string::npos) {
+		return path;
+	}
+	return base.substr(0, pos) + "/" + path;
+}
+} // namespace
 
 GZ_ADD_PLUGIN(
 	RotorWindDragSystem,
@@ -58,7 +92,12 @@ void RotorWindDragSystem::Configure(const gz::sim::Entity &_entity,
 	if (_sdf) {
 		_model_name = _sdf->Get<std::string>("model_name", _model_name).first;
 		_base_link_name = _sdf->Get<std::string>("base_link", _base_link_name).first;
-		_drag_coeff = _sdf->Get<double>("drag_coeff", _drag_coeff).first;
+		_drag_table_path = _sdf->Get<std::string>("drag_table", _drag_table_path).first;
+		_rho = _sdf->Get<double>("rho", _rho).first;
+		_k_scale = _sdf->Get<double>("k_scale", _k_scale).first;
+		if (_sdf->HasElement("drag_coeff")) {
+			_k_scale = _sdf->Get<double>("drag_coeff", _k_scale).first;
+		}
 		_debug_interval_s = _sdf->Get<double>("debug_interval", _debug_interval_s).first;
 		_wind_topic = _sdf->Get<std::string>("wind_topic", _wind_topic).first;
 		_wind_stale_sec = _sdf->Get<double>("wind_stale_sec", _wind_stale_sec).first;
@@ -83,10 +122,16 @@ void RotorWindDragSystem::Configure(const gz::sim::Entity &_entity,
 	}
 
 	_configured = ResolveEntities(_ecm);
+	_drag_table_path = ResolveDragTablePath(_drag_table_path);
+	_drag_table_loaded = LoadDragTable(_drag_table_path);
 	std::cerr << "RotorWindDragSystem loaded: model=" << (_model_name.empty() ? "<entity>" : _model_name)
 		  << ", base_link=" << _base_link_name
 		  << ", rotors=" << _rotor_link_names.size()
-		  << ", drag_coeff=" << _drag_coeff << std::endl;
+		  << ", rho=" << _rho
+		  << ", k_scale=" << _k_scale
+		  << ", drag_table=" << _drag_table_path
+		  << ", drag_table_loaded=" << (_drag_table_loaded ? "true" : "false")
+		  << std::endl;
 
 	if (!_wind_topic.empty()) {
 		_wind_topic_subscribed = _node.Subscribe(_wind_topic, &RotorWindDragSystem::OnWindMsg, this);
@@ -108,8 +153,8 @@ void RotorWindDragSystem::Configure(const gz::sim::Entity &_entity,
 		}
 	}
 
-	if (_drag_coeff <= 0.0) {
-		std::cerr << "RotorWindDragSystem: drag_coeff <= 0, force will be zero." << std::endl;
+	if (_k_scale <= 0.0) {
+		std::cerr << "RotorWindDragSystem: k_scale <= 0, force will be zero." << std::endl;
 	}
 }
 
@@ -149,15 +194,39 @@ void RotorWindDragSystem::PreUpdate(const gz::sim::UpdateInfo &_info,
 		wind = wind_vel_comp->Data();
 	}
 
+	gz::math::Vector3d wind_body = wind;
+	const auto pose_opt = _base_link.WorldPose(_ecm);
+	if (pose_opt.has_value()) {
+		const auto &pose = pose_opt.value();
+		wind_body = pose.Rot().Inverse().RotateVector(wind);
+	}
+
 	const double wind_speed = wind.Length();
-	const double rotor_speed = ComputeAverageRotorSpeed(_ecm);
+	std::vector<double> eta_rpm;
+	const double eta_bar = ComputeEtaBar(_ecm, eta_rpm);
+	const double gamma_rad = std::atan2(wind_body.X(), wind_body.Z());
+	const double gamma_deg = gamma_rad * 180.0 / M_PI;
+	const double k_lookup = _drag_table_loaded ? LookupDragK(eta_bar, gamma_deg) : 0.0;
+	const double k_eff = k_lookup * _k_scale;
+	const double drag_mag_debug = _rho * k_eff * wind_speed;
 
 	if (_debug_interval_s > 0.0) {
 		const double now_s = std::chrono::duration<double>(_info.simTime).count();
 		if (_last_debug_time_s < 0.0 || (now_s - _last_debug_time_s) >= _debug_interval_s) {
 			std::cerr << "RotorWindDragSystem: wind=" << wind_speed
-				  << " m/s, rotor_avg=" << rotor_speed
-				  << " rad/s, drag_coeff=" << _drag_coeff
+				  << " m/s, wind_world=(" << wind.X() << "," << wind.Y() << "," << wind.Z() << ")"
+				  << ", wind_body=(" << wind_body.X() << "," << wind_body.Y() << "," << wind_body.Z() << ")"
+				  << ", gamma_deg=" << gamma_deg
+				  << ", eta_rpm=[";
+			for (size_t i = 0; i < eta_rpm.size(); ++i) {
+				std::cerr << eta_rpm[i] << (i + 1 < eta_rpm.size() ? "," : "");
+			}
+			std::cerr << "], eta_bar=" << eta_bar
+				  << ", k_lookup=" << k_lookup
+				  << ", k_scale=" << _k_scale
+				  << ", k_eff=" << k_eff
+				  << ", rho=" << _rho
+				  << ", drag_mag=" << drag_mag_debug
 				  << ", wind_src=" << (wind_from_topic ? "topic" : "component")
 				  << ", rotor_src=" << (_motor_speed_subscribed ? "topic" : "link")
 				  << std::endl;
@@ -165,12 +234,12 @@ void RotorWindDragSystem::PreUpdate(const gz::sim::UpdateInfo &_info,
 		}
 	}
 
-	if (wind_speed <= 1e-6 || rotor_speed <= 1e-6) {
+	if (wind_speed <= 1e-6 || eta_bar <= 1e-6 || std::fabs(k_eff) <= 1e-9) {
 		return;
 	}
 
 	const gz::math::Vector3d drag_dir = -wind.Normalized();
-	const double drag_mag = _drag_coeff * wind_speed * rotor_speed;
+	const double drag_mag = _rho * k_eff * wind_speed;
 	const gz::math::Vector3d drag_force = drag_dir * drag_mag;
 
 	_base_link.AddWorldForce(_ecm, drag_force);
@@ -243,8 +312,11 @@ void RotorWindDragSystem::OnMotorSpeedMsg(const gz::msgs::Actuators &_msg)
 		std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
-double RotorWindDragSystem::ComputeAverageRotorSpeed(const gz::sim::EntityComponentManager &_ecm) const
+double RotorWindDragSystem::ComputeEtaBar(const gz::sim::EntityComponentManager &_ecm,
+					  std::vector<double> &eta_rpm_out) const
 {
+	eta_rpm_out.clear();
+
 	if (_motor_speed_subscribed) {
 		std::lock_guard<std::mutex> lock(_motor_mutex);
 		const double now_s = std::chrono::duration<double>(
@@ -252,21 +324,25 @@ double RotorWindDragSystem::ComputeAverageRotorSpeed(const gz::sim::EntityCompon
 		if (_motor_speed_time_s >= 0.0 &&
 		    (now_s - _motor_speed_time_s) <= _motor_speed_stale_sec &&
 		    !_motor_speed_from_topic.empty()) {
-			double sum = 0.0;
 			for (const double v : _motor_speed_from_topic) {
-				sum += v;
+				const double rpm = v * 60.0 / (2.0 * M_PI);
+				eta_rpm_out.push_back(rpm);
 			}
-			return sum / static_cast<double>(_motor_speed_from_topic.size());
+			const double sum_sq = std::accumulate(eta_rpm_out.begin(), eta_rpm_out.end(), 0.0,
+				[](double acc, double value) { return acc + value * value; });
+			return 0.5 * std::sqrt(sum_sq);
 		}
 	}
 
-	double sum = 0.0;
+	double sum_sq = 0.0;
 	size_t count = 0;
 
 	for (const auto &link : _rotor_links) {
 		const auto angular_vel = link.WorldAngularVelocity(_ecm);
 		if (angular_vel.has_value()) {
-			sum += angular_vel.value().Length();
+			const double rpm = angular_vel.value().Length() * 60.0 / (2.0 * M_PI);
+			eta_rpm_out.push_back(rpm);
+			sum_sq += rpm * rpm;
 			++count;
 		}
 	}
@@ -275,5 +351,105 @@ double RotorWindDragSystem::ComputeAverageRotorSpeed(const gz::sim::EntityCompon
 		return 0.0;
 	}
 
-	return sum / static_cast<double>(count);
+	return 0.5 * std::sqrt(sum_sq);
+}
+
+bool RotorWindDragSystem::LoadDragTable(const std::string &path)
+{
+	_drag_table.clear();
+	_rpm_grid.clear();
+	_pitch_grid.clear();
+
+	std::ifstream file(path);
+	if (!file.is_open()) {
+		std::cerr << "RotorWindDragSystem: failed to open drag table: " << path << std::endl;
+		return false;
+	}
+
+	std::string line;
+	bool is_header = true;
+	while (std::getline(file, line)) {
+		if (is_header) {
+			is_header = false;
+			continue;
+		}
+		if (line.empty()) {
+			continue;
+		}
+
+		std::stringstream ss(line);
+		std::string rpm_str;
+		std::string pitch_str;
+		std::string drag_str;
+
+		if (!std::getline(ss, rpm_str, ',')) {
+			continue;
+		}
+		if (!std::getline(ss, pitch_str, ',')) {
+			continue;
+		}
+		if (!std::getline(ss, drag_str, ',')) {
+			continue;
+		}
+
+		const double rpm = std::stod(rpm_str);
+		const double pitch = std::stod(pitch_str);
+		const double drag = std::stod(drag_str);
+
+		_drag_table[{rpm, pitch}] = drag;
+		_rpm_grid.push_back(rpm);
+		_pitch_grid.push_back(pitch);
+	}
+
+	if (_drag_table.empty()) {
+		std::cerr << "RotorWindDragSystem: drag table empty: " << path << std::endl;
+		return false;
+	}
+
+	std::sort(_rpm_grid.begin(), _rpm_grid.end());
+	_rpm_grid.erase(std::unique(_rpm_grid.begin(), _rpm_grid.end()), _rpm_grid.end());
+	std::sort(_pitch_grid.begin(), _pitch_grid.end());
+	_pitch_grid.erase(std::unique(_pitch_grid.begin(), _pitch_grid.end()), _pitch_grid.end());
+
+	return !_rpm_grid.empty() && !_pitch_grid.empty();
+}
+
+double RotorWindDragSystem::LookupDragK(double rpm, double gamma_deg) const
+{
+	if (_rpm_grid.empty() || _pitch_grid.empty()) {
+		return 0.0;
+	}
+
+	const double rpm_clamped = std::clamp(rpm, _rpm_grid.front(), _rpm_grid.back());
+	const double pitch_clamped = std::clamp(gamma_deg, _pitch_grid.front(), _pitch_grid.back());
+
+	auto rpm_it = std::lower_bound(_rpm_grid.begin(), _rpm_grid.end(), rpm_clamped);
+	auto pitch_it = std::lower_bound(_pitch_grid.begin(), _pitch_grid.end(), pitch_clamped);
+
+	double rpm1 = (rpm_it == _rpm_grid.begin()) ? *rpm_it : *(rpm_it - 1);
+	double rpm2 = (rpm_it == _rpm_grid.end()) ? _rpm_grid.back() : *rpm_it;
+	double pitch1 = (pitch_it == _pitch_grid.begin()) ? *pitch_it : *(pitch_it - 1);
+	double pitch2 = (pitch_it == _pitch_grid.end()) ? _pitch_grid.back() : *pitch_it;
+
+	if (std::fabs(rpm1 - rpm2) <= 1e-9 && std::fabs(pitch1 - pitch2) <= 1e-9) {
+		auto it = _drag_table.find({rpm1, pitch1});
+		return it != _drag_table.end() ? it->second : 0.0;
+	}
+
+	const double q11 = _drag_table.count({rpm1, pitch1}) ? _drag_table.at({rpm1, pitch1}) : 0.0;
+	const double q12 = _drag_table.count({rpm1, pitch2}) ? _drag_table.at({rpm1, pitch2}) : 0.0;
+	const double q21 = _drag_table.count({rpm2, pitch1}) ? _drag_table.at({rpm2, pitch1}) : 0.0;
+	const double q22 = _drag_table.count({rpm2, pitch2}) ? _drag_table.at({rpm2, pitch2}) : 0.0;
+
+	const double rpm_diff = rpm2 - rpm1;
+	const double pitch_diff = pitch2 - pitch1;
+	const double rpm_den = std::fabs(rpm_diff) > 1e-9 ? rpm_diff : 1.0;
+	const double pitch_den = std::fabs(pitch_diff) > 1e-9 ? pitch_diff : 1.0;
+
+	const double t = (rpm_clamped - rpm1) / rpm_den;
+	const double u = (pitch_clamped - pitch1) / pitch_den;
+
+	const double q1 = q11 + t * (q21 - q11);
+	const double q2 = q12 + t * (q22 - q12);
+	return q1 + u * (q2 - q1);
 }
