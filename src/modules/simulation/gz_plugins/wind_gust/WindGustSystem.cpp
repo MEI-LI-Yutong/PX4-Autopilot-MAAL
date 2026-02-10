@@ -47,11 +47,43 @@
  #include <gz/math/Helpers.hh>
  #include <gz/msgs/vector3d.pb.h>
  #include <gz/msgs/Utility.hh>
+ #include <algorithm>
  #include <cmath>
+ #include <fstream>
+ #include <sstream>
 
  using namespace gz::sim;
  using namespace gz::math;
  using namespace custom;
+
+namespace
+{
+std::string DefaultCsvPath()
+{
+	const std::string file_path = __FILE__;
+	const auto pos = file_path.find_last_of('/');
+	if (pos == std::string::npos) {
+		return "data/flight_wind_xyz_attitude.csv";
+	}
+	return file_path.substr(0, pos) + "/data/flight_wind_xyz_attitude.csv";
+}
+
+std::string ResolveCsvPath(const std::string &path)
+{
+	if (path.empty()) {
+		return DefaultCsvPath();
+	}
+	if (!path.empty() && path.front() == '/') {
+		return path;
+	}
+	const std::string base = DefaultCsvPath();
+	const auto pos = base.find_last_of('/');
+	if (pos == std::string::npos) {
+		return path;
+	}
+	return base.substr(0, pos) + "/" + path;
+}
+} // namespace
 
  // Register the plugin
  GZ_ADD_PLUGIN(
@@ -75,6 +107,15 @@
 	 if (_sdf->HasElement("model")) {
 	     _model = _sdf->Get<std::string>("model", _model).first;
 	 }
+     if (_sdf->HasElement("csv_path")) {
+         _csv_path = _sdf->Get<std::string>("csv_path", _csv_path).first;
+     }
+     if (_sdf->HasElement("csv_loop")) {
+         _csv_loop = _sdf->Get<bool>("csv_loop", _csv_loop).first;
+     }
+     if (_sdf->HasElement("csv_time_offset_s")) {
+         _csv_time_offset_s = _sdf->Get<double>("csv_time_offset_s", _csv_time_offset_s).first;
+     }
 	 if (_sdf->HasElement("mean")) {
 	     _mean = _sdf->Get<Vector3d>("mean", Vector3d::Zero).first;
 	 }
@@ -96,6 +137,14 @@
      }
     if (_sdf->HasElement("direction")) {
         _direction = _sdf->Get<Vector3d>("direction", _direction).first;
+    }
+
+    if (_model == "csv") {
+        _csv_path = ResolveCsvPath(_csv_path);
+        _csv_loaded = LoadCsvWind(_csv_path);
+        if (!_csv_loaded) {
+            gzwarn << "WindGustSystem: failed to load csv wind: " << _csv_path << std::endl;
+        }
     }
 
     // Dryden parameters (optional)
@@ -211,7 +260,43 @@
     _last_time_s = t;
     Vector3d wind = _mean;
 
-    if (_model == "sine") {
+    if (_model == "csv") {
+        if (_csv_loaded) {
+            wind = SampleCsvWind(t);
+        } else {
+            wind = Vector3d::Zero;
+        }
+
+        if (_csv_log_interval_s > 0.0 &&
+            (_last_csv_log_time_s < 0.0 || (t - _last_csv_log_time_s) >= _csv_log_interval_s)) {
+            double t_eff = t + _csv_time_offset_s;
+            double t_start = 0.0;
+            double t_end = 0.0;
+            double duration = 0.0;
+            if (!_csv_time_s.empty()) {
+                t_start = _csv_time_s.front();
+                t_end = _csv_time_s.back();
+                duration = t_end - t_start;
+            }
+            if (_csv_loop && duration > 1e-6) {
+                t_eff = std::fmod(t_eff - t_start, duration);
+                if (t_eff < 0.0) {
+                    t_eff += duration;
+                }
+                t_eff += t_start;
+            }
+            std::cerr << "WindGustSystem(csv): t=" << t
+                      << ", t_eff=" << t_eff
+                      << ", t_start=" << t_start
+                      << ", t_end=" << t_end
+                      << ", loop=" << (_csv_loop ? "true" : "false")
+                      << ", loaded=" << (_csv_loaded ? "true" : "false")
+                      << ", wind=(" << wind.X() << "," << wind.Y() << "," << wind.Z() << ")"
+                      << std::endl;
+            _last_csv_log_time_s = t;
+        }
+
+    } else if (_model == "sine") {
 	 if (_frequency_hz > 0.0) {
 	     const double omega = 2.0 * GZ_PI * _frequency_hz;
 	     wind.X() += _amplitude.X() * std::sin(omega * t + _phase_rad);
@@ -422,6 +507,124 @@ bool WindGustSystem::GetModelPosition(EntityComponentManager &_ecm,
     }
 
     return false;
+}
+
+bool WindGustSystem::LoadCsvWind(const std::string &path)
+{
+    _csv_time_s.clear();
+    _csv_wind.clear();
+
+    std::ifstream file(path);
+    if (!file.is_open()) {
+        return false;
+    }
+
+    std::string line;
+    if (!std::getline(file, line)) {
+        return false;
+    }
+
+    int idx_time = -1;
+    int idx_wind_n = -1;
+    int idx_wind_e = -1;
+    {
+        std::stringstream header(line);
+        std::string col;
+        int idx = 0;
+        while (std::getline(header, col, ',')) {
+            if (col == "time_s") {
+                idx_time = idx;
+            } else if (col == "windN") {
+                idx_wind_n = idx;
+            } else if (col == "windE") {
+                idx_wind_e = idx;
+            }
+            ++idx;
+        }
+    }
+
+    if (idx_time < 0 || idx_wind_n < 0 || idx_wind_e < 0) {
+        gzwarn << "WindGustSystem: csv header missing required columns (time_s, windN, windE)" << std::endl;
+        return false;
+    }
+
+    while (std::getline(file, line)) {
+        if (line.empty()) {
+            continue;
+        }
+        std::stringstream row(line);
+        std::string cell;
+        int idx = 0;
+        double time_s = 0.0;
+        double wind_n = 0.0;
+        double wind_e = 0.0;
+        while (std::getline(row, cell, ',')) {
+            if (idx == idx_time) {
+                time_s = std::stod(cell);
+            } else if (idx == idx_wind_n) {
+                wind_n = std::stod(cell);
+            } else if (idx == idx_wind_e) {
+                wind_e = std::stod(cell);
+            }
+            ++idx;
+        }
+        _csv_time_s.push_back(time_s);
+        _csv_wind.emplace_back(wind_n, wind_e, 0.0);
+    }
+
+    if (_csv_time_s.size() < 2) {
+        gzwarn << "WindGustSystem: csv wind data too short" << std::endl;
+        _csv_time_s.clear();
+        _csv_wind.clear();
+        return false;
+    }
+
+    return true;
+}
+
+Vector3d WindGustSystem::SampleCsvWind(double t_s) const
+{
+    if (_csv_time_s.empty()) {
+        return Vector3d::Zero;
+    }
+
+    double t = t_s + _csv_time_offset_s;
+    const double t_start = _csv_time_s.front();
+    const double t_end = _csv_time_s.back();
+    const double duration = t_end - t_start;
+
+    if (_csv_loop && duration > 1e-6) {
+        t = std::fmod(t - t_start, duration);
+        if (t < 0) {
+            t += duration;
+        }
+        t += t_start;
+    } else {
+        if (t <= t_start) {
+            return _csv_wind.front();
+        }
+        if (t >= t_end) {
+            return _csv_wind.back();
+        }
+    }
+
+    auto it = std::lower_bound(_csv_time_s.begin(), _csv_time_s.end(), t);
+    if (it == _csv_time_s.begin()) {
+        return _csv_wind.front();
+    }
+    if (it == _csv_time_s.end()) {
+        return _csv_wind.back();
+    }
+
+    const size_t idx1 = static_cast<size_t>(std::distance(_csv_time_s.begin(), it) - 1);
+    const size_t idx2 = idx1 + 1;
+    const double t1 = _csv_time_s[idx1];
+    const double t2 = _csv_time_s[idx2];
+    const double denom = (t2 - t1) > 1e-9 ? (t2 - t1) : 1.0;
+    const double alpha = (t - t1) / denom;
+    const Vector3d &w1 = _csv_wind[idx1];
+    const Vector3d &w2 = _csv_wind[idx2];
+    return w1 + (w2 - w1) * alpha;
 }
 
 Vector3d WindGustSystem::ComputeSpatialWind(const Vector3d &pos)

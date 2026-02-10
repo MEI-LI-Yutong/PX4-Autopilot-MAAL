@@ -39,6 +39,7 @@
  #include <gz/transport/Node.hh>
  #include <chrono>
  #include <string>
+ #include <vector>
  #include <sdf/sdf.hh>
 #include <gz/transport/Publisher.hh>
 #include <gz/math/Helpers.hh>
@@ -97,6 +98,16 @@
     bool _rng_seeded{false};
     uint32_t _rng_seed{0};
 
+    // ======== CSV wind parameters (NEW) ========
+    std::string _csv_path{};
+    bool _csv_loop{true};
+    double _csv_time_offset_s{0.0};
+    bool _csv_loaded{false};
+    std::vector<double> _csv_time_s;
+    std::vector<gz::math::Vector3d> _csv_wind;
+    double _csv_log_interval_s{1.0};
+    double _last_csv_log_time_s{-1.0};
+
     // ======== Spatial wind parameters (NEW) ========
     std::string _spatial_model{"none"};  // supported: none, boundary_layer
     std::string _tracked_model{""};      // Name of model to track (empty = disabled)
@@ -129,6 +140,8 @@
                           gz::sim::Entity &entity_cache,
                           bool &warned,
                           gz::math::Vector3d &pos);
+    bool LoadCsvWind(const std::string &path);
+    gz::math::Vector3d SampleCsvWind(double t_s) const;
     // Compute simple 1-cos gust at time t (seconds)
     inline double one_minus_cos_simp(double t) const {
         const double T = _simp_T;
