@@ -142,8 +142,10 @@ std::string ResolveCsvPath(const std::string &path)
     if (_model == "csv") {
         _csv_path = ResolveCsvPath(_csv_path);
         _csv_loaded = LoadCsvWind(_csv_path);
-        if (!_csv_loaded) {
-            gzwarn << "WindGustSystem: failed to load csv wind: " << _csv_path << std::endl;
+        if (_csv_loaded) {
+            gzwarn << "[WindGustSystem] csv=" << _csv_path << std::endl;
+        } else {
+            gzwarn << "[WindGustSystem] csv load failed: " << _csv_path << std::endl;
         }
     }
 
@@ -267,33 +269,11 @@ std::string ResolveCsvPath(const std::string &path)
             wind = Vector3d::Zero;
         }
 
-        if (_csv_log_interval_s > 0.0 &&
-            (_last_csv_log_time_s < 0.0 || (t - _last_csv_log_time_s) >= _csv_log_interval_s)) {
-            double t_eff = t + _csv_time_offset_s;
-            double t_start = 0.0;
-            double t_end = 0.0;
-            double duration = 0.0;
-            if (!_csv_time_s.empty()) {
-                t_start = _csv_time_s.front();
-                t_end = _csv_time_s.back();
-                duration = t_end - t_start;
-            }
-            if (_csv_loop && duration > 1e-6) {
-                t_eff = std::fmod(t_eff - t_start, duration);
-                if (t_eff < 0.0) {
-                    t_eff += duration;
-                }
-                t_eff += t_start;
-            }
-            std::cerr << "WindGustSystem(csv): t=" << t
-                      << ", t_eff=" << t_eff
-                      << ", t_start=" << t_start
-                      << ", t_end=" << t_end
-                      << ", loop=" << (_csv_loop ? "true" : "false")
-                      << ", loaded=" << (_csv_loaded ? "true" : "false")
-                      << ", wind=(" << wind.X() << "," << wind.Y() << "," << wind.Z() << ")"
-                      << std::endl;
-            _last_csv_log_time_s = t;
+        if (_csv_loaded && !_csv_started) {
+            _csv_started = true;
+            _csv_start_time_s = t;
+            gzwarn << "[WindGustSystem] csv start: t0=" << _csv_start_time_s
+                   << ", t=" << t << std::endl;
         }
 
     } else if (_model == "sine") {

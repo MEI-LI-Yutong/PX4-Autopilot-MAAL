@@ -1130,6 +1130,32 @@ class SimpleGustRunner:
 
         self._init_wandb(self.config)
 
+        if bool(self.config.get("launch_only", False)):
+            timeout_sec = int(self.config.get("launch_only_timeout_sec", 120))
+            wind_env = wind_env_from_config(self.config.get("wind_config", {}))
+            try:
+                self._update_gz_wind_config(self.config.get("wind_config", {}))
+            except Exception as e:
+                self.logger.warning(f"Failed updating gz wind config: {e}")
+
+            ok_launch = await self.launch_px4(wind_env)
+            if not ok_launch:
+                return 1
+
+            connected = await self.connect_mavsdk(self.config.get("mavlink_url", "udp://:14540"))
+            if connected and bool(self.config.get("output_config", {}).get("save_flight_data", False)):
+                await self._start_recording("launch_only")
+            elif not connected:
+                self.logger.warning("Launch-only mode: MAVSDK connect failed, CSV recording disabled")
+
+            self.logger.info(f"Launch-only mode: waiting {timeout_sec}s for user control (QGC)")
+            await asyncio.sleep(max(0, timeout_sec))
+
+            if self._recording:
+                await self._stop_recording()
+            self.stop_px4()
+            return 0
+
         # missions/tests
         tests: List[Dict[str, Any]] = []
         if "wind_gust_tests" in self.config:

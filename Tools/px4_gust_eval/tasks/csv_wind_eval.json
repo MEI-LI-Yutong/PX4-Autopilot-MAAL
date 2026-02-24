@@ -1,0 +1,40 @@
+{
+  "test_suite": "CSV Wind Replay (Key Metrics)",
+  "description": "Replay CSV wind and record wind/position/attitude metrics",
+  "px4_sitl_command": "make px4_sitl gz_x500_windy",
+  "mission_type": "straight_line",
+  "mission_config": {
+    "takeoff_altitude": 20.0,
+    "waypoints": [
+      {"lat": 47.397742, "lon": 8.545594, "alt": 20.0},
+      {"lat": 47.398242, "lon": 8.546094, "alt": 20.0}
+    ],
+    "airspeed": 12.0,
+    "timeout_sec": 120
+  },
+  "wind_gust_tests": [
+    {
+      "test_id": "csv_wind_replay",
+      "description": "Replay wind from CSV (N/E in world frame)",
+      "wind_config": {
+        "model": "csv",
+        "csv_path": "/home/raiot/PX4-Autopilot-MAAL-Next/src/modules/simulation/gz_plugins/wind_gust/data/flight_wind_xyz_attitude.csv",
+        "csv_loop": true,
+        "csv_time_offset_s": 0.0
+      },
+      "expected_results": {
+        "mission_completion_expected": true
+      }
+    }
+  ],
+  "output_config": {
+    "log_directory": "logs/csv_wind_eval",
+    "generate_plots": false,
+    "save_flight_data": true,
+    "metrics_to_track": [
+      "wind_speed",
+      "position",
+      "attitude"
+    ]
+  }
+}

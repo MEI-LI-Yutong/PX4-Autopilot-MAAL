@@ -105,8 +105,8 @@
     bool _csv_loaded{false};
     std::vector<double> _csv_time_s;
     std::vector<gz::math::Vector3d> _csv_wind;
-    double _csv_log_interval_s{1.0};
-    double _last_csv_log_time_s{-1.0};
+    bool _csv_started{false};
+    double _csv_start_time_s{-1.0};
 
     // ======== Spatial wind parameters (NEW) ========
     std::string _spatial_model{"none"};  // supported: none, boundary_layer
