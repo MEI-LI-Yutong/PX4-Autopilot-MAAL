@@ -60,6 +60,8 @@ from utils.gust_dimensions import (
     ACTUATOR_SAT_RATIO,
     DIM_LABELS,
     DIM_ORDER,
+    RADAR_DIM_LABELS,
+    RADAR_DIM_ORDER,
     SERVO_MAX,
     SERVO_SAT_RATIO,
     compute_actuator_saturation_stats,
@@ -464,8 +466,8 @@ def plot_levels(
                 ["worst", "mean"],
                 radar_output,
                 dpi,
-                dims=DIM_ORDER,
-                dim_labels=DIM_LABELS,
+                dims=RADAR_DIM_ORDER,
+                dim_labels=RADAR_DIM_LABELS,
             )
             images_to_upload.append((f"plots/{radar_output.name}", radar_output))
 
@@ -567,8 +569,8 @@ def plot_levels(
                 plot_labels,
                 radar_levels_output,
                 dpi,
-                dims=DIM_ORDER,
-                dim_labels=DIM_LABELS,
+                dims=RADAR_DIM_ORDER,
+                dim_labels=RADAR_DIM_LABELS,
                 colors=plot_colors,
                 rmax=1.0,
             )
@@ -581,8 +583,8 @@ def plot_levels(
                 raw_labels,
                 radar_raw_output,
                 dpi,
-                dims=DIM_ORDER,
-                dim_labels=DIM_LABELS,
+                dims=RADAR_DIM_ORDER,
+                dim_labels=RADAR_DIM_LABELS,
                 colors=colors,
                 rmax=1.0,
             )

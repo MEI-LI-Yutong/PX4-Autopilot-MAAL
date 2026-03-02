@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Dict, Optional, Tuple
 
+import math
 import numpy as np
 import pandas as pd
 import re
@@ -43,15 +44,41 @@ DIM_LABELS = [
     "Recovery",
 ]
 
+RADAR_DIM_ORDER = [
+    "h_max",
+    "v_max",
+    "h_std",
+    "v_std",
+    "att_max",
+    "act_margin",
+    "recovery",
+]
+
+RADAR_DIM_LABELS = [
+    "H-Max",
+    "V-Max",
+    "H-Std",
+    "V-Std",
+    "Att-Max",
+    "Act-Margin",
+    "Recovery",
+]
 
 def _clamp01(value: float) -> float:
     return max(0.0, min(1.0, value))
 
 
-def _score_inverse(value: float, limit: float) -> float:
+def _score_sigmoid(value: float, limit: float, k: float = 6.0) -> float:
     if not np.isfinite(value) or limit <= 0:
         return float("nan")
-    return _clamp01(1.0 - (value / limit))
+    x = float(value) / float(limit)
+    s = 1.0 / (1.0 + math.exp(k * (x - 1.0)))
+    s0 = 1.0 / (1.0 + math.exp(-k))
+    s1 = 0.5
+    if s0 == s1:
+        return float("nan")
+    score = (s - s1) / (s0 - s1)
+    return _clamp01(score)
 
 
 def _mean_ignore_nan(values: list[float]) -> float:
@@ -105,7 +132,7 @@ def _actuator_margin_score(base: Optional[float], peak: Optional[float], limit: 
     delta = float(peak - base)
     if limit <= base:
         return float("nan"), delta
-    score = _score_inverse(delta, limit - base)
+    score = _score_sigmoid(delta, limit - base)
     return score, delta
 
 
@@ -137,7 +164,7 @@ def _recovery_time(df: pd.DataFrame, h_err: Optional[np.ndarray], v_err: Optiona
 
 
 def compute_dimension_breakdown(df: pd.DataFrame) -> Dict[str, Dict[str, float]]:
-    """Compute 8D capability scores (0-1) with raw metric breakdown."""
+    """Compute 7D capability scores (0-1) with raw metric breakdown."""
     df = select_analysis_df(df)
     if df.empty:
         return {"scores": {}, "raw": {}, "overall": float("nan")}
@@ -180,13 +207,13 @@ def compute_dimension_breakdown(df: pd.DataFrame) -> Dict[str, Dict[str, float]]
     t_rec = _recovery_time(df, h_err, v_err)
 
     scores = {
-        "h_max": _score_inverse(h_max, H_MAX),
-        "h_std": _score_inverse(h_std, H_STD),
-        "v_max": _score_inverse(v_max, V_MAX),
-        "v_std": _score_inverse(v_std, V_STD),
-        "att_max": _score_inverse(att_max, ANG_MAX),
+        "h_max": _score_sigmoid(h_max, H_MAX),
+        "h_std": _score_sigmoid(h_std, H_STD),
+        "v_max": _score_sigmoid(v_max, V_MAX),
+        "v_std": _score_sigmoid(v_std, V_STD),
+        "att_max": _score_sigmoid(att_max, ANG_MAX),
         "act_margin": act_margin_score,
-        "recovery": _score_inverse(t_rec, RECOVER_T) if t_rec is not None else float("nan"),
+        "recovery": _score_sigmoid(t_rec, RECOVER_T) if t_rec is not None else float("nan"),
     }
 
     overall = _mean_ignore_nan([scores.get(k, float("nan")) for k in DIM_ORDER])
