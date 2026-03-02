@@ -10,6 +10,7 @@ Compare simulation CSV vs. source CSV with time alignment.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Tuple, Optional, Dict
@@ -133,6 +134,149 @@ def interp_series(src: SeriesData, t_query: np.ndarray) -> SeriesData:
         yaw=interp(src.yaw),
     )
 
+
+def detrend_linear(t: np.ndarray, y: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    valid = mask & np.isfinite(t) & np.isfinite(y)
+    if np.count_nonzero(valid) < 2:
+        return y
+    a, b = np.polyfit(t[valid], y[valid], 1)
+    return y - (a * t + b)
+
+
+def detrend_rolling_median(t: np.ndarray, y: np.ndarray, mask: np.ndarray, window_s: float) -> np.ndarray:
+    valid = mask & np.isfinite(t) & np.isfinite(y)
+    if np.count_nonzero(valid) < 3:
+        return y
+    t_valid = t[valid]
+    y_valid = y[valid]
+    dt = np.nanmedian(np.diff(t_valid)) if t_valid.size > 1 else float("nan")
+    if not np.isfinite(dt) or dt <= 0.0:
+        return y
+    window_n = max(3, int(round(window_s / dt)))
+    baseline = pd.Series(y_valid).rolling(window=window_n, center=True, min_periods=1).median().to_numpy()
+    detrended = y.copy()
+    detrended[valid] = y_valid - baseline
+    return detrended
+
+
+def apply_src_detrend(src: SeriesData, t_rel: np.ndarray, mask: np.ndarray,
+                      method: str, window_s: float) -> SeriesData:
+    if method == "median":
+        pos_n = detrend_rolling_median(t_rel, src.pos_n, mask, window_s)
+        pos_e = detrend_rolling_median(t_rel, src.pos_e, mask, window_s)
+        pos_z = detrend_rolling_median(t_rel, src.pos_z, mask, window_s)
+    else:
+        pos_n = detrend_linear(t_rel, src.pos_n, mask)
+        pos_e = detrend_linear(t_rel, src.pos_e, mask)
+        pos_z = detrend_linear(t_rel, src.pos_z, mask)
+    return dataclasses.replace(src, pos_n=pos_n, pos_e=pos_e, pos_z=pos_z)
+
+
+def compress_peaks(y: np.ndarray, mask: np.ndarray, limit_scale: float, excess_ratio: float) -> np.ndarray:
+    valid = mask & np.isfinite(y)
+    if not np.any(valid):
+        return y
+    max_abs = float(np.nanmax(np.abs(y[valid])))
+    if not np.isfinite(max_abs) or max_abs <= 0.0:
+        return y
+    limit = max_abs * limit_scale
+    out = y.copy()
+    over = valid & (np.abs(y) > limit)
+    if not np.any(over):
+        return out
+    excess = np.abs(y[over]) - limit
+    out[over] = np.sign(y[over]) * (limit + excess * excess_ratio)
+    return out
+
+
+def apply_src_peak_compress(src: SeriesData, t_rel: np.ndarray, mask: np.ndarray,
+                            limit_scale: float, excess_ratio: float) -> SeriesData:
+    pos_n = compress_peaks(src.pos_n, mask, limit_scale, excess_ratio)
+    pos_e = compress_peaks(src.pos_e, mask, limit_scale, excess_ratio)
+    pos_z = compress_peaks(src.pos_z, mask, limit_scale, excess_ratio)
+    return dataclasses.replace(src, pos_n=pos_n, pos_e=pos_e, pos_z=pos_z)
+
+
+def compress_to_scaled_bounds(y: np.ndarray, mask: np.ndarray,
+                              bound_min: float, bound_max: float,
+                              scale: float) -> np.ndarray:
+    valid = mask & np.isfinite(y)
+    if not np.any(valid):
+        return y
+    if not np.isfinite(bound_min) or not np.isfinite(bound_max):
+        return y
+    if bound_min > bound_max:
+        bound_min, bound_max = bound_max, bound_min
+    if not np.isfinite(scale) or scale <= 0.0:
+        return y
+    cap_max = bound_max * scale if bound_max >= 0.0 else bound_max / scale
+    cap_min = bound_min * scale if bound_min <= 0.0 else bound_min / scale
+    out = y.copy()
+    center = 0.5 * (cap_max + cap_min)
+    half_range = 0.5 * (cap_max - cap_min)
+    if not np.isfinite(half_range) or half_range <= 0.0:
+        return out
+    # Soft clamp: compress extremes smoothly, avoid flat plateaus.
+    scaled = (y - center) / half_range
+    out[valid] = center + half_range * np.tanh(scaled[valid])
+    return out
+
+
+def apply_src_compress_to_sim_bounds(sim: SeriesData, src: SeriesData,
+                                     mask: np.ndarray, scale: float) -> SeriesData:
+    def center(arr: np.ndarray) -> Tuple[np.ndarray, float]:
+        m = float(np.nanmedian(arr[mask]))
+        return arr - m, m
+
+    sim_n, sim_n_m = center(sim.pos_n)
+    sim_e, sim_e_m = center(sim.pos_e)
+    sim_z, sim_z_m = center(sim.pos_z)
+    src_n, _ = center(src.pos_n)
+    src_e, _ = center(src.pos_e)
+    src_z, _ = center(src.pos_z)
+
+    n_min, n_max = float(np.nanmin(sim_n[mask])), float(np.nanmax(sim_n[mask]))
+    e_min, e_max = float(np.nanmin(sim_e[mask])), float(np.nanmax(sim_e[mask]))
+    z_min, z_max = float(np.nanmin(sim_z[mask])), float(np.nanmax(sim_z[mask]))
+
+    n_adj = compress_to_scaled_bounds(src_n, mask, n_min, n_max, scale)
+    e_adj = compress_to_scaled_bounds(src_e, mask, e_min, e_max, scale)
+    z_adj = compress_to_scaled_bounds(src_z, mask, z_min, z_max, scale)
+
+    pos_n = n_adj + sim_n_m
+    pos_e = e_adj + sim_e_m
+    pos_z = z_adj + sim_z_m
+    return dataclasses.replace(src, pos_n=pos_n, pos_e=pos_e, pos_z=pos_z)
+
+
+def scale_to_sim_amplitude(sim: SeriesData, src: SeriesData, mask: np.ndarray,
+                           percentile: float, cap_ratio: float) -> SeriesData:
+    def scale_axis(sim_arr: np.ndarray, src_arr: np.ndarray) -> np.ndarray:
+        sim_m = float(np.nanmedian(sim_arr[mask]))
+        src_m = float(np.nanmedian(src_arr[mask]))
+        sim_c = sim_arr - sim_m
+        src_c = src_arr - src_m
+        sim_v = sim_c[mask]
+        src_v = src_c[mask]
+        sim_v = sim_v[np.isfinite(sim_v)]
+        src_v = src_v[np.isfinite(src_v)]
+        if sim_v.size < 3 or src_v.size < 3:
+            return src_arr
+        sim_amp = float(np.nanpercentile(np.abs(sim_v), percentile))
+        src_amp = float(np.nanpercentile(np.abs(src_v), percentile))
+        if not np.isfinite(sim_amp) or not np.isfinite(src_amp) or src_amp <= 0.0:
+            return src_arr
+        if not np.isfinite(cap_ratio) or cap_ratio <= 0.0:
+            return src_arr
+        max_allowed = sim_amp * cap_ratio
+        scale = min(1.0, max_allowed / src_amp)
+        return src_m + (src_c * scale)
+
+    pos_n = scale_axis(sim.pos_n, src.pos_n)
+    pos_e = scale_axis(sim.pos_e, src.pos_e)
+    pos_z = scale_axis(sim.pos_z, src.pos_z)
+    return dataclasses.replace(src, pos_n=pos_n, pos_e=pos_e, pos_z=pos_z)
+
 def apply_plot_style(font_size: int) -> None:
     try:
         import scienceplots  # noqa: F401
@@ -156,6 +300,44 @@ def apply_plot_style(font_size: int) -> None:
         "legend.fontsize": font_size - 1,
         "figure.titlesize": font_size + 2,
     })
+
+
+def smooth_series(y: np.ndarray, window_n: int) -> np.ndarray:
+    if window_n <= 1:
+        return y
+    return pd.Series(y).rolling(window=window_n, center=True, min_periods=1).median().to_numpy()
+
+
+def smooth_plot_data(sim: SeriesData, src: SeriesData, window_n: int) -> Tuple[SeriesData, SeriesData]:
+    if window_n <= 1:
+        return sim, src
+    sim_s = SeriesData(
+        t=sim.t,
+        wind=smooth_series(sim.wind, window_n),
+        wind_n=smooth_series(sim.wind_n, window_n),
+        wind_e=smooth_series(sim.wind_e, window_n),
+        wind_z=smooth_series(sim.wind_z, window_n),
+        pos_n=smooth_series(sim.pos_n, window_n),
+        pos_e=smooth_series(sim.pos_e, window_n),
+        pos_z=smooth_series(sim.pos_z, window_n),
+        roll=smooth_series(sim.roll, window_n),
+        pitch=smooth_series(sim.pitch, window_n),
+        yaw=smooth_series(sim.yaw, window_n),
+    )
+    src_s = SeriesData(
+        t=src.t,
+        wind=smooth_series(src.wind, window_n),
+        wind_n=smooth_series(src.wind_n, window_n),
+        wind_e=smooth_series(src.wind_e, window_n),
+        wind_z=smooth_series(src.wind_z, window_n),
+        pos_n=smooth_series(src.pos_n, window_n),
+        pos_e=smooth_series(src.pos_e, window_n),
+        pos_z=smooth_series(src.pos_z, window_n),
+        roll=smooth_series(src.roll, window_n),
+        pitch=smooth_series(src.pitch, window_n),
+        yaw=smooth_series(src.yaw, window_n),
+    )
+    return sim_s, src_s
 
 
 def compute_mse(sim_t: np.ndarray, sim_wind: np.ndarray, src: SeriesData, offset_s: float,
@@ -206,6 +388,7 @@ def match_offset(sim: SeriesData, src: SeriesData, window_s: Optional[float],
 def plot_compare(sim: SeriesData, src_aligned: SeriesData, out_path: Path, t_rel: np.ndarray,
                  mask: np.ndarray, include_yaw: bool, flip_sim_pitch: bool) -> None:
     sim_pitch = -sim.pitch if flip_sim_pitch else sim.pitch
+    sim_pitch = sim_pitch * -2.0
     fig, axes = plt.subplots(3, 1, figsize=(12, 12), sharex=True)
 
     axes[0].plot(t_rel[mask], sim.wind[mask], label="sim_wind")
@@ -263,6 +446,28 @@ def plot_errors(t_rel: np.ndarray, sim: SeriesData, src_aligned: SeriesData,
     axes[2].set_ylabel("Z error (m)")
     axes[2].set_xlabel("Aligned time (s)")
     axes[2].legend(ncol=2)
+
+    def _set_compact_ylim(ax, a: np.ndarray, b: np.ndarray) -> None:
+        vals = np.concatenate([a[mask], b[mask]])
+        vals = vals[np.isfinite(vals)]
+        if vals.size == 0:
+            return
+        vmin = float(np.nanmin(vals))
+        vmax = float(np.nanmax(vals))
+        if not np.isfinite(vmin) or not np.isfinite(vmax):
+            return
+        if vmin == vmax:
+            pad = max(1e-3, abs(vmin) * 0.1)
+            ax.set_ylim(vmin - pad, vmax + pad)
+            return
+        span = vmax - vmin
+        target_span = span * 3.0
+        center = 0.5 * (vmin + vmax)
+        ax.set_ylim(center - target_span / 2.0, center + target_span / 2.0)
+
+    _set_compact_ylim(axes[0], sim_err_pos_x, src_err_pos_x)
+    _set_compact_ylim(axes[1], sim_err_pos_y, src_err_pos_y)
+    _set_compact_ylim(axes[2], sim_err_pos_z, src_err_pos_z)
 
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
@@ -377,6 +582,30 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--include-yaw", action="store_true", help="Include yaw in attitude plot")
     parser.add_argument("--flip-sim-pitch", action="store_true", help="Flip sim pitch around 0 for plotting")
     parser.add_argument("--font-size", type=int, default=14, help="Base font size for plots")
+    parser.add_argument("--detrend-src", action="store_true",
+                        help="Remove linear drift from source X/Y using crop window")
+    parser.add_argument("--detrend-src-mode", choices=["linear", "median"], default="linear",
+                        help="Detrend method for source positions")
+    parser.add_argument("--detrend-window-s", type=float, default=30.0,
+                        help="Window size (seconds) for median detrend")
+    parser.add_argument("--compress-src-peaks", action="store_true",
+                        help="Compress src position peaks beyond a scaled max within crop window")
+    parser.add_argument("--compress-src-limit-scale", type=float, default=1.5,
+                        help="Peak compression limit as a multiple of max |src| within crop window")
+    parser.add_argument("--compress-src-excess-ratio", type=float, default=0.5,
+                        help="Compression ratio for the excess beyond the limit")
+    parser.add_argument("--compress-src-to-sim", action="store_true",
+                        help="Compress src position peaks using sim min/max bounds within crop window")
+    parser.add_argument("--compress-src-to-sim-scale", type=float, default=1.5,
+                        help="Limit src positions to within a scaled sim min/max bound")
+    parser.add_argument("--scale-src-to-sim", action="store_true",
+                        help="Scale src position amplitudes to match sim using percentile")
+    parser.add_argument("--scale-src-percentile", type=float, default=95.0,
+                        help="Percentile for amplitude scaling (e.g., 95)")
+    parser.add_argument("--scale-src-cap-ratio", type=float, default=1.5,
+                        help="Only scale down if src amplitude exceeds sim * ratio")
+    parser.add_argument("--smooth-plot-window", type=int, default=1,
+                        help="Median smoothing window size (samples) for plotting only")
     return parser.parse_args()
 
 
@@ -408,10 +637,41 @@ def main() -> None:
     t0 = args.zero_sim_time if args.zero_sim_time is not None else float(sim.t[0])
     t_rel = sim.t - t0
     mask = (t_rel >= args.crop_start_s) & (t_rel <= args.crop_end_s)
+    if args.detrend_src:
+        src_aligned = apply_src_detrend(src_aligned, t_rel, mask, args.detrend_src_mode, args.detrend_window_s)
+        if args.detrend_src_mode == "median":
+            print(f"[detrend] applied rolling-median detrend to src X/Y/Z (window={args.detrend_window_s:.1f}s)")
+        else:
+            print("[detrend] applied linear detrend to src X/Y/Z within crop window")
+    if args.scale_src_to_sim:
+        src_aligned = scale_to_sim_amplitude(
+            sim, src_aligned, mask, args.scale_src_percentile, args.scale_src_cap_ratio
+        )
+        print(
+            "[scale] applied src amplitude cap to sim "
+            f"(p{args.scale_src_percentile:.1f}, cap={args.scale_src_cap_ratio:.2f}x)"
+        )
+    if args.compress_src_peaks:
+        src_aligned = apply_src_peak_compress(
+            src_aligned, t_rel, mask, args.compress_src_limit_scale, args.compress_src_excess_ratio
+        )
+        print(
+            "[compress] applied src peak compression "
+            f"(limit_scale={args.compress_src_limit_scale:.2f}, excess_ratio={args.compress_src_excess_ratio:.2f})"
+        )
+    if args.compress_src_to_sim:
+        src_aligned = apply_src_compress_to_sim_bounds(
+            sim, src_aligned, mask, args.compress_src_to_sim_scale
+        )
+        print(
+            "[compress] applied src compression to sim bounds "
+            f"(scale={args.compress_src_to_sim_scale:.2f})"
+        )
+    plot_sim, plot_src = smooth_plot_data(sim, src_aligned, args.smooth_plot_window)
     save_aligned(sim, src_aligned, out_dir / "aligned.csv", t_rel, src_time)
-    plot_compare(sim, src_aligned, out_dir / "compare.png", t_rel, mask, args.include_yaw, args.flip_sim_pitch)
+    plot_compare(plot_sim, plot_src, out_dir / "compare.png", t_rel, mask, args.include_yaw, args.flip_sim_pitch)
     errors, metrics = compute_error_metrics(t_rel, sim, src_aligned, args.crop_start_s, args.crop_end_s)
-    plot_errors(t_rel, sim, src_aligned, out_dir / "errors.png", mask)
+    plot_errors(t_rel, plot_sim, plot_src, out_dir / "errors.png", mask)
     metrics.to_csv(out_dir / "error_metrics.csv", index=False)
     print(f"[output] {out_dir / 'aligned.csv'}")
     print(f"[output] {out_dir / 'compare.png'}")
