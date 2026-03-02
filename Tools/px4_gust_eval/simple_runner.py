@@ -196,6 +196,7 @@ class SimpleGustRunner:
         self.wandb_tags = wandb_cfg.get("tags") or []
         self.wandb_upload_each_csv = bool(wandb_cfg.get("upload_each_csv", True if self.wandb_enabled else False))
         self.wandb_table_each_csv = bool(wandb_cfg.get("table_each_csv", True if self.wandb_enabled else False))
+        self.wandb_upload_config = bool(wandb_cfg.get("upload_config", True if self.wandb_enabled else False))
         self.wandb_param_names: Sequence[str] = wandb_cfg.get("param_snapshot", [])
         if isinstance(self.wandb_param_names, str):
             self.wandb_param_names = [self.wandb_param_names]
@@ -208,6 +209,9 @@ class SimpleGustRunner:
         self._wandb_run = None
         self._wandb_params_cached: Optional[Dict[str, Any]] = None
         self.run_plots = _env_flag("RUN_PLOTS", True)
+        self.sdf_edit_cfg = self.config.get("sdf_edit", {})
+        self._sdf_edit_path: Optional[Path] = None
+        self._sdf_edit_backup: Optional[bytes] = None
 
     # ---- wandb integration ----
     def _init_wandb(self, cfg: Dict[str, Any]) -> None:
@@ -239,6 +243,8 @@ class SimpleGustRunner:
             tags=tags,
             config=base_cfg,
         )
+        if self.wandb_upload_config:
+            self._upload_task_config()
 
         # Attempt to fetch NocoDB overrides after run init (so we have run_id)
         if self.nocodb_enabled:
@@ -340,9 +346,24 @@ class SimpleGustRunner:
         candidates = [r for r in records if _exp_times(r) == min_exp]
         chosen = random.choice(candidates)
         self._nocodb_selected = chosen
+        # Optional: load sdf_edit from JSON column
+        raw_sdf = chosen.get("sdf_edit_json")
+        if raw_sdf:
+            try:
+                parsed = raw_sdf
+                if isinstance(raw_sdf, str):
+                    parsed = json.loads(raw_sdf)
+                if isinstance(parsed, dict):
+                    if isinstance(parsed.get("sdf_edit"), dict):
+                        self.sdf_edit_cfg = parsed.get("sdf_edit", {})
+                    else:
+                        self.sdf_edit_cfg = parsed
+                    self.logger.info("NocoDB: loaded sdf_edit_json")
+            except Exception as e:
+                self.logger.warning(f"NocoDB: failed to parse sdf_edit_json: {e}")
         # Extract params: numeric values only, skip None/empty, skip meta fields
         overrides: Dict[str, Any] = {}
-        meta_keys = {"Id", "nc_order", "Title", "exp_times", "wandb_runid"}
+        meta_keys = {"Id", "nc_order", "Title", "exp_times", "wandb_runid", "sdf_edit_json"}
         for k, v in chosen.items():
             if k in meta_keys:
                 continue
@@ -460,6 +481,23 @@ class SimpleGustRunner:
             self.logger.info(f"W&B: uploaded artifact {artifact_name}")
         except Exception as e:
             self.logger.warning(f"W&B upload failed for {artifact_name}: {e}")
+
+    def _upload_task_config(self) -> None:
+        """Upload the task JSON file as a W&B artifact."""
+        if not (self._wandb_run and self.config_path.is_file()):
+            return
+        try:
+            import wandb  # type: ignore
+        except ImportError:
+            return
+        artifact_name = f"gust-task-config-{self.run_dir.name}"
+        artifact = wandb.Artifact(artifact_name, type="gust-task-config")
+        artifact.add_file(str(self.config_path), name=self.config_path.name)
+        try:
+            self._wandb_run.log_artifact(artifact)
+            self.logger.info(f"W&B: uploaded task config {self.config_path}")
+        except Exception as e:
+            self.logger.warning(f"W&B upload failed for task config: {e}")
 
     async def _maybe_log_table_for_csv(self, test_id: str) -> None:
         """Log the full CSV as a W&B table for easy browsing (no column drops)."""
@@ -1129,6 +1167,7 @@ class SimpleGustRunner:
             return 2
 
         self._init_wandb(self.config)
+        self._apply_sdf_edit()
 
         # missions/tests
         tests: List[Dict[str, Any]] = []
@@ -1150,56 +1189,59 @@ class SimpleGustRunner:
 
         results: List[Dict[str, Any]] = []
 
-        for t in tests:
-            test_id = t.get("test_id", "test")
-            self.logger.info(f"Starting test: {test_id}")
-            wind_env = wind_env_from_config(t.get("wind_config", {}))
-            # Update Gazebo wind config file if available
-            try:
-                self._update_gz_wind_config(t.get("wind_config", {}))
-            except Exception as e:
-                self.logger.warning(f"Failed updating gz wind config: {e}")
-            ok_launch = await self.launch_px4(wind_env)
-            if not ok_launch:
-                results.append({"test_id": test_id, "success": False, "error": "px4_start_failed"})
-                self.stop_px4()
-                continue
+        try:
+            for t in tests:
+                test_id = t.get("test_id", "test")
+                self.logger.info(f"Starting test: {test_id}")
+                wind_env = wind_env_from_config(t.get("wind_config", {}))
+                # Update Gazebo wind config file if available
+                try:
+                    self._update_gz_wind_config(t.get("wind_config", {}))
+                except Exception as e:
+                    self.logger.warning(f"Failed updating gz wind config: {e}")
+                ok_launch = await self.launch_px4(wind_env)
+                if not ok_launch:
+                    results.append({"test_id": test_id, "success": False, "error": "px4_start_failed"})
+                    self.stop_px4()
+                    continue
 
-            try:
-                connected = await self.connect_mavsdk(mavlink_url)
-                if not connected:
-                    results.append({"test_id": test_id, "success": False, "error": "mavsdk_connect_failed"})
-                else:
-                    # start CSV + wind logging
-                    await self._start_recording(test_id)
+                try:
+                    connected = await self.connect_mavsdk(mavlink_url)
+                    if not connected:
+                        results.append({"test_id": test_id, "success": False, "error": "mavsdk_connect_failed"})
+                    else:
+                        # start CSV + wind logging
+                        await self._start_recording(test_id)
 
-                    # Optional user-provided params before arming
-                    pre_params = self.config.get("prearm_params", {})
-                    if isinstance(pre_params, dict):
-                        pre_params = pre_params.copy()
-                    else:
-                        pre_params = {}
-                    if self.env_param_overrides:
-                        pre_params.update(self.env_param_overrides)
-                    if pre_params:
-                        self.logger.info(f"Applying prearm params ({len(pre_params)}) …")
-                        await self._set_params(pre_params)
-                        await self._maybe_capture_params_snapshot()
-                    else:
-                        await self._maybe_capture_params_snapshot()
+                        # Optional user-provided params before arming
+                        pre_params = self.config.get("prearm_params", {})
+                        if isinstance(pre_params, dict):
+                            pre_params = pre_params.copy()
+                        else:
+                            pre_params = {}
+                        if self.env_param_overrides:
+                            pre_params.update(self.env_param_overrides)
+                        if pre_params:
+                            self.logger.info(f"Applying prearm params ({len(pre_params)}) …")
+                            await self._set_params(pre_params)
+                            await self._maybe_capture_params_snapshot()
+                        else:
+                            await self._maybe_capture_params_snapshot()
 
-                    if self._get_plan_key(mission_cfg):
-                        ok = await self.run_qgc_mission(mission_cfg)
-                    else:
-                        ok = await self.run_simple_mission(mission_cfg)
-                    results.append({"test_id": test_id, "success": bool(ok)})
-            finally:
-                await self._stop_recording()
-                await self._postprocess_with_ulog(test_id)
-                await self._maybe_log_table_for_csv(test_id)
-                await self._maybe_upload_single_csv(test_id)
-                self.stop_px4()
-                await asyncio.sleep(3)
+                        if self._get_plan_key(mission_cfg):
+                            ok = await self.run_qgc_mission(mission_cfg)
+                        else:
+                            ok = await self.run_simple_mission(mission_cfg)
+                        results.append({"test_id": test_id, "success": bool(ok)})
+                finally:
+                    await self._stop_recording()
+                    await self._postprocess_with_ulog(test_id)
+                    await self._maybe_log_table_for_csv(test_id)
+                    await self._maybe_upload_single_csv(test_id)
+                    self.stop_px4()
+                    await asyncio.sleep(3)
+        finally:
+            self._restore_sdf_edit()
 
         # Save summary
         out = {
@@ -1322,6 +1364,97 @@ class SimpleGustRunner:
 
         tree.write(cfg_path, encoding='utf-8', xml_declaration=False)
         self.logger.info(f"Updated wind config in {cfg_path}")
+
+    # ----------------------------
+    # SDF inertial override (optional)
+    # ----------------------------
+    def _apply_sdf_edit(self) -> None:
+        """Optionally patch a model SDF before running; restore in _restore_sdf_edit()."""
+        if not isinstance(self.sdf_edit_cfg, dict) or not self.sdf_edit_cfg:
+            return
+        raw_path = self.sdf_edit_cfg.get("path")
+        if not raw_path:
+            return
+        sdf_path = self._resolve_path(str(raw_path))
+        if not sdf_path.is_file():
+            self.logger.warning(f"SDF edit path not found: {sdf_path}")
+            return
+
+        try:
+            data = sdf_path.read_bytes()
+        except Exception as e:
+            self.logger.warning(f"Failed to read SDF: {e}")
+            return
+
+        try:
+            tree = ET.parse(sdf_path)
+            root = tree.getroot()
+        except Exception as e:
+            self.logger.warning(f"Failed to parse SDF XML: {e}")
+            return
+
+        patches = self.sdf_edit_cfg.get("patches", [])
+        if not isinstance(patches, list) or not patches:
+            self.logger.warning("SDF edit skipped: no patches defined")
+            return
+
+        def _find_link(name: str) -> Optional[ET.Element]:
+            for link in root.findall(".//link"):
+                if link.attrib.get("name") == name:
+                    return link
+            return None
+
+        def _find_path(base: ET.Element, rel_path: str) -> Optional[ET.Element]:
+            cur = base
+            for part in rel_path.split("/"):
+                if not part:
+                    continue
+                nxt = cur.find(part)
+                if nxt is None:
+                    return None
+                cur = nxt
+            return cur
+
+        for patch in patches:
+            if not isinstance(patch, dict):
+                continue
+            select = patch.get("select", {})
+            if not isinstance(select, dict):
+                continue
+            link_name = select.get("link")
+            rel_path = select.get("path")
+            if not link_name or not rel_path:
+                self.logger.warning("SDF edit skipped: select.link/select.path required")
+                continue
+            link_elem = _find_link(str(link_name))
+            if link_elem is None:
+                self.logger.warning(f"SDF edit skipped: <link name='{link_name}'> not found")
+                continue
+            target_elem = _find_path(link_elem, str(rel_path))
+            if target_elem is None:
+                self.logger.warning(f"SDF edit skipped: path not found {link_name}/{rel_path}")
+                continue
+            if "value" not in patch:
+                self.logger.warning(f"SDF edit skipped: value missing for {link_name}/{rel_path}")
+                continue
+            target_elem.text = str(patch["value"])
+
+        try:
+            tree.write(sdf_path, encoding="utf-8", xml_declaration=False)
+            self._sdf_edit_path = sdf_path
+            self._sdf_edit_backup = data
+            self.logger.info(f"Applied SDF edit to {sdf_path}")
+        except Exception as e:
+            self.logger.warning(f"Failed to write SDF edit: {e}")
+
+    def _restore_sdf_edit(self) -> None:
+        if not (self._sdf_edit_path and self._sdf_edit_backup is not None):
+            return
+        try:
+            self._sdf_edit_path.write_bytes(self._sdf_edit_backup)
+            self.logger.info(f"Restored SDF: {self._sdf_edit_path}")
+        except Exception as e:
+            self.logger.warning(f"Failed to restore SDF: {e}")
 
     # ----------------------------
     # CSV recorder and wind subscriber
