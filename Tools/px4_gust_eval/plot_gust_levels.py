@@ -75,6 +75,31 @@ except Exception:
     pass
 
 
+RAW_COLS = [
+    "h_max_dev_m",
+    "h_std_m",
+    "v_max_dev_m",
+    "v_std_m",
+    "pitch_att_hold_peak_deg",
+    "roll_att_hold_peak_deg",
+    "yaw_att_hold_peak_deg",
+    "actuator_peak",
+    "actuator_baseline",
+    "actuator_delta",
+    "servo_peak",
+    "servo_baseline",
+    "servo_delta",
+    "actuator_delta_effective",
+    "recovery_time_s",
+    "h_exceed_area_m_s",
+    "v_exceed_area_m_s",
+    "exceed_area_ratio",
+    "control_effort_u",
+    "control_effort_s",
+    "control_effort_ratio",
+]
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Plot wind gust level performance metrics")
     p.add_argument("tasks_json", type=Path, help="Path to tasks JSON")
@@ -239,13 +264,43 @@ def start_wandb_if_requested(args: argparse.Namespace, suite: str, results_dir: 
 
 
 def _clean_value(val: Any) -> Any:
-    """Convert NaN/inf to None for JSON friendliness."""
+    """Normalize numpy scalars and convert NaN/inf to None for JSON friendliness."""
+    try:
+        if isinstance(val, (np.integer, np.floating)):
+            val = val.item()
+    except Exception:
+        pass
     try:
         if isinstance(val, float) and not math.isfinite(val):
             return None
     except Exception:
         pass
     return val
+
+
+def _build_wandb_summary_rows(summary_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Flatten summary rows for W&B tables to avoid nested dict type conflicts."""
+    dim_score_cols = [f"score_{k}" for k in DIM_ORDER]
+    out_rows: List[Dict[str, Any]] = []
+    for row in summary_rows:
+        scores = row.get("dimension_scores", {}) or {}
+        raw = row.get("dimension_raw", {}) or {}
+        out = {
+            "task_type": row.get("task_type"),
+            "test_id": row.get("test_id"),
+            "level": _clean_value(row.get("level")),
+            "v_max_dev": _clean_value(row.get("v_max_dev")),
+            "h_max_dev": _clean_value(row.get("h_max_dev")),
+            "grade_v": row.get("grade_v"),
+            "grade_h": row.get("grade_h"),
+            "dimension_overall": _clean_value(row.get("dimension_overall")),
+        }
+        for k in DIM_ORDER:
+            out[f"score_{k}"] = _clean_value(scores.get(k))
+        for k in RAW_COLS:
+            out[k] = _clean_value(raw.get(k))
+        out_rows.append(out)
+    return out_rows
 
 
 
@@ -437,7 +492,7 @@ def plot_levels(
         v_output = results_dir_resolved / f"vertical_max_{axis}.png"
         plot_metric_bar_chart(
             levels, v_max_devs, grades_v,
-            V_MAX, "Vertical Max Deviation", task_type,
+            V_MAX, "V Pos Track Acc Error", task_type,
             v_output, dpi
         )
         images_to_upload.append((f"plots/{v_output.name}", v_output))
@@ -446,7 +501,7 @@ def plot_levels(
         h_output = results_dir_resolved / f"horizontal_max_{axis}.png"
         plot_metric_bar_chart(
             levels, h_max_devs, grades_h,
-            H_MAX, "Horizontal Max Deviation", task_type,
+            H_MAX, "H Pos Track Acc Error", task_type,
             h_output, dpi
         )
         images_to_upload.append((f"plots/{h_output.name}", h_output))
@@ -511,13 +566,17 @@ def plot_levels(
                 baseline_raw = _mean_raw(dim_raw_by_level.get(0, []))
 
             raw_map = {
-                "h_max": "h_max_dev_m",
-                "h_std": "h_std_m",
-                "v_max": "v_max_dev_m",
-                "v_std": "v_std_m",
-                "att_max": "att_max_deg",
+                "h_pos_track_acc": "h_max_dev_m",
+                "v_pos_track_acc": "v_max_dev_m",
+                "h_pos_robustness": "h_std_m",
+                "v_pos_robustness": "v_std_m",
+                "pitch_att_track_acc": "pitch_att_hold_peak_deg",
+                "roll_att_track_acc": "roll_att_hold_peak_deg",
+                "yaw_att_track_acc": "yaw_att_hold_peak_deg",
                 "act_margin": "actuator_delta_effective",
                 "recovery": "recovery_time_s",
+                "exceed_area": "exceed_area_ratio",
+                "control_effort": "control_effort_ratio",
             }
 
             def _normalize(scores: Dict[str, float], raw: Dict[str, float], baseline: Dict[str, float] | None, baseline_raw: Dict[str, float] | None, is_baseline: bool) -> Dict[str, float]:
@@ -702,27 +761,12 @@ def plot_levels(
         try:
             import csv
             dim_score_cols = [f"score_{k}" for k in DIM_ORDER]
-            raw_cols = [
-                "h_max_dev_m",
-                "h_std_m",
-                "v_max_dev_m",
-                "v_std_m",
-                "att_max_deg",
-                "actuator_peak",
-                "actuator_baseline",
-                "actuator_delta",
-                "servo_peak",
-                "servo_baseline",
-                "servo_delta",
-                "actuator_delta_effective",
-                "recovery_time_s",
-            ]
             fieldnames = [
                 "task_type",
                 "test_id",
                 "level",
                 "dimension_overall",
-            ] + dim_score_cols + raw_cols
+            ] + dim_score_cols + RAW_COLS
             with open(breakdown_csv, "w", encoding="utf-8", newline="") as f:
                 writer = csv.DictWriter(f, fieldnames=fieldnames)
                 writer.writeheader()
@@ -737,7 +781,7 @@ def plot_levels(
                     }
                     for k in DIM_ORDER:
                         out[f"score_{k}"] = scores.get(k)
-                    for k in raw_cols:
+                    for k in RAW_COLS:
                         out[k] = raw.get(k)
                     writer.writerow(out)
             print(f"Saved breakdown CSV: {breakdown_csv}")
@@ -772,7 +816,7 @@ def plot_levels(
         if wandb_run_local:
             try:
                 import wandb  # type: ignore
-                df_summary = pd.DataFrame(summary_rows)
+                df_summary = pd.DataFrame(_build_wandb_summary_rows(summary_rows))
                 wandb_run_local.log({"gust_summary/table": wandb.Table(dataframe=df_summary)})
             except Exception as e:
                 print(f"Warning: failed to log summary table to W&B: {e}")

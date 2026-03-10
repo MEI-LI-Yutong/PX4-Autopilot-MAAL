@@ -144,7 +144,7 @@ def plot_radar_chart(
     angles = np.linspace(0, 2 * np.pi, len(dims), endpoint=False).tolist()
     angles += angles[:1]
 
-    fig = plt.figure(figsize=(7, 7))
+    fig = plt.figure(figsize=(8.4, 8.4))
     ax = plt.subplot(111, polar=True)
 
     if colors is None:
@@ -157,15 +157,19 @@ def plot_radar_chart(
         ax.plot(angles, values, linewidth=2, color=colors[idx % len(colors)], label=label)
         ax.fill(angles, values, alpha=0.2, color=colors[idx % len(colors)])
 
-    ax.set_thetagrids(np.degrees(angles[:-1]), dim_labels, fontsize=16, fontweight="bold")
+    ax.set_thetagrids(np.degrees(angles[:-1]), dim_labels, fontsize=12, fontweight="bold")
+    ax.tick_params(axis="x", pad=20)
+    for lbl in ax.get_xticklabels():
+        lbl.set_ha("center")
+        lbl.set_va("center")
     ax.set_ylim(0, rmax)
     ax.set_yticks([rmax * 0.25, rmax * 0.5, rmax * 0.75, rmax])
-    ax.tick_params(axis="y", labelsize=14)
+    ax.tick_params(axis="y", labelsize=11)
     ax.grid(True, alpha=0.3)
     if labels:
-        ax.legend(loc="upper right", bbox_to_anchor=(1.25, 1.1), frameon=True, fontsize=14)
+        ax.legend(loc="upper right", bbox_to_anchor=(1.22, 1.12), frameon=True, fontsize=11)
 
-    fig.tight_layout()
+    fig.tight_layout(pad=1.8)
     fig.savefig(output_path, dpi=dpi, bbox_inches="tight")
     plt.close(fig)
 

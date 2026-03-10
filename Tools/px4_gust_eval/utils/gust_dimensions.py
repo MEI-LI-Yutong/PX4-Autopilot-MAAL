@@ -25,44 +25,136 @@ ACTUATOR_SAT_RATIO = 0.98
 SERVO_SAT_RATIO = 0.98
 
 DIM_ORDER = [
-    "h_max",
-    "h_std",
-    "v_max",
-    "v_std",
-    "att_max",
+    "h_pos_track_acc",
+    "v_pos_track_acc",
+    "h_pos_robustness",
+    "v_pos_robustness",
+    "pitch_att_track_acc",
+    "roll_att_track_acc",
+    "yaw_att_track_acc",
     "act_margin",
     "recovery",
+    "exceed_area",
+    "control_effort",
 ]
 
 DIM_LABELS = [
-    "H-Max",
-    "H-Std",
-    "V-Max",
-    "V-Std",
-    "Att-Max",
+    "H Pos Track Acc",
+    "V Pos Track Acc",
+    "H Pos Robustness",
+    "V Pos Robustness",
+    "Pitch Track Acc",
+    "Roll Track Acc",
+    "Yaw Track Acc",
     "Act-Margin",
     "Recovery",
+    "Exceed-Area",
+    "Ctrl-Effort",
 ]
 
 RADAR_DIM_ORDER = [
-    "h_max",
-    "v_max",
-    "h_std",
-    "v_std",
-    "att_max",
+    "h_pos_track_acc",
+    "v_pos_track_acc",
+    "h_pos_robustness",
+    "v_pos_robustness",
+    "pitch_att_track_acc",
+    "roll_att_track_acc",
+    "yaw_att_track_acc",
     "act_margin",
     "recovery",
+    "exceed_area",
+    "control_effort",
 ]
 
 RADAR_DIM_LABELS = [
-    "H-Max",
-    "V-Max",
-    "H-Std",
-    "V-Std",
-    "Att-Max",
-    "Act-Margin",
+    "H Pos\nTrack Acc",
+    "V Pos\nTrack Acc",
+    "H Pos\nRobustness",
+    "V Pos\nRobustness",
+    "Pitch \nTrack Acc",
+    "Roll \nTrack Acc",
+    "Yaw \nTrack Acc",
+    "Actuator\nMargin",
     "Recovery",
+    "Exceed\nArea",
+    "Control\nEffort",
 ]
+
+def _integral_over_time(t: np.ndarray, y: np.ndarray) -> float:
+    mask = np.isfinite(t) & np.isfinite(y)
+    if mask.sum() < 2:
+        return float("nan")
+    t_valid = t[mask]
+    y_valid = y[mask]
+    order = np.argsort(t_valid)
+    t_sorted = t_valid[order]
+    y_sorted = y_valid[order]
+    if t_sorted[-1] <= t_sorted[0]:
+        return float("nan")
+    return float(np.trapz(y_sorted, t_sorted))
+
+
+def _exceed_area(err: Optional[np.ndarray], threshold: float, t: np.ndarray) -> float:
+    if err is None:
+        return float("nan")
+    exceed = np.maximum(0.0, np.abs(err) - threshold)
+    return _integral_over_time(t, exceed)
+
+
+def _control_effort_integral(
+    df: pd.DataFrame,
+    t: np.ndarray,
+    prefix: str,
+    limit: float,
+    eps: float,
+    samples: int = 25,
+) -> Tuple[float, float]:
+    cols = _actuator_columns(df, prefix)
+    if not cols:
+        return float("nan"), float("nan")
+
+    arr = df[cols].to_numpy(dtype=float)
+    if arr.size == 0:
+        return float("nan"), float("nan")
+
+    active_cols = np.nanmax(np.abs(arr), axis=0) >= eps
+    if not np.any(active_cols):
+        return float("nan"), float("nan")
+    arr = arr[:, active_cols]
+
+    head = np.abs(arr[:samples, :])
+    if head.size == 0:
+        return float("nan"), float("nan")
+    base_vec = np.nanmean(head, axis=0)
+
+    magnitude = np.abs(arr)
+    dev = np.abs(magnitude - base_vec)
+    dev_mean = np.nanmean(dev, axis=1)
+    effort = _integral_over_time(t, dev_mean)
+
+    duration = float(np.nanmax(t) - np.nanmin(t)) if np.isfinite(t).any() else float("nan")
+    margin = np.nanmean(np.maximum(limit - base_vec, 1e-6))
+    if not np.isfinite(effort) or not np.isfinite(duration) or duration <= 0.0 or not np.isfinite(margin) or margin <= 0.0:
+        return effort, float("nan")
+    ratio = float(effort / (duration * margin))
+    return effort, ratio
+
+
+def _attitude_hold_peak(df: pd.DataFrame, col: str, circular: bool = False, baseline_samples: int = 25) -> float:
+    if col not in df.columns:
+        return float("nan")
+    arr = pd.to_numeric(df[col], errors="coerce").to_numpy(dtype=float)
+    finite = np.isfinite(arr)
+    if finite.sum() < 3:
+        return float("nan")
+
+    arr_valid = arr[finite]
+    baseline = float(np.nanmedian(arr_valid[: min(baseline_samples, arr_valid.size)]))
+    if circular:
+        dev = ((arr_valid - baseline + 180.0) % 360.0) - 180.0
+    else:
+        dev = arr_valid - baseline
+    return float(np.nanmax(np.abs(dev)))
 
 def _clamp01(value: float) -> float:
     return max(0.0, min(1.0, value))
@@ -164,7 +256,7 @@ def _recovery_time(df: pd.DataFrame, h_err: Optional[np.ndarray], v_err: Optiona
 
 
 def compute_dimension_breakdown(df: pd.DataFrame) -> Dict[str, Dict[str, float]]:
-    """Compute 7D capability scores (0-1) with raw metric breakdown."""
+    """Compute capability scores (0-1) with raw metric breakdown."""
     df = select_analysis_df(df)
     if df.empty:
         return {"scores": {}, "raw": {}, "overall": float("nan")}
@@ -176,15 +268,9 @@ def compute_dimension_breakdown(df: pd.DataFrame) -> Dict[str, Dict[str, float]]
     v_max = float(np.nanmax(np.abs(v_err))) if v_err is not None and np.isfinite(v_err).any() else float("nan")
     v_std = float(np.nanstd(v_err)) if v_err is not None and np.isfinite(v_err).any() else float("nan")
 
-    roll = pd.to_numeric(df.get("roll_deg"), errors="coerce") if "roll_deg" in df.columns else None
-    pitch = pd.to_numeric(df.get("pitch_deg"), errors="coerce") if "pitch_deg" in df.columns else None
-    att_max = float("nan")
-    if roll is not None and pitch is not None:
-        att_max = float(np.nanmax([np.nanmax(np.abs(roll)), np.nanmax(np.abs(pitch))]))
-    elif roll is not None:
-        att_max = float(np.nanmax(np.abs(roll)))
-    elif pitch is not None:
-        att_max = float(np.nanmax(np.abs(pitch)))
+    pitch_att_max = _attitude_hold_peak(df, "pitch_deg", circular=False)
+    roll_att_max = _attitude_hold_peak(df, "roll_deg", circular=False)
+    yaw_att_max = _attitude_hold_peak(df, "yaw_deg", circular=True)
 
     max_u = _extract_actuator_max(df, "u")
     base_u = _extract_actuator_baseline(df, "u", samples=25, eps=0.01)
@@ -206,14 +292,33 @@ def compute_dimension_breakdown(df: pd.DataFrame) -> Dict[str, Dict[str, float]]
 
     t_rec = _recovery_time(df, h_err, v_err)
 
+    t = pd.to_numeric(df["t_s"], errors="coerce").to_numpy(dtype=float) if "t_s" in df.columns else np.array([])
+    duration = float(np.nanmax(t) - np.nanmin(t)) if t.size and np.isfinite(t).any() else float("nan")
+
+    area_h = _exceed_area(h_err, H_MAX, t) if t.size else float("nan")
+    area_v = _exceed_area(v_err, V_MAX, t) if t.size else float("nan")
+    area_h_ratio = float(area_h / (H_MAX * duration)) if np.isfinite(area_h) and np.isfinite(duration) and duration > 0.0 else float("nan")
+    area_v_ratio = float(area_v / (V_MAX * duration)) if np.isfinite(area_v) and np.isfinite(duration) and duration > 0.0 else float("nan")
+    area_candidates = [r for r in (area_h_ratio, area_v_ratio) if np.isfinite(r)]
+    exceed_area_ratio = float(max(area_candidates)) if area_candidates else float("nan")
+
+    effort_u, effort_u_ratio = _control_effort_integral(df, t, "u", ACTUATOR_MAX, eps=1.0)
+    effort_s, effort_s_ratio = _control_effort_integral(df, t, "s", SERVO_MAX, eps=1e-3)
+    effort_candidates = [r for r in (effort_u_ratio, effort_s_ratio) if np.isfinite(r)]
+    control_effort_ratio = float(max(effort_candidates)) if effort_candidates else float("nan")
+
     scores = {
-        "h_max": _score_sigmoid(h_max, H_MAX),
-        "h_std": _score_sigmoid(h_std, H_STD),
-        "v_max": _score_sigmoid(v_max, V_MAX),
-        "v_std": _score_sigmoid(v_std, V_STD),
-        "att_max": _score_sigmoid(att_max, ANG_MAX),
+        "h_pos_track_acc": _score_sigmoid(h_max, H_MAX),
+        "v_pos_track_acc": _score_sigmoid(v_max, V_MAX),
+        "h_pos_robustness": _score_sigmoid(h_std, H_STD),
+        "v_pos_robustness": _score_sigmoid(v_std, V_STD),
+        "pitch_att_track_acc": _score_sigmoid(pitch_att_max, ANG_MAX),
+        "roll_att_track_acc": _score_sigmoid(roll_att_max, ANG_MAX),
+        "yaw_att_track_acc": _score_sigmoid(yaw_att_max, ANG_MAX),
         "act_margin": act_margin_score,
         "recovery": _score_sigmoid(t_rec, RECOVER_T) if t_rec is not None else float("nan"),
+        "exceed_area": _score_sigmoid(exceed_area_ratio, 1.0),
+        "control_effort": _score_sigmoid(control_effort_ratio, 1.0),
     }
 
     overall = _mean_ignore_nan([scores.get(k, float("nan")) for k in DIM_ORDER])
@@ -223,7 +328,9 @@ def compute_dimension_breakdown(df: pd.DataFrame) -> Dict[str, Dict[str, float]]
         "h_std_m": h_std,
         "v_max_dev_m": v_max,
         "v_std_m": v_std,
-        "att_max_deg": att_max,
+        "pitch_att_hold_peak_deg": pitch_att_max,
+        "roll_att_hold_peak_deg": roll_att_max,
+        "yaw_att_hold_peak_deg": yaw_att_max,
         "actuator_peak": float(max_u) if max_u is not None else float("nan"),
         "actuator_baseline": float(base_u) if base_u is not None else float("nan"),
         "actuator_delta": float(delta_u) if np.isfinite(delta_u) else float("nan"),
@@ -232,6 +339,12 @@ def compute_dimension_breakdown(df: pd.DataFrame) -> Dict[str, Dict[str, float]]
         "servo_delta": float(delta_s) if np.isfinite(delta_s) else float("nan"),
         "actuator_delta_effective": act_delta_effective,
         "recovery_time_s": float(t_rec) if t_rec is not None else float("nan"),
+        "h_exceed_area_m_s": area_h,
+        "v_exceed_area_m_s": area_v,
+        "exceed_area_ratio": exceed_area_ratio,
+        "control_effort_u": effort_u,
+        "control_effort_s": effort_s,
+        "control_effort_ratio": control_effort_ratio,
     }
 
     return {"scores": scores, "raw": raw, "overall": float(overall)}
