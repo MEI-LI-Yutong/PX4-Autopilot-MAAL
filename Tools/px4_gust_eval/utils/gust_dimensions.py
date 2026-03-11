@@ -35,7 +35,6 @@ DIM_ORDER = [
     "act_margin",
     "recovery",
     "exceed_area",
-    "control_effort",
 ]
 
 DIM_LABELS = [
@@ -49,7 +48,6 @@ DIM_LABELS = [
     "Act-Margin",
     "Recovery",
     "Exceed-Area",
-    "Ctrl-Effort",
 ]
 
 RADAR_DIM_ORDER = [
@@ -63,7 +61,6 @@ RADAR_DIM_ORDER = [
     "act_margin",
     "recovery",
     "exceed_area",
-    "control_effort",
 ]
 
 RADAR_DIM_LABELS = [
@@ -77,7 +74,6 @@ RADAR_DIM_LABELS = [
     "Actuator\nMargin",
     "Recovery",
     "Exceed\nArea",
-    "Control\nEffort",
 ]
 
 def _integral_over_time(t: np.ndarray, y: np.ndarray) -> float:
@@ -91,6 +87,8 @@ def _integral_over_time(t: np.ndarray, y: np.ndarray) -> float:
     y_sorted = y_valid[order]
     if t_sorted[-1] <= t_sorted[0]:
         return float("nan")
+    if hasattr(np, "trapezoid"):
+        return float(np.trapezoid(y_sorted, t_sorted))
     return float(np.trapz(y_sorted, t_sorted))
 
 
@@ -99,45 +97,6 @@ def _exceed_area(err: Optional[np.ndarray], threshold: float, t: np.ndarray) -> 
         return float("nan")
     exceed = np.maximum(0.0, np.abs(err) - threshold)
     return _integral_over_time(t, exceed)
-
-
-def _control_effort_integral(
-    df: pd.DataFrame,
-    t: np.ndarray,
-    prefix: str,
-    limit: float,
-    eps: float,
-    samples: int = 25,
-) -> Tuple[float, float]:
-    cols = _actuator_columns(df, prefix)
-    if not cols:
-        return float("nan"), float("nan")
-
-    arr = df[cols].to_numpy(dtype=float)
-    if arr.size == 0:
-        return float("nan"), float("nan")
-
-    active_cols = np.nanmax(np.abs(arr), axis=0) >= eps
-    if not np.any(active_cols):
-        return float("nan"), float("nan")
-    arr = arr[:, active_cols]
-
-    head = np.abs(arr[:samples, :])
-    if head.size == 0:
-        return float("nan"), float("nan")
-    base_vec = np.nanmean(head, axis=0)
-
-    magnitude = np.abs(arr)
-    dev = np.abs(magnitude - base_vec)
-    dev_mean = np.nanmean(dev, axis=1)
-    effort = _integral_over_time(t, dev_mean)
-
-    duration = float(np.nanmax(t) - np.nanmin(t)) if np.isfinite(t).any() else float("nan")
-    margin = np.nanmean(np.maximum(limit - base_vec, 1e-6))
-    if not np.isfinite(effort) or not np.isfinite(duration) or duration <= 0.0 or not np.isfinite(margin) or margin <= 0.0:
-        return effort, float("nan")
-    ratio = float(effort / (duration * margin))
-    return effort, ratio
 
 
 def _attitude_hold_peak(df: pd.DataFrame, col: str, circular: bool = False, baseline_samples: int = 25) -> float:
@@ -302,11 +261,6 @@ def compute_dimension_breakdown(df: pd.DataFrame) -> Dict[str, Dict[str, float]]
     area_candidates = [r for r in (area_h_ratio, area_v_ratio) if np.isfinite(r)]
     exceed_area_ratio = float(max(area_candidates)) if area_candidates else float("nan")
 
-    effort_u, effort_u_ratio = _control_effort_integral(df, t, "u", ACTUATOR_MAX, eps=1.0)
-    effort_s, effort_s_ratio = _control_effort_integral(df, t, "s", SERVO_MAX, eps=1e-3)
-    effort_candidates = [r for r in (effort_u_ratio, effort_s_ratio) if np.isfinite(r)]
-    control_effort_ratio = float(max(effort_candidates)) if effort_candidates else float("nan")
-
     scores = {
         "h_pos_track_acc": _score_sigmoid(h_max, H_MAX),
         "v_pos_track_acc": _score_sigmoid(v_max, V_MAX),
@@ -318,7 +272,6 @@ def compute_dimension_breakdown(df: pd.DataFrame) -> Dict[str, Dict[str, float]]
         "act_margin": act_margin_score,
         "recovery": _score_sigmoid(t_rec, RECOVER_T) if t_rec is not None else float("nan"),
         "exceed_area": _score_sigmoid(exceed_area_ratio, 1.0),
-        "control_effort": _score_sigmoid(control_effort_ratio, 1.0),
     }
 
     overall = _mean_ignore_nan([scores.get(k, float("nan")) for k in DIM_ORDER])
@@ -342,9 +295,6 @@ def compute_dimension_breakdown(df: pd.DataFrame) -> Dict[str, Dict[str, float]]
         "h_exceed_area_m_s": area_h,
         "v_exceed_area_m_s": area_v,
         "exceed_area_ratio": exceed_area_ratio,
-        "control_effort_u": effort_u,
-        "control_effort_s": effort_s,
-        "control_effort_ratio": control_effort_ratio,
     }
 
     return {"scores": scores, "raw": raw, "overall": float(overall)}

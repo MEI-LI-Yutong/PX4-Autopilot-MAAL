@@ -74,6 +74,16 @@ try:
 except Exception:
     pass
 
+RECOVERABLE_REF_DIMS = [
+    "h_pos_track_acc",
+    "v_pos_track_acc",
+    "h_pos_robustness",
+    "v_pos_robustness",
+    "pitch_att_track_acc",
+    "roll_att_track_acc",
+    "yaw_att_track_acc",
+]
+
 
 RAW_COLS = [
     "h_max_dev_m",
@@ -94,9 +104,6 @@ RAW_COLS = [
     "h_exceed_area_m_s",
     "v_exceed_area_m_s",
     "exceed_area_ratio",
-    "control_effort_u",
-    "control_effort_s",
-    "control_effort_ratio",
 ]
 
 
@@ -523,6 +530,8 @@ def plot_levels(
                 dpi,
                 dims=RADAR_DIM_ORDER,
                 dim_labels=RADAR_DIM_LABELS,
+                recoverable_dims=RECOVERABLE_REF_DIMS,
+                recoverable_threshold=0.5,
             )
             images_to_upload.append((f"plots/{radar_output.name}", radar_output))
 
@@ -576,7 +585,6 @@ def plot_levels(
                 "act_margin": "actuator_delta_effective",
                 "recovery": "recovery_time_s",
                 "exceed_area": "exceed_area_ratio",
-                "control_effort": "control_effort_ratio",
             }
 
             def _normalize(scores: Dict[str, float], raw: Dict[str, float], baseline: Dict[str, float] | None, baseline_raw: Dict[str, float] | None, is_baseline: bool) -> Dict[str, float]:
@@ -632,6 +640,8 @@ def plot_levels(
                 dim_labels=RADAR_DIM_LABELS,
                 colors=plot_colors,
                 rmax=1.0,
+                recoverable_dims=RECOVERABLE_REF_DIMS,
+                recoverable_threshold=0.5,
             )
             images_to_upload.append((f"plots/{radar_levels_output.name}", radar_levels_output))
 
@@ -646,6 +656,8 @@ def plot_levels(
                 dim_labels=RADAR_DIM_LABELS,
                 colors=colors,
                 rmax=1.0,
+                recoverable_dims=RECOVERABLE_REF_DIMS,
+                recoverable_threshold=0.5,
             )
             images_to_upload.append((f"plots/{radar_raw_output.name}", radar_raw_output))
 

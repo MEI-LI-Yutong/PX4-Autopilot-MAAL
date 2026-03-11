@@ -136,6 +136,9 @@ def plot_radar_chart(
     dim_labels: List[str] | None = None,
     colors: List[str] | None = None,
     rmax: float = 1.0,
+    recoverable_dims: List[str] | None = None,
+    recoverable_threshold: float = 0.5,
+    recoverable_inactive_value: float = 0.0,
 ) -> None:
     if dims is None:
         dims = ["track_h", "track_v", "attitude", "actuator", "recovery", "wind_sense"]
@@ -163,9 +166,33 @@ def plot_radar_chart(
         lbl.set_ha("center")
         lbl.set_va("center")
     ax.set_ylim(0, rmax)
-    ax.set_yticks([rmax * 0.25, rmax * 0.5, rmax * 0.75, rmax])
+    yticks = [rmax * 0.25, rmax * 0.5, rmax * 0.75, rmax]
+    ax.set_yticks(yticks)
     ax.tick_params(axis="y", labelsize=11)
+    ax.set_yticklabels([f"{y:.2f}" for y in yticks])
     ax.grid(True, alpha=0.3)
+
+    # Draw recoverable reference as a full radar polygon:
+    # selected dimensions use threshold, others fall back to origin (or configured inactive value).
+    if recoverable_dims and 0.0 < recoverable_threshold < rmax:
+        recoverable_set = {d for d in recoverable_dims if d in dims}
+        if recoverable_set:
+            ref_values = []
+            for d in dims:
+                if d in recoverable_set:
+                    ref_values.append(recoverable_threshold)
+                else:
+                    ref_values.append(max(0.0, min(rmax, recoverable_inactive_value)))
+            ref_values += ref_values[:1]
+            ax.plot(
+                angles,
+                ref_values,
+                linestyle="--",
+                linewidth=1.5,
+                color="#f39c12",
+                alpha=0.95,
+                label=f"Recoverable ref ({recoverable_threshold:.2f})",
+            )
     if labels:
         ax.legend(loc="upper right", bbox_to_anchor=(1.22, 1.12), frameon=True, fontsize=11)
 
