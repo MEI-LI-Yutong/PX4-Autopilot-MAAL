@@ -123,12 +123,7 @@ def _score_sigmoid(value: float, limit: float, k: float = 6.0) -> float:
     if not np.isfinite(value) or limit <= 0:
         return float("nan")
     x = float(value) / float(limit)
-    s = 1.0 / (1.0 + math.exp(k * (x - 1.0)))
-    s0 = 1.0 / (1.0 + math.exp(-k))
-    s1 = 0.5
-    if s0 == s1:
-        return float("nan")
-    score = (s - s1) / (s0 - s1)
+    score = 1.0 / (1.0 + math.exp(k * (x - 1.0)))
     return _clamp01(score)
 
 
