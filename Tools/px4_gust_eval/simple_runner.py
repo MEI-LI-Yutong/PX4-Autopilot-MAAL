@@ -23,6 +23,7 @@ import signal
 import subprocess
 import sys
 import time
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
@@ -145,6 +146,8 @@ class SimpleGustRunner:
         self.logger = logging.getLogger("gust.simple")
 
         self.proc: Optional[subprocess.Popen] = None
+        self._proc_log_task: Optional[asyncio.Task] = None
+        self._proc_log_tail = deque(maxlen=200)
         self.drone: Optional[System] = None
         self._launch_time: float = 0.0
         self._pids_to_kill: set[int] = set()
@@ -653,11 +656,58 @@ class SimpleGustRunner:
             if ok:
                 await asyncio.sleep(0.05)
 
+    async def _drain_px4_output(self) -> None:
+        """Continuously consume the PX4 stdout pipe to avoid blocking the simulator."""
+        if not self.proc or not self.proc.stdout:
+            return
+
+        stream = self.proc.stdout
+        try:
+            while True:
+                line = await asyncio.to_thread(stream.readline)
+                if not line:
+                    break
+
+                text = line.decode("utf-8", errors="replace").rstrip()
+                if not text:
+                    continue
+
+                self._proc_log_tail.append(text)
+                self.logger.debug(f"[px4] {text}")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            self.logger.debug(f"PX4 log drain stopped unexpectedly: {e}")
+
+    async def _finish_px4_output_drain(self) -> None:
+        task = self._proc_log_task
+        self._proc_log_task = None
+
+        if task:
+            try:
+                await asyncio.wait_for(task, timeout=2.0)
+            except asyncio.TimeoutError:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+            except Exception:
+                pass
+
+        if self.proc and self.proc.stdout:
+            try:
+                self.proc.stdout.close()
+            except Exception:
+                pass
+
     async def launch_px4(self, env_overrides: Dict[str, str]) -> bool:
         cmd = self.config.get("px4_sitl_command")
         if not cmd:
             self.logger.error("Missing `px4_sitl_command` in config")
             return False
+
+        await self._finish_px4_output_drain()
 
         env = os.environ.copy()
         env.update(env_overrides)
@@ -680,6 +730,7 @@ class SimpleGustRunner:
 
         try:
             self.logger.info(f"Launching PX4: {' '.join(cmd_parts)} (with env overrides)")
+            self._proc_log_tail.clear()
             self.proc = subprocess.Popen(
                 cmd_parts,
                 cwd=self.px4_root,
@@ -688,14 +739,16 @@ class SimpleGustRunner:
                 stderr=subprocess.STDOUT,
                 start_new_session=True,  # new process group for easier cleanup
             )
+            if self.proc.stdout:
+                self._proc_log_task = asyncio.create_task(self._drain_px4_output())
             self._launch_time = time.time()
             await asyncio.sleep(2.0)
             self._track_child_pids()
             self._track_gazebo_pids()
             await asyncio.sleep(8)  # basic startup delay
             if self.proc.poll() is not None:
-                out = self.proc.stdout.read().decode("utf-8", errors="ignore") if self.proc.stdout else ""
-                self.logger.error(f"PX4 failed to start. Output: {out[-400:]}…")
+                out = "\n".join(self._proc_log_tail)
+                self.logger.error(f"PX4 failed to start. Output tail:\n{out[-4000:]}")
                 return False
             return True
         except Exception as e:
@@ -1268,6 +1321,7 @@ class SimpleGustRunner:
                         await self._maybe_log_table_for_csv(test_id)
                         await self._maybe_upload_single_csv(test_id)
                         self.stop_px4()
+                        await self._finish_px4_output_drain()
                         await asyncio.sleep(3)
             finally:
                 self._restore_sdf_edit()
