@@ -38,6 +38,8 @@ import csv
 import asyncio.subprocess
 import re
 
+from task_status_server import TaskStatusServer, TaskStatusTracker
+
 
 # ----------------------------
 # Process helpers (minimal)
@@ -212,6 +214,8 @@ class SimpleGustRunner:
         self.sdf_edit_cfg = self.config.get("sdf_edit", {})
         self._sdf_edit_path: Optional[Path] = None
         self._sdf_edit_backup: Optional[bytes] = None
+        self._task_status_tracker = TaskStatusTracker()
+        self._task_status_server = TaskStatusServer(self._task_status_tracker, logger=self.logger)
 
     # ---- wandb integration ----
     def _init_wandb(self, cfg: Dict[str, Any]) -> None:
@@ -1160,112 +1164,140 @@ class SimpleGustRunner:
             finally:
                 self._pids_to_kill.discard(pid)
 
+    def _collect_tests(self) -> List[Dict[str, Any]]:
+        if "wind_gust_tests" in self.config:
+            return list(self.config.get("wind_gust_tests", []))
+        if "tests" in self.config:
+            return list(self.config.get("tests", []))
+        return [{
+            "test_id": self.config.get("test_suite", "single"),
+            "description": self.config.get("description", "single run"),
+            "wind_config": self.config.get("wind_config", {}),
+        }]
+
+    def _record_task_result(
+        self,
+        results: List[Dict[str, Any]],
+        test_id: str,
+        success: bool,
+        error: Optional[str] = None,
+    ) -> None:
+        result: Dict[str, Any] = {"test_id": test_id, "success": bool(success)}
+        if error:
+            result["error"] = error
+        results.append(result)
+        self._task_status_tracker.mark_finished(test_id, success=bool(success), error=error)
+
     # ---- orchestration ----
     async def run(self) -> int:
+        tests = self._collect_tests()
+        self._task_status_tracker.set_tasks(
+            self.config.get("test_suite", "gust_suite"),
+            tests,
+        )
+        self._task_status_server.start()
+
         simulator = self.config.get("simulator", "gazebo")
-        if not check_ready(str(self.build_dir), simulator):
-            return 2
-
-        self._init_wandb(self.config)
-        self._apply_sdf_edit()
-
-        # missions/tests
-        tests: List[Dict[str, Any]] = []
-        if "wind_gust_tests" in self.config:
-            tests = list(self.config.get("wind_gust_tests", []))
-        elif "tests" in self.config:
-            tests = list(self.config.get("tests", []))
-        else:
-            # single-run (no list)
-            tests = [{
-                "test_id": self.config.get("test_suite", "single"),
-                "description": self.config.get("description", "single run"),
-                "wind_config": self.config.get("wind_config", {}),
-            }]
-
-        mission_cfg_raw = self.config.get("mission_config", self.config.get("mission", {}))
-        mission_cfg = mission_cfg_raw if isinstance(mission_cfg_raw, dict) else {}
-        mavlink_url = self.config.get("mavlink_url", "udp://:14540")
-
-        results: List[Dict[str, Any]] = []
-
         try:
-            for t in tests:
-                test_id = t.get("test_id", "test")
-                self.logger.info(f"Starting test: {test_id}")
-                wind_env = wind_env_from_config(t.get("wind_config", {}))
-                # Update Gazebo wind config file if available
+            if not check_ready(str(self.build_dir), simulator):
+                return 2
+
+            self._init_wandb(self.config)
+            self._apply_sdf_edit()
+
+            mission_cfg_raw = self.config.get("mission_config", self.config.get("mission", {}))
+            mission_cfg = mission_cfg_raw if isinstance(mission_cfg_raw, dict) else {}
+            mavlink_url = self.config.get("mavlink_url", "udp://:14540")
+
+            results: List[Dict[str, Any]] = []
+
+            try:
+                for t in tests:
+                    test_id = t.get("test_id", "test")
+                    self._task_status_tracker.mark_running(test_id)
+                    self.logger.info(f"Starting test: {test_id}")
+                    wind_env = wind_env_from_config(t.get("wind_config", {}))
+                    # Update Gazebo wind config file if available
+                    try:
+                        self._update_gz_wind_config(t.get("wind_config", {}))
+                    except Exception as e:
+                        self.logger.warning(f"Failed updating gz wind config: {e}")
+                    ok_launch = await self.launch_px4(wind_env)
+                    if not ok_launch:
+                        self._record_task_result(results, test_id, False, "px4_start_failed")
+                        self.stop_px4()
+                        continue
+
+                    try:
+                        connected = await self.connect_mavsdk(mavlink_url)
+                        if not connected:
+                            self._record_task_result(results, test_id, False, "mavsdk_connect_failed")
+                        else:
+                            try:
+                                # start CSV + wind logging
+                                await self._start_recording(test_id)
+
+                                # Optional user-provided params before arming
+                                pre_params = self.config.get("prearm_params", {})
+                                if isinstance(pre_params, dict):
+                                    pre_params = pre_params.copy()
+                                else:
+                                    pre_params = {}
+                                if self.env_param_overrides:
+                                    pre_params.update(self.env_param_overrides)
+                                if pre_params:
+                                    self.logger.info(f"Applying prearm params ({len(pre_params)}) …")
+                                    await self._set_params(pre_params)
+                                    await self._maybe_capture_params_snapshot()
+                                else:
+                                    await self._maybe_capture_params_snapshot()
+
+                                if self._get_plan_key(mission_cfg):
+                                    ok = await self.run_qgc_mission(mission_cfg)
+                                else:
+                                    ok = await self.run_simple_mission(mission_cfg)
+                                error = None if ok else "mission_failed"
+                                self._record_task_result(results, test_id, bool(ok), error)
+                            except Exception:
+                                self.logger.exception(f"Test {test_id} crashed")
+                                exc_name = sys.exc_info()[0].__name__ if sys.exc_info()[0] else "Exception"
+                                self._record_task_result(results, test_id, False, f"unexpected_error: {exc_name}")
+                    finally:
+                        await self._stop_recording()
+                        await self._postprocess_with_ulog(test_id)
+                        await self._maybe_log_table_for_csv(test_id)
+                        await self._maybe_upload_single_csv(test_id)
+                        self.stop_px4()
+                        await asyncio.sleep(3)
+            finally:
+                self._restore_sdf_edit()
+
+            # Save summary
+            out = {
+                "suite": self.config.get("test_suite", "gust_suite"),
+                "timestamp": datetime.now().isoformat(),
+                "results": results,
+            }
+            with open(self.run_dir / "results.json", "w") as f:
+                json.dump(out, f, indent=2)
+
+            passed = sum(1 for r in results if r.get("success"))
+            total = len(results)
+            self.logger.info(f"Summary: {passed}/{total} passed")
+            if self._wandb_run:
                 try:
-                    self._update_gz_wind_config(t.get("wind_config", {}))
-                except Exception as e:
-                    self.logger.warning(f"Failed updating gz wind config: {e}")
-                ok_launch = await self.launch_px4(wind_env)
-                if not ok_launch:
-                    results.append({"test_id": test_id, "success": False, "error": "px4_start_failed"})
-                    self.stop_px4()
-                    continue
-
+                    self._wandb_run.log({"summary/passed": passed, "summary/total": total})
+                except Exception:
+                    pass
+                await self._run_post_plots()
                 try:
-                    connected = await self.connect_mavsdk(mavlink_url)
-                    if not connected:
-                        results.append({"test_id": test_id, "success": False, "error": "mavsdk_connect_failed"})
-                    else:
-                        # start CSV + wind logging
-                        await self._start_recording(test_id)
-
-                        # Optional user-provided params before arming
-                        pre_params = self.config.get("prearm_params", {})
-                        if isinstance(pre_params, dict):
-                            pre_params = pre_params.copy()
-                        else:
-                            pre_params = {}
-                        if self.env_param_overrides:
-                            pre_params.update(self.env_param_overrides)
-                        if pre_params:
-                            self.logger.info(f"Applying prearm params ({len(pre_params)}) …")
-                            await self._set_params(pre_params)
-                            await self._maybe_capture_params_snapshot()
-                        else:
-                            await self._maybe_capture_params_snapshot()
-
-                        if self._get_plan_key(mission_cfg):
-                            ok = await self.run_qgc_mission(mission_cfg)
-                        else:
-                            ok = await self.run_simple_mission(mission_cfg)
-                        results.append({"test_id": test_id, "success": bool(ok)})
-                finally:
-                    await self._stop_recording()
-                    await self._postprocess_with_ulog(test_id)
-                    await self._maybe_log_table_for_csv(test_id)
-                    await self._maybe_upload_single_csv(test_id)
-                    self.stop_px4()
-                    await asyncio.sleep(3)
+                    self._wandb_run.finish()
+                except Exception:
+                    pass
+            return 0 if passed == total else 1
         finally:
-            self._restore_sdf_edit()
-
-        # Save summary
-        out = {
-            "suite": self.config.get("test_suite", "gust_suite"),
-            "timestamp": datetime.now().isoformat(),
-            "results": results,
-        }
-        with open(self.run_dir / "results.json", "w") as f:
-            json.dump(out, f, indent=2)
-
-        passed = sum(1 for r in results if r.get("success"))
-        total = len(results)
-        self.logger.info(f"Summary: {passed}/{total} passed")
-        if self._wandb_run:
-            try:
-                self._wandb_run.log({"summary/passed": passed, "summary/total": total})
-            except Exception:
-                pass
-            await self._run_post_plots()
-            try:
-                self._wandb_run.finish()
-            except Exception:
-                pass
-        return 0 if passed == total else 1
+            self._task_status_tracker.mark_suite_finished()
+            self._task_status_server.stop()
 
     # ----------------------------
     # GZ wind config writer
