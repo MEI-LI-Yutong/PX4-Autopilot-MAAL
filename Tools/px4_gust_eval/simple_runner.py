@@ -23,18 +23,23 @@ import signal
 import subprocess
 import sys
 import time
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
 import psutil  # type: ignore
 from mavsdk import System  # type: ignore
+from mavsdk.mission import MissionError  # type: ignore
+from mavsdk.mission_raw import MissionRawError  # type: ignore
 import shlex
 import math
 import xml.etree.ElementTree as ET
 import csv
 import asyncio.subprocess
 import re
+
+from task_status_server import TaskStatusServer, TaskStatusTracker
 
 
 # ----------------------------
@@ -141,6 +146,8 @@ class SimpleGustRunner:
         self.logger = logging.getLogger("gust.simple")
 
         self.proc: Optional[subprocess.Popen] = None
+        self._proc_log_task: Optional[asyncio.Task] = None
+        self._proc_log_tail = deque(maxlen=200)
         self.drone: Optional[System] = None
         self._launch_time: float = 0.0
         self._pids_to_kill: set[int] = set()
@@ -194,6 +201,7 @@ class SimpleGustRunner:
         self.wandb_tags = wandb_cfg.get("tags") or []
         self.wandb_upload_each_csv = bool(wandb_cfg.get("upload_each_csv", True if self.wandb_enabled else False))
         self.wandb_table_each_csv = bool(wandb_cfg.get("table_each_csv", True if self.wandb_enabled else False))
+        self.wandb_upload_config = bool(wandb_cfg.get("upload_config", True if self.wandb_enabled else False))
         self.wandb_param_names: Sequence[str] = wandb_cfg.get("param_snapshot", [])
         if isinstance(self.wandb_param_names, str):
             self.wandb_param_names = [self.wandb_param_names]
@@ -206,6 +214,11 @@ class SimpleGustRunner:
         self._wandb_run = None
         self._wandb_params_cached: Optional[Dict[str, Any]] = None
         self.run_plots = _env_flag("RUN_PLOTS", True)
+        self.sdf_edit_cfg = self.config.get("sdf_edit", {})
+        self._sdf_edit_path: Optional[Path] = None
+        self._sdf_edit_backup: Optional[bytes] = None
+        self._task_status_tracker = TaskStatusTracker()
+        self._task_status_server = TaskStatusServer(self._task_status_tracker, logger=self.logger)
 
     # ---- wandb integration ----
     def _init_wandb(self, cfg: Dict[str, Any]) -> None:
@@ -237,6 +250,8 @@ class SimpleGustRunner:
             tags=tags,
             config=base_cfg,
         )
+        if self.wandb_upload_config:
+            self._upload_task_config()
 
         # Attempt to fetch NocoDB overrides after run init (so we have run_id)
         if self.nocodb_enabled:
@@ -338,9 +353,24 @@ class SimpleGustRunner:
         candidates = [r for r in records if _exp_times(r) == min_exp]
         chosen = random.choice(candidates)
         self._nocodb_selected = chosen
+        # Optional: load sdf_edit from JSON column
+        raw_sdf = chosen.get("sdf_edit_json")
+        if raw_sdf:
+            try:
+                parsed = raw_sdf
+                if isinstance(raw_sdf, str):
+                    parsed = json.loads(raw_sdf)
+                if isinstance(parsed, dict):
+                    if isinstance(parsed.get("sdf_edit"), dict):
+                        self.sdf_edit_cfg = parsed.get("sdf_edit", {})
+                    else:
+                        self.sdf_edit_cfg = parsed
+                    self.logger.info("NocoDB: loaded sdf_edit_json")
+            except Exception as e:
+                self.logger.warning(f"NocoDB: failed to parse sdf_edit_json: {e}")
         # Extract params: numeric values only, skip None/empty, skip meta fields
         overrides: Dict[str, Any] = {}
-        meta_keys = {"Id", "nc_order", "Title", "exp_times", "wandb_runid"}
+        meta_keys = {"Id", "nc_order", "Title", "exp_times", "wandb_runid", "sdf_edit_json"}
         for k, v in chosen.items():
             if k in meta_keys:
                 continue
@@ -459,6 +489,23 @@ class SimpleGustRunner:
         except Exception as e:
             self.logger.warning(f"W&B upload failed for {artifact_name}: {e}")
 
+    def _upload_task_config(self) -> None:
+        """Upload the task JSON file as a W&B artifact."""
+        if not (self._wandb_run and self.config_path.is_file()):
+            return
+        try:
+            import wandb  # type: ignore
+        except ImportError:
+            return
+        artifact_name = f"gust-task-config-{self.run_dir.name}"
+        artifact = wandb.Artifact(artifact_name, type="gust-task-config")
+        artifact.add_file(str(self.config_path), name=self.config_path.name)
+        try:
+            self._wandb_run.log_artifact(artifact)
+            self.logger.info(f"W&B: uploaded task config {self.config_path}")
+        except Exception as e:
+            self.logger.warning(f"W&B upload failed for task config: {e}")
+
     async def _maybe_log_table_for_csv(self, test_id: str) -> None:
         """Log the full CSV as a W&B table for easy browsing (no column drops)."""
         if not (self._wandb_run and self.wandb_table_each_csv):
@@ -510,6 +557,33 @@ class SimpleGustRunner:
         except Exception as e:
             self.logger.warning(f"Post-plot step failed: {e}")
 
+    async def _postprocess_with_ulog(self, test_id: str) -> None:
+        """Augment CSV with ULog-derived setpoints and plot tracking errors."""
+        csv_path = self.run_dir / f"{test_id}.csv"
+        if not csv_path.is_file():
+            return
+        log_root_cfg = self.config.get("ulog_root")
+        log_root = Path(log_root_cfg).expanduser().resolve() if log_root_cfg else (self.build_dir / "rootfs/log")
+        try:
+            import postprocess_ulog  # type: ignore
+        except Exception as e:
+            self.logger.warning(f"Failed to import postprocess_ulog: {e}")
+            return
+        try:
+            await asyncio.to_thread(
+                postprocess_ulog.process_single_test,
+                self.run_dir,
+                test_id,
+                log_root,
+                None,
+                False,
+                self.logger,
+            )
+        except FileNotFoundError as e:
+            self.logger.warning(f"ULog postprocess skipped ({e})")
+        except Exception as e:
+            self.logger.warning(f"ULog postprocess failed for {test_id}: {e}")
+
     # ---- lifecycle ----
     async def _wait_until_armable(self, timeout_sec: int, require_gps: bool = True) -> bool:
         """Wait until vehicle reports armable. Logs health periodically."""
@@ -542,6 +616,30 @@ class SimpleGustRunner:
 
         return False
 
+    async def _ensure_prearm_ready(self, mission_cfg: Dict[str, Any]) -> bool:
+        """Block until the vehicle is armable or apply relaxed prearm params if requested."""
+        require_gps = bool(mission_cfg.get("require_gps", True))
+        ready_timeout = int(mission_cfg.get("ready_timeout_sec", 60))
+        force_arm = bool(mission_cfg.get("force_arm_if_unready", True))
+        ready = await self._wait_until_armable(timeout_sec=ready_timeout, require_gps=require_gps)
+        if not ready:
+            self.logger.warning("Vehicle not armable within timeout")
+            if force_arm:
+                self.logger.info("Applying minimal prearm parameters for SITL (COM_ARM_WO_GPS=1)…")
+                await self._set_params({"COM_ARM_WO_GPS": 1})
+        return ready
+
+    def _resolve_path(self, raw_path: str) -> Path:
+        """Resolve mission/asset paths relative to the config file."""
+        candidate = Path(os.path.expandvars(os.path.expanduser(raw_path)))
+        if not candidate.is_absolute():
+            candidate = (self.config_path.parent / candidate).resolve()
+        return candidate
+
+    def _get_plan_key(self, mission_cfg: Dict[str, Any]) -> Optional[str]:
+        plan_key = mission_cfg.get("plan_file") or mission_cfg.get("mission_plan") or mission_cfg.get("qgc_plan")
+        return str(plan_key) if plan_key else None
+
     async def _set_params(self, params: Dict[str, Any]) -> None:
         assert self.drone is not None
         for name, value in params.items():
@@ -558,11 +656,58 @@ class SimpleGustRunner:
             if ok:
                 await asyncio.sleep(0.05)
 
+    async def _drain_px4_output(self) -> None:
+        """Continuously consume the PX4 stdout pipe to avoid blocking the simulator."""
+        if not self.proc or not self.proc.stdout:
+            return
+
+        stream = self.proc.stdout
+        try:
+            while True:
+                line = await asyncio.to_thread(stream.readline)
+                if not line:
+                    break
+
+                text = line.decode("utf-8", errors="replace").rstrip()
+                if not text:
+                    continue
+
+                self._proc_log_tail.append(text)
+                self.logger.debug(f"[px4] {text}")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            self.logger.debug(f"PX4 log drain stopped unexpectedly: {e}")
+
+    async def _finish_px4_output_drain(self) -> None:
+        task = self._proc_log_task
+        self._proc_log_task = None
+
+        if task:
+            try:
+                await asyncio.wait_for(task, timeout=2.0)
+            except asyncio.TimeoutError:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+            except Exception:
+                pass
+
+        if self.proc and self.proc.stdout:
+            try:
+                self.proc.stdout.close()
+            except Exception:
+                pass
+
     async def launch_px4(self, env_overrides: Dict[str, str]) -> bool:
         cmd = self.config.get("px4_sitl_command")
         if not cmd:
             self.logger.error("Missing `px4_sitl_command` in config")
             return False
+
+        await self._finish_px4_output_drain()
 
         env = os.environ.copy()
         env.update(env_overrides)
@@ -585,6 +730,7 @@ class SimpleGustRunner:
 
         try:
             self.logger.info(f"Launching PX4: {' '.join(cmd_parts)} (with env overrides)")
+            self._proc_log_tail.clear()
             self.proc = subprocess.Popen(
                 cmd_parts,
                 cwd=self.px4_root,
@@ -593,14 +739,16 @@ class SimpleGustRunner:
                 stderr=subprocess.STDOUT,
                 start_new_session=True,  # new process group for easier cleanup
             )
+            if self.proc.stdout:
+                self._proc_log_task = asyncio.create_task(self._drain_px4_output())
             self._launch_time = time.time()
             await asyncio.sleep(2.0)
             self._track_child_pids()
             self._track_gazebo_pids()
             await asyncio.sleep(8)  # basic startup delay
             if self.proc.poll() is not None:
-                out = self.proc.stdout.read().decode("utf-8", errors="ignore") if self.proc.stdout else ""
-                self.logger.error(f"PX4 failed to start. Output: {out[-400:]}…")
+                out = "\n".join(self._proc_log_tail)
+                self.logger.error(f"PX4 failed to start. Output tail:\n{out[-4000:]}")
                 return False
             return True
         except Exception as e:
@@ -773,6 +921,213 @@ class SimpleGustRunner:
         await asyncio.sleep(min(30, max(5, flight_sec // 3)))
         return True
 
+    async def run_qgc_mission(self, mission_cfg: Dict[str, Any]) -> bool:
+        """Upload a QGC mission plan and let PX4 execute it."""
+        assert self.drone is not None
+
+        plan_key = mission_cfg.get("plan_file") or mission_cfg.get("mission_plan") or mission_cfg.get("qgc_plan")
+        if not plan_key:
+            self.logger.error("Mission config missing 'plan_file'/'mission_plan' key for QGC mission.")
+            return False
+
+        plan_path = self._resolve_path(str(plan_key))
+        if not plan_path.is_file():
+            self.logger.error(f"Mission plan not found: {plan_path}")
+            return False
+
+        timeout_sec = int(mission_cfg.get("timeout_sec", 600))
+        post_wait = int(mission_cfg.get("post_mission_wait_sec", 20))
+        rtl_after = bool(mission_cfg.get("rtl_after_mission", True))
+        force_arm = bool(mission_cfg.get("force_arm_if_unready", True))
+
+        self.logger.info(f"Importing QGC mission from {plan_path}")
+        try:
+            import_data = await self.drone.mission_raw.import_qgroundcontrol_mission(str(plan_path))
+        except MissionRawError as e:
+            self.logger.error(f"Failed to import mission from {plan_path}: {e}")
+            return False
+        except Exception as e:
+            self.logger.error(f"Unexpected mission import error for {plan_path}: {e}")
+            return False
+
+        mission_items = list(getattr(import_data, "mission_items", []))
+        if not mission_items:
+            self.logger.error(f"No mission items found in {plan_path}")
+            return False
+
+        try:
+            await self.drone.mission_raw.clear_mission()
+        except Exception:
+            pass
+
+        try:
+            await self.drone.mission_raw.upload_mission(mission_items)
+        except MissionRawError as e:
+            self.logger.error(f"Mission upload failed: {e}")
+            return False
+        except Exception as e:
+            self.logger.error(f"Unexpected mission upload error: {e}")
+            return False
+
+        try:
+            await self.drone.mission.set_return_to_launch_after_mission(rtl_after)
+        except MissionError as e:
+            self.logger.warning(f"Failed to set RTL after mission ({rtl_after}): {e}")
+        except Exception as e:
+            self.logger.warning(f"Unexpected RTL-after-mission error: {e}")
+
+        await self._ensure_prearm_ready(mission_cfg)
+
+        try:
+            await self.drone.action.arm()
+        except Exception as e:
+            if force_arm:
+                self.logger.warning(f"Arm failed: {e}; retrying with relaxed params for SITL…")
+                await self._set_params({
+                    "COM_ARM_WO_GPS": 1,
+                    "NAV_RCL_ACT": 0,
+                    "NAV_DLL_ACT": 0,
+                })
+                await asyncio.sleep(1.0)
+                try:
+                    await self.drone.action.arm()
+                except Exception as e2:
+                    self.logger.error(f"Arm failed after retry: {e2}")
+                    return False
+            else:
+                self.logger.error(f"Arm failed: {e}")
+                return False
+
+        loop = asyncio.get_event_loop()
+        max_attempts = int(mission_cfg.get("mission_start_attempts", mission_cfg.get("mission_start_retries", 2)))
+        max_attempts = max(1, max_attempts)
+        min_runtime = float(mission_cfg.get("min_mission_runtime_sec", 8.0))
+
+        attempt = 0
+        success = False
+
+        while attempt < max_attempts and not success:
+            attempt += 1
+            if attempt > 1:
+                self.logger.info(f"Retrying mission start attempt {attempt}/{max_attempts}")
+                try:
+                    await self.drone.mission.set_current_mission_item(0)
+                except MissionError as e:
+                    self.logger.warning(f"Failed to reset mission item before retry: {e}")
+                except Exception as e:
+                    self.logger.warning(f"Unexpected error resetting mission item: {e}")
+                await asyncio.sleep(1.0)
+
+            try:
+                await self.drone.mission.start_mission()
+            except MissionError as e:
+                self.logger.error(f"Mission start failed: {e}")
+                if attempt >= max_attempts:
+                    return False
+                await asyncio.sleep(2.0)
+                continue
+            except Exception as e:
+                self.logger.error(f"Unexpected mission start failure: {e}")
+                if attempt >= max_attempts:
+                    return False
+                await asyncio.sleep(2.0)
+                continue
+
+            attempt_start = loop.time()
+            attempt_deadline = attempt_start + max(30, timeout_sec)
+            progress_stream = None
+            in_air_stream = None
+            try:
+                progress_stream = self.drone.mission.mission_progress()
+            except Exception:
+                progress_stream = None
+            try:
+                in_air_stream = self.drone.telemetry.in_air()
+            except Exception:
+                in_air_stream = None
+
+            progress_started = False
+            ever_in_air = False
+            finished_flag = False
+
+            self.logger.info(f"Mission started; monitoring progress (attempt {attempt}/{max_attempts})…")
+            while loop.time() < attempt_deadline:
+                if progress_stream is not None:
+                    try:
+                        progress = await asyncio.wait_for(progress_stream.__anext__(), timeout=0.5)
+                        self.logger.info(f"Mission progress {progress.current}/{progress.total}")
+                        if getattr(progress, "current", 0) > 0:
+                            progress_started = True
+                    except asyncio.TimeoutError:
+                        pass
+                    except StopAsyncIteration:
+                        progress_stream = None
+                    except Exception as e:
+                        self.logger.debug(f"Mission progress stream error: {e}")
+                        progress_stream = None
+
+                if in_air_stream is not None:
+                    try:
+                        ia = await asyncio.wait_for(in_air_stream.__anext__(), timeout=0.1)
+                        if ia:
+                            ever_in_air = True
+                    except asyncio.TimeoutError:
+                        pass
+                    except StopAsyncIteration:
+                        in_air_stream = None
+                    except Exception:
+                        in_air_stream = None
+
+                try:
+                    finished = await self.drone.mission.is_mission_finished()
+                except MissionError:
+                    finished = False
+                except Exception:
+                    finished = False
+                if finished:
+                    finished_flag = True
+                    break
+
+                await asyncio.sleep(0.3)
+
+            if progress_stream is not None:
+                try:
+                    await progress_stream.aclose()
+                except Exception:
+                    pass
+            if in_air_stream is not None:
+                try:
+                    await in_air_stream.aclose()
+                except Exception:
+                    pass
+
+            runtime = loop.time() - attempt_start
+            if not finished_flag:
+                self.logger.error(f"Mission timeout after {timeout_sec} seconds (attempt {attempt}/{max_attempts})")
+                return False
+
+            if progress_started or ever_in_air or runtime >= min_runtime or attempt >= max_attempts:
+                success = True
+            else:
+                self.logger.warning("Mission finished without movement; retrying start to overcome PX4 initialization quirk…")
+                await asyncio.sleep(2.0)
+
+        if not success:
+            return False
+
+        if post_wait > 0:
+            land_deadline = loop.time() + post_wait
+            while loop.time() < land_deadline:
+                try:
+                    ia = await self.drone.telemetry.in_air().__anext__()
+                except Exception:
+                    ia = True
+                if not ia:
+                    break
+                await asyncio.sleep(0.5)
+
+        return True
+
     def stop_px4(self) -> None:
         # Try to terminate whole process group (px4 + gazebo)
         if self.proc:
@@ -862,103 +1217,141 @@ class SimpleGustRunner:
             finally:
                 self._pids_to_kill.discard(pid)
 
+    def _collect_tests(self) -> List[Dict[str, Any]]:
+        if "wind_gust_tests" in self.config:
+            return list(self.config.get("wind_gust_tests", []))
+        if "tests" in self.config:
+            return list(self.config.get("tests", []))
+        return [{
+            "test_id": self.config.get("test_suite", "single"),
+            "description": self.config.get("description", "single run"),
+            "wind_config": self.config.get("wind_config", {}),
+        }]
+
+    def _record_task_result(
+        self,
+        results: List[Dict[str, Any]],
+        test_id: str,
+        success: bool,
+        error: Optional[str] = None,
+    ) -> None:
+        result: Dict[str, Any] = {"test_id": test_id, "success": bool(success)}
+        if error:
+            result["error"] = error
+        results.append(result)
+        self._task_status_tracker.mark_finished(test_id, success=bool(success), error=error)
+
     # ---- orchestration ----
     async def run(self) -> int:
+        tests = self._collect_tests()
+        self._task_status_tracker.set_tasks(
+            self.config.get("test_suite", "gust_suite"),
+            tests,
+        )
+        self._task_status_server.start()
+
         simulator = self.config.get("simulator", "gazebo")
-        if not check_ready(str(self.build_dir), simulator):
-            return 2
+        try:
+            if not check_ready(str(self.build_dir), simulator):
+                return 2
 
-        self._init_wandb(self.config)
+            self._init_wandb(self.config)
+            self._apply_sdf_edit()
 
-        # missions/tests
-        tests: List[Dict[str, Any]] = []
-        if "wind_gust_tests" in self.config:
-            tests = list(self.config.get("wind_gust_tests", []))
-        elif "tests" in self.config:
-            tests = list(self.config.get("tests", []))
-        else:
-            # single-run (no list)
-            tests = [{
-                "test_id": self.config.get("test_suite", "single"),
-                "description": self.config.get("description", "single run"),
-                "wind_config": self.config.get("wind_config", {}),
-            }]
+            mission_cfg_raw = self.config.get("mission_config", self.config.get("mission", {}))
+            mission_cfg = mission_cfg_raw if isinstance(mission_cfg_raw, dict) else {}
+            mavlink_url = self.config.get("mavlink_url", "udp://:14540")
 
-        mission_cfg = self.config.get("mission_config", self.config.get("mission", {}))
-        mavlink_url = self.config.get("mavlink_url", "udp://:14540")
-
-        results: List[Dict[str, Any]] = []
-
-        for t in tests:
-            test_id = t.get("test_id", "test")
-            self.logger.info(f"Starting test: {test_id}")
-            wind_env = wind_env_from_config(t.get("wind_config", {}))
-            # Update Gazebo wind config file if available
-            try:
-                self._update_gz_wind_config(t.get("wind_config", {}))
-            except Exception as e:
-                self.logger.warning(f"Failed updating gz wind config: {e}")
-            ok_launch = await self.launch_px4(wind_env)
-            if not ok_launch:
-                results.append({"test_id": test_id, "success": False, "error": "px4_start_failed"})
-                self.stop_px4()
-                continue
+            results: List[Dict[str, Any]] = []
 
             try:
-                connected = await self.connect_mavsdk(mavlink_url)
-                if not connected:
-                    results.append({"test_id": test_id, "success": False, "error": "mavsdk_connect_failed"})
-                else:
-                    # start CSV + wind logging
-                    await self._start_recording(test_id)
+                for t in tests:
+                    test_id = t.get("test_id", "test")
+                    self._task_status_tracker.mark_running(test_id)
+                    self.logger.info(f"Starting test: {test_id}")
+                    wind_env = wind_env_from_config(t.get("wind_config", {}))
+                    # Update Gazebo wind config file if available
+                    try:
+                        self._update_gz_wind_config(t.get("wind_config", {}))
+                    except Exception as e:
+                        self.logger.warning(f"Failed updating gz wind config: {e}")
+                    ok_launch = await self.launch_px4(wind_env)
+                    if not ok_launch:
+                        self._record_task_result(results, test_id, False, "px4_start_failed")
+                        self.stop_px4()
+                        continue
 
-                    # Optional user-provided params before arming
-                    pre_params = self.config.get("prearm_params", {})
-                    if isinstance(pre_params, dict):
-                        pre_params = pre_params.copy()
-                    else:
-                        pre_params = {}
-                    if self.env_param_overrides:
-                        pre_params.update(self.env_param_overrides)
-                    if pre_params:
-                        self.logger.info(f"Applying prearm params ({len(pre_params)}) …")
-                        await self._set_params(pre_params)
-                        await self._maybe_capture_params_snapshot()
-                    else:
-                        await self._maybe_capture_params_snapshot()
+                    try:
+                        connected = await self.connect_mavsdk(mavlink_url)
+                        if not connected:
+                            self._record_task_result(results, test_id, False, "mavsdk_connect_failed")
+                        else:
+                            try:
+                                # start CSV + wind logging
+                                await self._start_recording(test_id)
 
-                    ok = await self.run_simple_mission(mission_cfg)
-                    results.append({"test_id": test_id, "success": bool(ok)})
+                                # Optional user-provided params before arming
+                                pre_params = self.config.get("prearm_params", {})
+                                if isinstance(pre_params, dict):
+                                    pre_params = pre_params.copy()
+                                else:
+                                    pre_params = {}
+                                if self.env_param_overrides:
+                                    pre_params.update(self.env_param_overrides)
+                                if pre_params:
+                                    self.logger.info(f"Applying prearm params ({len(pre_params)}) …")
+                                    await self._set_params(pre_params)
+                                    await self._maybe_capture_params_snapshot()
+                                else:
+                                    await self._maybe_capture_params_snapshot()
+
+                                if self._get_plan_key(mission_cfg):
+                                    ok = await self.run_qgc_mission(mission_cfg)
+                                else:
+                                    ok = await self.run_simple_mission(mission_cfg)
+                                error = None if ok else "mission_failed"
+                                self._record_task_result(results, test_id, bool(ok), error)
+                            except Exception:
+                                self.logger.exception(f"Test {test_id} crashed")
+                                exc_name = sys.exc_info()[0].__name__ if sys.exc_info()[0] else "Exception"
+                                self._record_task_result(results, test_id, False, f"unexpected_error: {exc_name}")
+                    finally:
+                        await self._stop_recording()
+                        await self._postprocess_with_ulog(test_id)
+                        await self._maybe_log_table_for_csv(test_id)
+                        await self._maybe_upload_single_csv(test_id)
+                        self.stop_px4()
+                        await self._finish_px4_output_drain()
+                        await asyncio.sleep(3)
             finally:
-                await self._stop_recording()
-                await self._maybe_log_table_for_csv(test_id)
-                await self._maybe_upload_single_csv(test_id)
-                self.stop_px4()
-                await asyncio.sleep(3)
+                self._restore_sdf_edit()
 
-        # Save summary
-        out = {
-            "suite": self.config.get("test_suite", "gust_suite"),
-            "timestamp": datetime.now().isoformat(),
-            "results": results,
-        }
-        with open(self.run_dir / "results.json", "w") as f:
-            json.dump(out, f, indent=2)
+            # Save summary
+            out = {
+                "suite": self.config.get("test_suite", "gust_suite"),
+                "timestamp": datetime.now().isoformat(),
+                "results": results,
+            }
+            with open(self.run_dir / "results.json", "w") as f:
+                json.dump(out, f, indent=2)
 
-        passed = sum(1 for r in results if r.get("success"))
-        total = len(results)
-        self.logger.info(f"Summary: {passed}/{total} passed")
-        if self._wandb_run:
-            try:
-                self._wandb_run.log({"summary/passed": passed, "summary/total": total})
-            except Exception:
-                pass
-            await self._run_post_plots()
-            try:
-                self._wandb_run.finish()
-            except Exception:
-                pass
-        return 0 if passed == total else 1
+            passed = sum(1 for r in results if r.get("success"))
+            total = len(results)
+            self.logger.info(f"Summary: {passed}/{total} passed")
+            if self._wandb_run:
+                try:
+                    self._wandb_run.log({"summary/passed": passed, "summary/total": total})
+                except Exception:
+                    pass
+                await self._run_post_plots()
+                try:
+                    self._wandb_run.finish()
+                except Exception:
+                    pass
+            return 0 if passed == total else 1
+        finally:
+            self._task_status_tracker.mark_suite_finished()
+            self._task_status_server.stop()
 
     # ----------------------------
     # GZ wind config writer
@@ -1057,6 +1450,97 @@ class SimpleGustRunner:
 
         tree.write(cfg_path, encoding='utf-8', xml_declaration=False)
         self.logger.info(f"Updated wind config in {cfg_path}")
+
+    # ----------------------------
+    # SDF inertial override (optional)
+    # ----------------------------
+    def _apply_sdf_edit(self) -> None:
+        """Optionally patch a model SDF before running; restore in _restore_sdf_edit()."""
+        if not isinstance(self.sdf_edit_cfg, dict) or not self.sdf_edit_cfg:
+            return
+        raw_path = self.sdf_edit_cfg.get("path")
+        if not raw_path:
+            return
+        sdf_path = self._resolve_path(str(raw_path))
+        if not sdf_path.is_file():
+            self.logger.warning(f"SDF edit path not found: {sdf_path}")
+            return
+
+        try:
+            data = sdf_path.read_bytes()
+        except Exception as e:
+            self.logger.warning(f"Failed to read SDF: {e}")
+            return
+
+        try:
+            tree = ET.parse(sdf_path)
+            root = tree.getroot()
+        except Exception as e:
+            self.logger.warning(f"Failed to parse SDF XML: {e}")
+            return
+
+        patches = self.sdf_edit_cfg.get("patches", [])
+        if not isinstance(patches, list) or not patches:
+            self.logger.warning("SDF edit skipped: no patches defined")
+            return
+
+        def _find_link(name: str) -> Optional[ET.Element]:
+            for link in root.findall(".//link"):
+                if link.attrib.get("name") == name:
+                    return link
+            return None
+
+        def _find_path(base: ET.Element, rel_path: str) -> Optional[ET.Element]:
+            cur = base
+            for part in rel_path.split("/"):
+                if not part:
+                    continue
+                nxt = cur.find(part)
+                if nxt is None:
+                    return None
+                cur = nxt
+            return cur
+
+        for patch in patches:
+            if not isinstance(patch, dict):
+                continue
+            select = patch.get("select", {})
+            if not isinstance(select, dict):
+                continue
+            link_name = select.get("link")
+            rel_path = select.get("path")
+            if not link_name or not rel_path:
+                self.logger.warning("SDF edit skipped: select.link/select.path required")
+                continue
+            link_elem = _find_link(str(link_name))
+            if link_elem is None:
+                self.logger.warning(f"SDF edit skipped: <link name='{link_name}'> not found")
+                continue
+            target_elem = _find_path(link_elem, str(rel_path))
+            if target_elem is None:
+                self.logger.warning(f"SDF edit skipped: path not found {link_name}/{rel_path}")
+                continue
+            if "value" not in patch:
+                self.logger.warning(f"SDF edit skipped: value missing for {link_name}/{rel_path}")
+                continue
+            target_elem.text = str(patch["value"])
+
+        try:
+            tree.write(sdf_path, encoding="utf-8", xml_declaration=False)
+            self._sdf_edit_path = sdf_path
+            self._sdf_edit_backup = data
+            self.logger.info(f"Applied SDF edit to {sdf_path}")
+        except Exception as e:
+            self.logger.warning(f"Failed to write SDF edit: {e}")
+
+    def _restore_sdf_edit(self) -> None:
+        if not (self._sdf_edit_path and self._sdf_edit_backup is not None):
+            return
+        try:
+            self._sdf_edit_path.write_bytes(self._sdf_edit_backup)
+            self.logger.info(f"Restored SDF: {self._sdf_edit_path}")
+        except Exception as e:
+            self.logger.warning(f"Failed to restore SDF: {e}")
 
     # ----------------------------
     # CSV recorder and wind subscriber

@@ -23,16 +23,50 @@ import argparse
 import json
 import math
 import os
-import re
-from collections import defaultdict
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Dict, List, Tuple, Optional, Any
 
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
+
+from utils.gust_metrics import (
+    select_analysis_df,
+    H_MAX,
+    V_MAX,
+    compute_analysis_window,
+    compute_metrics_for_test,
+    compute_grade_dimensional,
+    extract_gust_level,
+    latlon_to_xy,
+)
+from utils.gust_grouping import (
+    group_tests_by_type,
+    wind_axis_from_task_type,
+)
+from utils.gust_plotting import (
+    load_csv,
+    log_plots_to_wandb,
+    plot_metric_bar_chart,
+    plot_radar_chart,
+    plot_actuator_timeseries,
+    upload_data_artifact,
+)
+from utils.gust_dimensions import (
+    ACTUATOR_MAX,
+    ACTUATOR_SAT_RATIO,
+    DIM_LABELS,
+    DIM_ORDER,
+    RADAR_DIM_LABELS,
+    RADAR_DIM_ORDER,
+    SERVO_MAX,
+    SERVO_SAT_RATIO,
+    compute_actuator_saturation_stats,
+    compute_dimension_breakdown,
+)
 
 try:
     import scienceplots  # noqa: F401
@@ -40,24 +74,37 @@ try:
 except Exception:
     pass
 
+RECOVERABLE_REF_DIMS = [
+    "h_pos_track_acc",
+    "v_pos_track_acc",
+    "h_pos_robustness",
+    "v_pos_robustness",
+    "pitch_att_track_acc",
+    "roll_att_track_acc",
+    "yaw_att_track_acc",
+]
 
-# Stability thresholds
-H_MAX = 1.5      # m - horizontal max deviation
-H_STD = 0.75     # m - horizontal std deviation
-V_MAX = 3.0      # m - vertical max deviation
-V_STD = 1.5      # m - vertical std deviation
-ANG_MAX = 45.0   # deg - max roll/pitch
 
-# Recovery window for Wind-Recoverable
-RECOVER_T = 10.0  # seconds
-
-# Grade colors
-COLORS = {
-    "Wind-Resilient": "#2ecc71",      # Green
-    "Wind-Recoverable": "#f39c12",      # Orange
-    "Unstable": "#e74c3c",     # Red
-    "Not launched": "#95a5a6"  # Gray
-}
+RAW_COLS = [
+    "h_max_dev_m",
+    "h_std_m",
+    "v_max_dev_m",
+    "v_std_m",
+    "pitch_att_hold_peak_deg",
+    "roll_att_hold_peak_deg",
+    "yaw_att_hold_peak_deg",
+    "actuator_peak",
+    "actuator_baseline",
+    "actuator_delta",
+    "servo_peak",
+    "servo_baseline",
+    "servo_delta",
+    "actuator_delta_effective",
+    "recovery_time_s",
+    "h_exceed_area_m_s",
+    "v_exceed_area_m_s",
+    "exceed_area_ratio",
+]
 
 
 def parse_args() -> argparse.Namespace:
@@ -223,52 +270,13 @@ def start_wandb_if_requested(args: argparse.Namespace, suite: str, results_dir: 
     return run
 
 
-def log_plots_to_wandb(run, images: List[Tuple[str, Path]]) -> None:
-    """Upload plot images to a W&B run."""
-    if not run or not images:
-        return
-
-    try:
-        import wandb  # type: ignore
-    except ImportError:
-        return
-
-    for key, path in images:
-        run.log({key: wandb.Image(str(path))})
-
-
-def upload_data_artifact(run, results_dir: Path, suite: str) -> None:
-    """Upload CSV/log files from the results dir as an artifact."""
-    if not run:
-        return
-
-    try:
-        import wandb  # type: ignore
-    except ImportError:
-        return
-
-    data_files = sorted(
-        p for p in results_dir.iterdir()
-        if p.is_file() and p.suffix.lower() in {".csv", ".log", ".json"}
-    )
-    if not data_files:
-        print("No CSV/log files found to upload as an artifact.")
-        return
-
-    safe_suite = re.sub(r"[^A-Za-z0-9_.-]+", "-", suite).strip("-") or "suite"
-    artifact_name = f"gust-levels-data-{safe_suite}-{results_dir.name}"
-    artifact = wandb.Artifact(artifact_name, type="gust-level-logs")
-    for f in data_files:
-        artifact.add_file(str(f), name=f.name)
-
-    run.log_artifact(artifact)
-    print(f"Uploaded {len(data_files)} data file(s) to W&B artifact '{artifact_name}':")
-    for f in data_files:
-        print(f"  - {f.name}")
-
-
 def _clean_value(val: Any) -> Any:
-    """Convert NaN/inf to None for JSON friendliness."""
+    """Normalize numpy scalars and convert NaN/inf to None for JSON friendliness."""
+    try:
+        if isinstance(val, (np.integer, np.floating)):
+            val = val.item()
+    except Exception:
+        pass
     try:
         if isinstance(val, float) and not math.isfinite(val):
             return None
@@ -277,289 +285,30 @@ def _clean_value(val: Any) -> Any:
     return val
 
 
+def _build_wandb_summary_rows(summary_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Flatten summary rows for W&B tables to avoid nested dict type conflicts."""
+    dim_score_cols = [f"score_{k}" for k in DIM_ORDER]
+    out_rows: List[Dict[str, Any]] = []
+    for row in summary_rows:
+        scores = row.get("dimension_scores", {}) or {}
+        raw = row.get("dimension_raw", {}) or {}
+        out = {
+            "task_type": row.get("task_type"),
+            "test_id": row.get("test_id"),
+            "level": _clean_value(row.get("level")),
+            "v_max_dev": _clean_value(row.get("v_max_dev")),
+            "h_max_dev": _clean_value(row.get("h_max_dev")),
+            "grade_v": row.get("grade_v"),
+            "grade_h": row.get("grade_h"),
+            "dimension_overall": _clean_value(row.get("dimension_overall")),
+        }
+        for k in DIM_ORDER:
+            out[f"score_{k}"] = _clean_value(scores.get(k))
+        for k in RAW_COLS:
+            out[k] = _clean_value(raw.get(k))
+        out_rows.append(out)
+    return out_rows
 
-def load_csv(csv_path: Path) -> pd.DataFrame:
-    """Load and preprocess CSV data."""
-    df = pd.read_csv(csv_path)
-    for col in [
-        "t_s", "lat_deg", "lon_deg", "rel_alt_m", "abs_alt_m",
-        "roll_deg", "pitch_deg", "yaw_deg",
-        "sp_lat_deg", "sp_lon_deg", "sp_abs_alt_m",
-        "wind_x_m_s", "wind_y_m_s", "wind_z_m_s", "wind_m_s",
-    ]:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-    return df
-
-
-def latlon_to_xy(df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
-    """Convert lat/lon to local XY in meters."""
-    import math
-    lat = df["lat_deg"].to_numpy(dtype=float)
-    lon = df["lon_deg"].to_numpy(dtype=float)
-    mask = np.isfinite(lat) & np.isfinite(lon)
-    if not mask.any():
-        return np.array([]), np.array([])
-    i0 = int(np.argmax(mask))
-    lat0 = math.radians(lat[i0])
-    lon0 = math.radians(lon[i0])
-    R = 6378137.0
-    x = (np.radians(lon) - lon0) * math.cos(lat0) * R
-    y = (np.radians(lat) - lat0) * R
-    return x, y
-
-
-def _segment_mask_from_x(x: np.ndarray) -> np.ndarray:
-    """Return boolean mask for mid-flight segment (5m <= x <= 95m)."""
-    if x.size == 0 or not np.isfinite(x).any():
-        return np.zeros_like(x, dtype=bool)
-    mask = (x >= 5.0) & (x <= 95.0)
-    if mask.sum() >= max(10, int(0.2 * x.size)):
-        return mask
-    # Fallback percentiles
-    x_valid = x[np.isfinite(x)]
-    lo, hi = np.percentile(x_valid, [10.0, 90.0])
-    mask2 = (x >= lo) & (x <= hi)
-    return mask2
-
-
-def compute_metrics_for_test(df: pd.DataFrame) -> Optional[Dict[str, float]]:
-    """Compute stability metrics on mid-flight segment."""
-    if df.empty or not {"lat_deg", "lon_deg"}.issubset(df.columns):
-        return None
-
-    x, y = latlon_to_xy(df)
-    t = df.get("t_s", pd.Series(dtype=float)).to_numpy(dtype=float) if "t_s" in df.columns else np.arange(len(x), dtype=float)
-    mask = _segment_mask_from_x(x)
-    if mask.sum() < 5:
-        return None
-
-    # Horizontal deviation (Y deviation from reference)
-    y_seg = y[mask]
-    y_ref = np.nanmedian(y_seg)
-    h_dev = y_seg - y_ref
-    h_max = float(np.nanmax(np.abs(h_dev))) if y_seg.size else float("nan")
-    h_std = float(np.nanstd(h_dev)) if y_seg.size else float("nan")
-
-    # Vertical deviation (relative altitude) vs 10m reference
-    if "rel_alt_m" in df.columns:
-        z = df["rel_alt_m"].to_numpy(dtype=float)
-        z_seg = z[mask]
-        z_ref = 10.0
-        v_dev = z_seg - z_ref
-        v_max = float(np.nanmax(np.abs(v_dev))) if z_seg.size else float("nan")
-        v_std = float(np.nanstd(v_dev)) if z_seg.size else float("nan")
-    else:
-        v_max = float("nan")
-        v_std = float("nan")
-
-    # Attitude (within segment)
-    def _max_abs(col: str) -> float:
-        if col in df.columns:
-            arr = df[col].to_numpy(dtype=float)[mask]
-            if arr.size:
-                return float(np.nanmax(np.abs(arr)))
-        return float("nan")
-
-    max_abs_roll = _max_abs("roll_deg")
-    max_abs_pitch = _max_abs("pitch_deg")
-
-    return {
-        "h_max_dev": h_max,
-        "h_std": h_std,
-        "v_max_dev": v_max,
-        "v_std": v_std,
-        "max_abs_roll": max_abs_roll,
-        "max_abs_pitch": max_abs_pitch,
-    }
-
-
-def compute_grade_dimensional(df: pd.DataFrame, dim: str) -> str:
-    """Compute stability grade for a single test, per dimension.
-
-    dim:
-      - 'h' for horizontal metrics (uses H_MAX/H_STD)
-      - 'v' for vertical metrics (uses V_MAX/V_STD)
-
-    Notes:
-      - Angle constraints are not considered for per-dimension grading.
-      - Recovery check is evaluated only on the same dimension's exceedance.
-    """
-    if df.empty or not {"lat_deg", "lon_deg"}.issubset(df.columns):
-        return "Not launched"
-
-    if dim == 'v' and "rel_alt_m" not in df.columns:
-        return "Not launched"
-
-    m = compute_metrics_for_test(df)
-    if m is None:
-        return "Not launched"
-
-    if dim == 'h':
-        base_ok = (
-            (m.get("h_max_dev", float("inf")) <= H_MAX) and
-            (m.get("h_std", float("inf")) <= H_STD)
-        )
-    else:  # 'v'
-        base_ok = (
-            (m.get("v_max_dev", float("inf")) <= V_MAX) and
-            (m.get("v_std", float("inf")) <= V_STD)
-        )
-
-    if base_ok:
-        return "Wind-Resilient"
-
-    # Check recovery for Wind-Recoverable (dimension-specific)
-    if "t_s" in df.columns and {"lat_deg", "lon_deg"}.issubset(df.columns):
-        x, y = latlon_to_xy(df)
-        t = df["t_s"].to_numpy(dtype=float)
-        mask = _segment_mask_from_x(x)
-
-        if mask.any():
-            # Build exceedance flag for the selected dimension
-            exceed_dim = np.zeros_like(mask, dtype=bool)
-            try:
-                if dim == 'h':
-                    x_seg = x[mask]
-                    y_seg = y[mask]
-                    finite_xy = np.isfinite(x_seg) & np.isfinite(y_seg)
-                    if finite_xy.sum() >= 2:
-                        k, b = np.polyfit(x_seg[finite_xy], y_seg[finite_xy], 1)
-                        y_pred = k * x + b
-                    else:
-                        y_med = float(np.nanmedian(y_seg)) if y_seg.size else 0.0
-                        y_pred = np.full_like(y, y_med)
-                    y_dev_full = y - y_pred
-                    exceed_dim = np.abs(y_dev_full) > H_MAX
-                else:  # 'v'
-                    z = df["rel_alt_m"].to_numpy(dtype=float)
-                    z_ref = 10.0
-                    v_dev_full = z - z_ref
-                    exceed_dim = np.abs(v_dev_full) > V_MAX
-            except Exception:
-                pass
-
-            exceed_any = exceed_dim & mask
-
-            if exceed_any.any():
-                i0 = int(np.argmax(exceed_any))
-                t0 = float(t[i0])
-                mask_recover = mask & (t >= t0) & (t <= (t0 + RECOVER_T))
-
-                if mask_recover.sum() >= 5:
-                    df_after = df[mask_recover]
-                    m_after = compute_metrics_for_test(df_after)
-                    if m_after is not None:
-                        if dim == 'h':
-                            ok_after = (
-                                (m_after.get("h_max_dev", float("inf")) <= H_MAX) and
-                                (m_after.get("h_std", float("inf")) <= H_STD)
-                            )
-                        else:
-                            ok_after = (
-                                (m_after.get("v_max_dev", float("inf")) <= V_MAX) and
-                                (m_after.get("v_std", float("inf")) <= V_STD)
-                            )
-                        if ok_after:
-                            return "Wind-Recoverable"
-
-    return "Unstable"
-
-
-def extract_gust_level(test_id: str, description: str) -> Optional[int]:
-    """Extract gust level number from test ID or description."""
-    # Try test_id first: e.g., "gust_lvl_05" -> 5
-    match = re.search(r'lvl_(\d+)', test_id)
-    if match:
-        return int(match.group(1))
-
-    # Try description: e.g., "Gust L5: ..." -> 5
-    match = re.search(r'L(\d+)', description)
-    if match:
-        return int(match.group(1))
-
-    return None
-
-
-def detect_task_type(test_config: Dict) -> str:
-    """Detect task type from test_id pattern."""
-    test_id = test_config.get("test_id", "")
-
-    # Use test_id pattern to detect type
-    if "_z_" in test_id:
-        return "Vertical (Z)"
-    elif "_y_" in test_id:
-        return "Horizontal (Y)"
-    elif "gust_lvl_" in test_id:
-        return "Horizontal (X)"
-
-    return "Unknown"
-
-
-def group_tests_by_type(tests: List[Dict]) -> Dict[str, List[Dict]]:
-    """Group tests by their type (wind direction)."""
-    groups = defaultdict(list)
-    for test in tests:
-        task_type = detect_task_type(test)
-        groups[task_type].append(test)
-    return dict(groups)
-
-
-def plot_metric_bar_chart(
-    levels: List[int],
-    values: List[float],
-    grades: List[str],
-    threshold: float,
-    metric_name: str,
-    task_type: str,
-    output_path: Path,
-    dpi: int = 300
-) -> None:
-    """Create bar chart for a specific metric across gust levels."""
-    fig, ax = plt.subplots(figsize=(8, 5))
-
-    # Sort by level
-    sorted_data = sorted(zip(levels, values, grades), key=lambda x: x[0])
-    levels_sorted, values_sorted, grades_sorted = zip(*sorted_data) if sorted_data else ([], [], [])
-
-    # Create bars with colors based on grade
-    colors = [COLORS.get(g, COLORS["Not launched"]) for g in grades_sorted]
-    bars = ax.bar(levels_sorted, values_sorted, color=colors, edgecolor='black', linewidth=0.8, alpha=0.85)
-
-    # Add threshold lines
-    ax.axhline(y=threshold, color='#e74c3c', linestyle='--', linewidth=1.5,
-               label=f'Wind-Recoverable Threshold ({threshold} m)', zorder=10)
-
-    # Labels and title
-    ax.set_xlabel('Gust Level', fontsize=24, fontweight='bold')
-    ax.set_ylabel(f'{metric_name} (m)', fontsize=24, fontweight='bold')
-    # ax.set_title(f'{metric_name} vs Gust Level\n{task_type}', fontsize=12, fontweight='bold', pad=15)
-
-    # Grid
-    ax.grid(True, axis='y', alpha=0.3, linestyle=':', linewidth=0.8)
-    ax.set_axisbelow(True)
-
-    # Legend for grades
-    legend_elements = [
-        mpatches.Patch(facecolor=COLORS["Wind-Resilient"], edgecolor='black', label='Wind-Resilient'),
-        mpatches.Patch(facecolor=COLORS["Wind-Recoverable"], edgecolor='black', label='Wind-Recoverable'),
-        mpatches.Patch(facecolor=COLORS["Unstable"], edgecolor='black', label='Unstable'),
-        plt.Line2D([0], [0], color='#e74c3c', linestyle='--', linewidth=1.5, label=f'Threshold ({threshold} m)')
-    ]
-    ax.legend(handles=legend_elements, loc='upper left', frameon=True, fontsize=24)
-
-    # Set x-axis to show all levels
-    if levels_sorted:
-        ax.set_xticks(list(levels_sorted))
-        ax.set_xlim(min(levels_sorted) - 0.5, max(levels_sorted) + 0.5)
-
-    # Tight layout
-    fig.tight_layout()
-
-    # Save
-    fig.savefig(output_path, dpi=dpi, bbox_inches='tight')
-    plt.close(fig)
-    print(f"Saved: {output_path}")
 
 
 def plot_levels(
@@ -603,6 +352,7 @@ def plot_levels(
     wandb_run_local = start_wandb_if_requested(args, suite, results_dir_resolved, existing_run=wandb_run)
     images_to_upload: List[Tuple[str, Path]] = []
     summary_rows: List[Dict[str, Any]] = []
+    actuator_sat_rows: List[Dict[str, Any]] = []
 
     # Process each group
     for task_type, group_tests in test_groups.items():
@@ -614,6 +364,12 @@ def plot_levels(
         h_max_devs = []
         grades_v = []
         grades_h = []
+        dim_scores_list = []
+        dim_scores_by_level: Dict[int, List[Dict[str, float]]] = {}
+        dim_raw_by_level: Dict[int, List[Dict[str, float]]] = {}
+        debug_series = []
+        group_actuator_rows: List[Dict[str, Any]] = []
+        actuator_series: Dict[str, Dict[str, List[Dict[str, Any]]]] = {"u": {}, "s": {}}
 
         for test in group_tests:
             test_id = test.get("test_id", "")
@@ -634,6 +390,7 @@ def plot_levels(
             df = load_csv(csv_path)
             if "t_s" in df.columns:
                 df = df[df["t_s"].notna()]
+            df_act = select_analysis_df(df)
 
             # Compute metrics and per-dimension grades
             metrics = compute_metrics_for_test(df)
@@ -643,12 +400,20 @@ def plot_levels(
 
             grade_h = compute_grade_dimensional(df, 'h')
             grade_v = compute_grade_dimensional(df, 'v')
+            breakdown = compute_dimension_breakdown(df)
+            dim_scores = breakdown.get("scores", {})
+            dim_raw = breakdown.get("raw", {})
+            overall_score = breakdown.get("overall", float("nan"))
+            sat_stats = compute_actuator_saturation_stats(df)
 
             levels.append(level)
             v_max_devs.append(metrics.get("v_max_dev", float("nan")))
             h_max_devs.append(metrics.get("h_max_dev", float("nan")))
             grades_v.append(grade_v)
             grades_h.append(grade_h)
+            dim_scores_list.append(dim_scores)
+            dim_scores_by_level.setdefault(level, []).append(dim_scores)
+            dim_raw_by_level.setdefault(level, []).append(dim_raw)
             summary_rows.append({
                 "task_type": task_type,
                 "test_id": test_id,
@@ -657,32 +422,343 @@ def plot_levels(
                 "h_max_dev": _clean_value(metrics.get("h_max_dev", float("nan"))),
                 "grade_v": grade_v,
                 "grade_h": grade_h,
+                "dimension_scores": dim_scores,
+                "dimension_raw": dim_raw,
+                "dimension_overall": _clean_value(overall_score),
+                "actuator_saturation": sat_stats,
             })
+            if sat_stats:
+                total_time = sat_stats.get("meta", {}).get("total_time_s", float("nan"))
+                for kind in ("u", "s"):
+                    for actuator, stats in (sat_stats.get(kind, {}) or {}).items():
+                        row = {
+                            "task_type": task_type,
+                            "test_id": test_id,
+                            "level": level,
+                            "kind": kind,
+                            "actuator": actuator,
+                            "sat_any": stats.get("sat_any", float("nan")),
+                            "sat_first_s": stats.get("sat_first_s", float("nan")),
+                            "sat_duration_s": stats.get("sat_duration_s", float("nan")),
+                            "sat_ratio": stats.get("sat_ratio", float("nan")),
+                            "total_time_s": total_time,
+                        }
+                        actuator_sat_rows.append(row)
+                        group_actuator_rows.append(row)
+
+            if not df_act.empty and "t_s" in df_act.columns:
+                t_vals = pd.to_numeric(df_act["t_s"], errors="coerce").to_numpy(dtype=float)
+                if t_vals.size >= 2:
+                    for kind, limit, ratio, valid_eps in (
+                        ("u", ACTUATOR_MAX, ACTUATOR_SAT_RATIO, 1.0),
+                        ("s", SERVO_MAX, SERVO_SAT_RATIO, 1e-3),
+                    ):
+                        cols = [
+                            c for c in df_act.columns
+                            if c.startswith(kind) and c[len(kind):].isdigit()
+                        ]
+                        for col in cols:
+                            v_vals = pd.to_numeric(df_act[col], errors="coerce").to_numpy(dtype=float)
+                            mask = np.isfinite(t_vals) & np.isfinite(v_vals)
+                            if mask.sum() < 2:
+                                continue
+                            if not np.any(np.abs(v_vals[mask]) > valid_eps):
+                                continue
+                            t = t_vals[mask]
+                            v = v_vals[mask]
+                            sat = np.abs(v) >= (limit * ratio)
+                            actuator_series[kind].setdefault(col, []).append({
+                                "level": level,
+                                "t": t,
+                                "v": v,
+                                "sat": sat,
+                            })
+
+            if level != 0 and "t_s" in df.columns and "rel_alt_m" in df.columns:
+                t_s = df["t_s"].to_numpy(dtype=float)
+                rel_alt = df["rel_alt_m"].to_numpy(dtype=float)
+                x_pos, y_pos = latlon_to_xy(df)
+                horiz = y_pos if y_pos.size == t_s.size else None
+                window = compute_analysis_window(df)
+                if horiz is not None:
+                    debug_series.append({
+                        "level": level,
+                        "t_s": t_s,
+                        "rel_alt": rel_alt,
+                        "horiz": horiz,
+                        "window": window,
+                    })
 
         if not levels:
             print(f"  No valid data for {task_type}, skipping...")
             continue
 
-        # Generate safe filename
-        safe_type = task_type.replace(" ", "_").replace("(", "").replace(")", "").lower()
+        axis = wind_axis_from_task_type(task_type)
 
         # Plot V max dev
-        v_output = results_dir_resolved / f"v_max_dev_{safe_type}.png"
+        v_output = results_dir_resolved / f"vertical_max_{axis}.png"
         plot_metric_bar_chart(
             levels, v_max_devs, grades_v,
-            V_MAX, "Vertical Max Deviation", task_type,
+            V_MAX, "V Pos Track Acc Error", task_type,
             v_output, dpi
         )
         images_to_upload.append((f"plots/{v_output.name}", v_output))
 
         # Plot H max dev
-        h_output = results_dir_resolved / f"h_max_dev_{safe_type}.png"
+        h_output = results_dir_resolved / f"horizontal_max_{axis}.png"
         plot_metric_bar_chart(
             levels, h_max_devs, grades_h,
-            H_MAX, "Horizontal Max Deviation", task_type,
+            H_MAX, "H Pos Track Acc Error", task_type,
             h_output, dpi
         )
         images_to_upload.append((f"plots/{h_output.name}", h_output))
+
+        # Radar summary (min + mean)
+        if dim_scores_list:
+            min_scores = {}
+            mean_scores = {}
+            for k in DIM_ORDER:
+                vals = [s.get(k, float("nan")) for s in dim_scores_list]
+                vals = [v for v in vals if v == v]
+                min_scores[k] = min(vals) if vals else float("nan")
+                mean_scores[k] = float(sum(vals) / len(vals)) if vals else float("nan")
+            radar_output = results_dir_resolved / f"radar_{axis}_summary.png"
+            plot_radar_chart(
+                [min_scores, mean_scores],
+                ["worst", "mean"],
+                radar_output,
+                dpi,
+                dims=RADAR_DIM_ORDER,
+                dim_labels=RADAR_DIM_LABELS,
+                recoverable_dims=RECOVERABLE_REF_DIMS,
+                recoverable_threshold=0.5,
+            )
+            images_to_upload.append((f"plots/{radar_output.name}", radar_output))
+
+        if dim_scores_by_level:
+            target_levels = [0, 2, 4, 6, 8, 10, 12]
+            levels_sorted = [lvl for lvl in target_levels if lvl in dim_scores_by_level]
+            if not levels_sorted:
+                levels_sorted = sorted(dim_scores_by_level.keys())
+
+            def _mean_scores(bucket: List[Dict[str, float]]) -> Dict[str, float]:
+                scores_mean = {}
+                for k in DIM_ORDER:
+                    vals = [s.get(k, float("nan")) for s in bucket]
+                    vals = [v for v in vals if v == v]
+                    scores_mean[k] = float(sum(vals) / len(vals)) if vals else float("nan")
+                return scores_mean
+
+            def _mean_raw(bucket: List[Dict[str, float]]) -> Dict[str, float]:
+                if not bucket:
+                    return {}
+                keys = set()
+                for b in bucket:
+                    keys.update(b.keys())
+                raw_mean = {}
+                for k in keys:
+                    vals = [b.get(k, float("nan")) for b in bucket]
+                    vals = [v for v in vals if v == v]
+                    raw_mean[k] = float(sum(vals) / len(vals)) if vals else float("nan")
+                return raw_mean
+
+            level_means: List[Dict[str, float]] = []
+            level_labels: List[str] = []
+            for lvl in levels_sorted:
+                level_means.append(_mean_scores(dim_scores_by_level.get(lvl, [])))
+                level_labels.append(f"L{lvl:02d}")
+
+            baseline_scores = None
+            baseline_raw = None
+            if 0 in dim_scores_by_level:
+                baseline_scores = _mean_scores(dim_scores_by_level.get(0, []))
+                baseline_raw = _mean_raw(dim_raw_by_level.get(0, []))
+
+            raw_map = {
+                "h_pos_track_acc": "h_max_dev_m",
+                "v_pos_track_acc": "v_max_dev_m",
+                "h_pos_robustness": "h_std_m",
+                "v_pos_robustness": "v_std_m",
+                "pitch_att_track_acc": "pitch_att_hold_peak_deg",
+                "roll_att_track_acc": "roll_att_hold_peak_deg",
+                "yaw_att_track_acc": "yaw_att_hold_peak_deg",
+                "act_margin": "actuator_delta_effective",
+                "recovery": "recovery_time_s",
+                "exceed_area": "exceed_area_ratio",
+            }
+
+            def _normalize(scores: Dict[str, float], raw: Dict[str, float], baseline: Dict[str, float] | None, baseline_raw: Dict[str, float] | None, is_baseline: bool) -> Dict[str, float]:
+                if not baseline and not baseline_raw:
+                    return scores
+                out = {}
+                for k in DIM_ORDER:
+                    if is_baseline:
+                        out[k] = 1.0
+                    else:
+                        raw_key = raw_map.get(k)
+                        b_raw = baseline_raw.get(raw_key, float("nan")) if baseline_raw else float("nan")
+                        v_raw = raw.get(raw_key, float("nan"))
+                        if b_raw == b_raw and v_raw == v_raw and v_raw > 0:
+                            out[k] = max(0.0, min(1.0, b_raw / v_raw))
+                        else:
+                            b = baseline.get(k, float("nan")) if baseline else float("nan")
+                            v = scores.get(k, float("nan"))
+                            if b == b and b > 0 and v == v:
+                                out[k] = max(0.0, min(1.0, v / b))
+                            else:
+                                out[k] = v
+                return out
+
+            raw_means = [
+                _mean_raw(dim_raw_by_level.get(lvl, []))
+                for lvl in levels_sorted
+            ]
+            normalized_levels = [
+                _normalize(s, r, baseline_scores, baseline_raw, lvl == 0)
+                for s, r, lvl in zip(level_means, raw_means, levels_sorted)
+            ]
+
+            cmap = plt.cm.get_cmap("viridis", max(2, len(levels_sorted)))
+            colors = [cmap(i) for i in range(len(levels_sorted))]
+
+            radar_levels_output = results_dir_resolved / f"radar_{axis}_levels_baseline.png"
+            plot_labels = [f"L{lvl:02d}" for lvl in levels_sorted if lvl != 0]
+            plot_scores = [
+                s for s, lvl in zip(normalized_levels, levels_sorted)
+                if lvl != 0
+            ]
+            plot_colors = [
+                c for c, lvl in zip(colors, levels_sorted)
+                if lvl != 0
+            ]
+            plot_radar_chart(
+                plot_scores,
+                plot_labels,
+                radar_levels_output,
+                dpi,
+                dims=RADAR_DIM_ORDER,
+                dim_labels=RADAR_DIM_LABELS,
+                colors=plot_colors,
+                rmax=1.0,
+                recoverable_dims=RECOVERABLE_REF_DIMS,
+                recoverable_threshold=0.5,
+            )
+            images_to_upload.append((f"plots/{radar_levels_output.name}", radar_levels_output))
+
+            radar_raw_output = results_dir_resolved / f"radar_{axis}_levels_scores.png"
+            raw_labels = [f"L{lvl:02d}" for lvl in levels_sorted]
+            plot_radar_chart(
+                level_means,
+                raw_labels,
+                radar_raw_output,
+                dpi,
+                dims=RADAR_DIM_ORDER,
+                dim_labels=RADAR_DIM_LABELS,
+                colors=colors,
+                rmax=1.0,
+                recoverable_dims=RECOVERABLE_REF_DIMS,
+                recoverable_threshold=0.5,
+            )
+            images_to_upload.append((f"plots/{radar_raw_output.name}", radar_raw_output))
+
+        if debug_series:
+            debug_series.sort(key=lambda s: s["level"])
+            cmap = plt.cm.get_cmap("viridis", max(2, len(debug_series)))
+            colors = [cmap(i) for i in range(len(debug_series))]
+            fig, (ax_alt, ax_h) = plt.subplots(2, 1, figsize=(10, 7), sharex=True)
+            for idx, series in enumerate(debug_series):
+                level = series["level"]
+                t_s = series["t_s"]
+                rel_alt = series["rel_alt"]
+                horiz = series["horiz"]
+                color = colors[idx % len(colors)]
+                ax_alt.plot(t_s, rel_alt, color=color, linewidth=1.5, label=f"L{level:02d}")
+                ax_h.plot(t_s, horiz, color=color, linewidth=1.5, label=f"L{level:02d}")
+                if series["window"] is not None:
+                    t0, t1 = series["window"]
+                    ax_alt.axvspan(t0, t1, color=color, alpha=0.08)
+                    ax_h.axvspan(t0, t1, color=color, alpha=0.08)
+
+            ax_alt.set_ylabel("rel_alt_m", fontsize=12, fontweight="bold")
+            ax_h.set_ylabel("horizontal_pos_m", fontsize=12, fontweight="bold")
+            ax_h.set_xlabel("time (s)", fontsize=12, fontweight="bold")
+            ax_alt.grid(True, axis="y", alpha=0.3, linestyle=":", linewidth=0.8)
+            ax_h.grid(True, axis="y", alpha=0.3, linestyle=":", linewidth=0.8)
+            ax_alt.legend(loc="upper right", frameon=True, fontsize=9, ncol=3)
+            fig.tight_layout()
+            debug_output = results_dir_resolved / f"debug_{axis}_alt_horiz.png"
+            fig.savefig(debug_output, dpi=dpi, bbox_inches="tight")
+            plt.close(fig)
+            images_to_upload.append((f"plots/{debug_output.name}", debug_output))
+
+            trend_output = results_dir_resolved / f"trend_{axis}_levels_baseline.png"
+            fig, ax = plt.subplots(figsize=(9, 5))
+            for k, label in zip(DIM_ORDER, DIM_LABELS):
+                series = []
+                for scores, lvl in zip(normalized_levels, levels_sorted):
+                    if lvl == 0:
+                        continue
+                    series.append(scores.get(k, float("nan")))
+                ax.plot(
+                    [lvl for lvl in levels_sorted if lvl != 0],
+                    series,
+                    marker="o",
+                    linewidth=2,
+                    label=label,
+                )
+            ax.set_xlabel("Gust Level", fontsize=16, fontweight="bold")
+            ax.set_ylabel("Relative Score (vs L0)", fontsize=16, fontweight="bold")
+            ax.set_ylim(0.0, 1.05)
+            ax.set_xticks([lvl for lvl in levels_sorted if lvl != 0])
+            ax.grid(True, axis="y", alpha=0.3, linestyle=":", linewidth=0.8)
+            ax.legend(loc="upper right", frameon=True, fontsize=10, ncol=2)
+            fig.tight_layout()
+            fig.savefig(trend_output, dpi=dpi, bbox_inches="tight")
+            plt.close(fig)
+            images_to_upload.append((f"plots/{trend_output.name}", trend_output))
+
+            trend_raw_output = results_dir_resolved / f"trend_{axis}_levels_scores.png"
+            fig, ax = plt.subplots(figsize=(9, 5))
+            for k, label in zip(DIM_ORDER, DIM_LABELS):
+                series = [scores.get(k, float("nan")) for scores in level_means]
+                ax.plot(
+                    levels_sorted,
+                    series,
+                    marker="o",
+                    linewidth=2,
+                    label=label,
+                )
+            ax.set_xlabel("Gust Level", fontsize=16, fontweight="bold")
+            ax.set_ylabel("Score (raw)", fontsize=16, fontweight="bold")
+            ax.set_ylim(0.0, 1.05)
+            ax.set_xticks(levels_sorted)
+            ax.grid(True, axis="y", alpha=0.3, linestyle=":", linewidth=0.8)
+            ax.legend(loc="upper right", frameon=True, fontsize=10, ncol=2)
+            fig.tight_layout()
+            fig.savefig(trend_raw_output, dpi=dpi, bbox_inches="tight")
+            plt.close(fig)
+            images_to_upload.append((f"plots/{trend_raw_output.name}", trend_raw_output))
+
+        merged_actuator_series: Dict[str, List[Dict[str, Any]]] = {}
+        for kind in ("u", "s"):
+            for actuator, series_list in actuator_series.get(kind, {}).items():
+                merged_actuator_series.setdefault(actuator, []).extend(series_list)
+
+        if merged_actuator_series:
+            thresholds: Dict[str, float] = {}
+            for actuator in merged_actuator_series.keys():
+                if actuator.startswith("u"):
+                    thresholds[actuator] = ACTUATOR_MAX * ACTUATOR_SAT_RATIO
+                elif actuator.startswith("s"):
+                    thresholds[actuator] = SERVO_MAX * SERVO_SAT_RATIO
+            act_ts = results_dir_resolved / f"actuator_timeseries_{axis}.png"
+            plot_actuator_timeseries(
+                merged_actuator_series,
+                act_ts,
+                dpi=dpi,
+                sat_thresholds=thresholds,
+            )
+            images_to_upload.append((f"plots/{act_ts.name}", act_ts))
 
     if summary_rows:
         summary_path = results_dir_resolved / "gust_levels_summary.json"
@@ -693,11 +769,66 @@ def plot_levels(
         except Exception as e:
             print(f"Warning: failed to write summary JSON: {e}")
 
+        breakdown_csv = results_dir_resolved / "gust_levels_breakdown.csv"
+        try:
+            import csv
+            dim_score_cols = [f"score_{k}" for k in DIM_ORDER]
+            fieldnames = [
+                "task_type",
+                "test_id",
+                "level",
+                "dimension_overall",
+            ] + dim_score_cols + RAW_COLS
+            with open(breakdown_csv, "w", encoding="utf-8", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                for row in summary_rows:
+                    scores = row.get("dimension_scores", {}) or {}
+                    raw = row.get("dimension_raw", {}) or {}
+                    out = {
+                        "task_type": row.get("task_type"),
+                        "test_id": row.get("test_id"),
+                        "level": row.get("level"),
+                        "dimension_overall": row.get("dimension_overall"),
+                    }
+                    for k in DIM_ORDER:
+                        out[f"score_{k}"] = scores.get(k)
+                    for k in RAW_COLS:
+                        out[k] = raw.get(k)
+                    writer.writerow(out)
+            print(f"Saved breakdown CSV: {breakdown_csv}")
+        except Exception as e:
+            print(f"Warning: failed to write breakdown CSV: {e}")
+
+        if actuator_sat_rows:
+            saturation_csv = results_dir_resolved / "gust_levels_actuator_saturation.csv"
+            try:
+                import csv
+                fieldnames = [
+                    "task_type",
+                    "test_id",
+                    "level",
+                    "kind",
+                    "actuator",
+                    "sat_any",
+                    "sat_first_s",
+                    "sat_duration_s",
+                    "sat_ratio",
+                    "total_time_s",
+                ]
+                with open(saturation_csv, "w", encoding="utf-8", newline="") as f:
+                    writer = csv.DictWriter(f, fieldnames=fieldnames)
+                    writer.writeheader()
+                    for row in actuator_sat_rows:
+                        writer.writerow(row)
+                print(f"Saved actuator saturation CSV: {saturation_csv}")
+            except Exception as e:
+                print(f"Warning: failed to write actuator saturation CSV: {e}")
+
         if wandb_run_local:
             try:
                 import wandb  # type: ignore
-                import pandas as pd  # type: ignore
-                df_summary = pd.DataFrame(summary_rows)
+                df_summary = pd.DataFrame(_build_wandb_summary_rows(summary_rows))
                 wandb_run_local.log({"gust_summary/table": wandb.Table(dataframe=df_summary)})
             except Exception as e:
                 print(f"Warning: failed to log summary table to W&B: {e}")

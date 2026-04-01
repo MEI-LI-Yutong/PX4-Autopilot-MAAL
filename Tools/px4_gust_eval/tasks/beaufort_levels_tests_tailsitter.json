@@ -1,0 +1,63 @@
+{
+	"test_suite": "Wind Levels (Sustained & Gust)",
+	"description": "26 gust-only tasks: 13 along -X and 13 along -Z. Uses one_minus_cos_simp with T=10s and A0 set to the target |V| level.",
+	"px4_sitl_command": "make px4_sitl gz_quadtailsitter_windy",
+	"mission_type": "straight_line",
+	"wandb": {
+	    "enable": true,
+	    "entity": "MAALab"
+	  },
+	"mission_config": {
+	  "takeoff_altitude": 10.0,
+	  "timeout_sec": 150,
+	  "advance_distance_m": 100.0,
+	  "advance_axis": "ned_y",
+	  "advance_after_hover_sec": 2,
+	  "plan_file": "tail.plan"
+	},
+	"wind_gust_tests": [
+		{"test_id": "gust_lvl_00", "description": "Gust L0: |V|=0.00 m/s (mean=0)", "wind_config": {"model": "one_minus_cos_simp", "mean": [0,0,0], "direction": [-1,0,0], "A0": 0.00, "T": 10, "phase": 0.0, "trigger_x": 180.0, "trigger_model": "quadtailsitter_0" }},
+		{"test_id": "gust_lvl_01", "description": "Gust L1: |V|=0.30 m/s (mean=0)", "wind_config": {"model": "one_minus_cos_simp", "mean": [0,0,0], "direction": [-1,0,0], "A0": 0.30, "T": 10, "phase": 0.0, "trigger_x": 180.0, "trigger_model": "quadtailsitter_0" }},
+		{"test_id": "gust_lvl_02", "description": "Gust L2: |V|=1.60 m/s (mean=0)", "wind_config": {"model": "one_minus_cos_simp", "mean": [0,0,0], "direction": [-1,0,0], "A0": 1.60, "T": 10, "phase": 0.0, "trigger_x": 180.0, "trigger_model": "quadtailsitter_0" }},
+		{"test_id": "gust_lvl_03", "description": "Gust L3: |V|=3.40 m/s (mean=0)", "wind_config": {"model": "one_minus_cos_simp", "mean": [0,0,0], "direction": [-1,0,0], "A0": 3.40, "T": 10, "phase": 0.0, "trigger_x": 180.0, "trigger_model": "quadtailsitter_0" }},
+		{"test_id": "gust_lvl_04", "description": "Gust L4: |V|=5.50 m/s (mean=0)", "wind_config": {"model": "one_minus_cos_simp", "mean": [0,0,0], "direction": [-1,0,0], "A0": 5.50, "T": 10, "phase": 0.0, "trigger_x": 180.0, "trigger_model": "quadtailsitter_0" }},
+		{"test_id": "gust_lvl_05", "description": "Gust L5: |V|=8.00 m/s (mean=0)", "wind_config": {"model": "one_minus_cos_simp", "mean": [0,0,0], "direction": [-1,0,0], "A0": 8.00, "T": 10, "phase": 0.0, "trigger_x": 180.0, "trigger_model": "quadtailsitter_0" }},
+		{"test_id": "gust_lvl_06", "description": "Gust L6: |V|=10.80 m/s (mean=0)", "wind_config": {"model": "one_minus_cos_simp", "mean": [0,0,0], "direction": [-1,0,0], "A0": 10.80, "T": 10, "phase": 0.0, "trigger_x": 180.0, "trigger_model": "quadtailsitter_0" }},
+		{"test_id": "gust_lvl_07", "description": "Gust L7: |V|=13.90 m/s (mean=0)", "wind_config": {"model": "one_minus_cos_simp", "mean": [0,0,0], "direction": [-1,0,0], "A0": 13.90, "T": 10, "phase": 0.0, "trigger_x": 180.0, "trigger_model": "quadtailsitter_0" }},
+		{"test_id": "gust_lvl_08", "description": "Gust L8: |V|=17.20 m/s (mean=0)", "wind_config": {"model": "one_minus_cos_simp", "mean": [0,0,0], "direction": [-1,0,0], "A0": 17.20, "T": 10, "phase": 0.0, "trigger_x": 180.0, "trigger_model": "quadtailsitter_0" }},
+		{"test_id": "gust_lvl_09", "description": "Gust L9: |V|=20.80 m/s (mean=0)", "wind_config": {"model": "one_minus_cos_simp", "mean": [0,0,0], "direction": [-1,0,0], "A0": 20.80, "T": 10, "phase": 0.0, "trigger_x": 180.0, "trigger_model": "quadtailsitter_0" }},
+		{"test_id": "gust_lvl_10", "description": "Gust L10: |V|=24.50 m/s (mean=0)", "wind_config": {"model": "one_minus_cos_simp", "mean": [0,0,0], "direction": [-1,0,0], "A0": 24.50, "T": 10, "phase": 0.0, "trigger_x": 180.0, "trigger_model": "quadtailsitter_0" }},
+		{"test_id": "gust_lvl_11", "description": "Gust L11: |V|=28.50 m/s (mean=0)", "wind_config": {"model": "one_minus_cos_simp", "mean": [0,0,0], "direction": [-1,0,0], "A0": 28.50, "T": 10, "phase": 0.0, "trigger_x": 180.0, "trigger_model": "quadtailsitter_0" }},
+		{"test_id": "gust_lvl_12", "description": "Gust L12: |V|=32.70 m/s (mean=0)", "wind_config": {"model": "one_minus_cos_simp", "mean": [0,0,0], "direction": [-1,0,0], "A0": 32.70, "T": 10, "phase": 0.0, "trigger_x": 180.0, "trigger_model": "quadtailsitter_0" }},
+		{"test_id": "gust_lvl_z_00", "description": "Gust Z-L0: |V|=0.00 m/s (mean=0, Z-dir)", "wind_config": {"model": "one_minus_cos_simp", "mean": [0,0,0], "direction": [0,0,1], "A0": 0.00, "T": 10, "phase": 0.0, "trigger_x": 180.0, "trigger_model": "quadtailsitter_0" }},
+		{"test_id": "gust_lvl_z_01", "description": "Gust Z-L1: |V|=0.20 m/s (mean=0, Z-dir)", "wind_config": {"model": "one_minus_cos_simp", "mean": [0,0,0], "direction": [0,0,1], "A0": 0.20, "T": 10, "phase": 0.0, "trigger_x": 180.0, "trigger_model": "quadtailsitter_0" }},
+		{"test_id": "gust_lvl_z_02", "description": "Gust Z-L2: |V|=0.60 m/s (mean=0, Z-dir)", "wind_config": {"model": "one_minus_cos_simp", "mean": [0,0,0], "direction": [0,0,1], "A0": 0.60, "T": 10, "phase": 0.0, "trigger_x": 180.0, "trigger_model": "quadtailsitter_0" }},
+		{"test_id": "gust_lvl_z_03", "description": "Gust Z-L3: |V|=1.50 m/s (mean=0, Z-dir)", "wind_config": {"model": "one_minus_cos_simp", "mean": [0,0,0], "direction": [0,0,1], "A0": 1.50, "T": 10, "phase": 0.0, "trigger_x": 180.0, "trigger_model": "quadtailsitter_0" }},
+		{"test_id": "gust_lvl_z_04", "description": "Gust Z-L4: |V|=2.60 m/s (mean=0, Z-dir)", "wind_config": {"model": "one_minus_cos_simp", "mean": [0,0,0], "direction": [0,0,1], "A0": 2.60, "T": 10, "phase": 0.0, "trigger_x": 180.0, "trigger_model": "quadtailsitter_0" }},
+		{"test_id": "gust_lvl_z_05", "description": "Gust Z-L5: |V|=3.30 m/s (mean=0, Z-dir)", "wind_config": {"model": "one_minus_cos_simp", "mean": [0,0,0], "direction": [0,0,1], "A0": 3.30, "T": 10, "phase": 0.0, "trigger_x": 180.0, "trigger_model": "quadtailsitter_0" }},
+		{"test_id": "gust_lvl_z_06", "description": "Gust Z-L6: |V|=4.40 m/s (mean=0, Z-dir)", "wind_config": {"model": "one_minus_cos_simp", "mean": [0,0,0], "direction": [0,0,1], "A0": 4.40, "T": 10, "phase": 0.0, "trigger_x": 180.0, "trigger_model": "quadtailsitter_0" }},
+		{"test_id": "gust_lvl_z_07", "description": "Gust Z-L7: |V|=5.40 m/s (mean=0, Z-dir)", "wind_config": {"model": "one_minus_cos_simp", "mean": [0,0,0], "direction": [0,0,1], "A0": 5.40, "T": 10, "phase": 0.0, "trigger_x": 180.0, "trigger_model": "quadtailsitter_0" }},
+		{"test_id": "gust_lvl_z_08", "description": "Gust Z-L8: |V|=7.90 m/s (mean=0, Z-dir)", "wind_config": {"model": "one_minus_cos_simp", "mean": [0,0,0], "direction": [0,0,1], "A0": 7.90, "T": 10, "phase": 0.0, "trigger_x": 180.0, "trigger_model": "quadtailsitter_0" }},
+		{"test_id": "gust_lvl_z_09", "description": "Gust Z-L9: |V|=10.70 m/s (mean=0, Z-dir)", "wind_config": {"model": "one_minus_cos_simp", "mean": [0,0,0], "direction": [0,0,1], "A0": 10.70, "T": 10, "phase": 0.0, "trigger_x": 180.0, "trigger_model": "quadtailsitter_0" }},
+		{"test_id": "gust_lvl_z_10", "description": "Gust Z-L10: |V|=13.80 m/s (mean=0, Z-dir)", "wind_config": {"model": "one_minus_cos_simp", "mean": [0,0,0], "direction": [0,0,1], "A0": 13.80, "T": 10, "phase": 0.0, "trigger_x": 180.0, "trigger_model": "quadtailsitter_0" }},
+		{"test_id": "gust_lvl_z_11", "description": "Gust Z-L11: |V|=17.10 m/s (mean=0, Z-dir)", "wind_config": {"model": "one_minus_cos_simp", "mean": [0,0,0], "direction": [0,0,1], "A0": 17.10, "T": 10, "phase": 0.0, "trigger_x": 180.0, "trigger_model": "quadtailsitter_0" }},
+		{"test_id": "gust_lvl_z_12", "description": "Gust Z-L12: |V|=20.70 m/s (mean=0, Z-dir)", "wind_config": {"model": "one_minus_cos_simp", "mean": [0,0,0], "direction": [0,0,1], "A0": 20.70, "T": 10, "phase": 0.0, "trigger_x": 180.0, "trigger_model": "quadtailsitter_0" }},
+		{"test_id": "gust_lvl_y_00", "description": "Gust Y-L0: |V|=0.00 m/s (mean=0, Y-dir)", "wind_config": {"model": "one_minus_cos_simp", "mean": [0,0,0], "direction": [-0.939,0.342,0], "A0": 0.00, "T": 10, "phase": 0.0, "trigger_x": 180.0, "trigger_model": "quadtailsitter_0" }},
+		{"test_id": "gust_lvl_y_01", "description": "Gust Y-L1: |V|=0.20 m/s (mean=0, Y-dir)", "wind_config": {"model": "one_minus_cos_simp", "mean": [0,0,0], "direction": [-0.939,0.342,0], "A0": 0.20, "T": 10, "phase": 0.0, "trigger_x": 180.0, "trigger_model": "quadtailsitter_0" }},
+		{"test_id": "gust_lvl_y_02", "description": "Gust Y-L2: |V|=0.60 m/s (mean=0, Y-dir)", "wind_config": {"model": "one_minus_cos_simp", "mean": [0,0,0], "direction": [-0.939,0.342,0], "A0": 0.60, "T": 10, "phase": 0.0, "trigger_x": 180.0, "trigger_model": "quadtailsitter_0" }},
+		{"test_id": "gust_lvl_y_03", "description": "Gust Y-L3: |V|=1.50 m/s (mean=0, Y-dir)", "wind_config": {"model": "one_minus_cos_simp", "mean": [0,0,0], "direction": [-0.939,0.342,0], "A0": 1.50, "T": 10, "phase": 0.0, "trigger_x": 180.0, "trigger_model": "quadtailsitter_0" }},
+		{"test_id": "gust_lvl_y_04", "description": "Gust Y-L4: |V|=2.60 m/s (mean=0, Y-dir)", "wind_config": {"model": "one_minus_cos_simp", "mean": [0,0,0], "direction": [-0.939,0.342,0], "A0": 2.60, "T": 10, "phase": 0.0, "trigger_x": 180.0, "trigger_model": "quadtailsitter_0" }},
+		{"test_id": "gust_lvl_y_05", "description": "Gust Y-L5: |V|=3.30 m/s (mean=0, Y-dir)", "wind_config": {"model": "one_minus_cos_simp", "mean": [0,0,0], "direction": [-0.939,0.342,0], "A0": 3.30, "T": 10, "phase": 0.0, "trigger_x": 180.0, "trigger_model": "quadtailsitter_0" }},
+		{"test_id": "gust_lvl_y_06", "description": "Gust Y-L6: |V|=4.40 m/s (mean=0, Y-dir)", "wind_config": {"model": "one_minus_cos_simp", "mean": [0,0,0], "direction": [-0.939,0.342,0], "A0": 4.40, "T": 10, "phase": 0.0, "trigger_x": 180.0, "trigger_model": "quadtailsitter_0" }},
+		{"test_id": "gust_lvl_y_07", "description": "Gust Y-L7: |V|=5.40 m/s (mean=0, Y-dir)", "wind_config": {"model": "one_minus_cos_simp", "mean": [0,0,0], "direction": [-0.939,0.342,0], "A0": 5.40, "T": 10, "phase": 0.0, "trigger_x": 180.0, "trigger_model": "quadtailsitter_0" }},
+		{"test_id": "gust_lvl_y_08", "description": "Gust Y-L8: |V|=7.90 m/s (mean=0, Y-dir)", "wind_config": {"model": "one_minus_cos_simp", "mean": [0,0,0], "direction": [-0.939,0.342,0], "A0": 7.90, "T": 10, "phase": 0.0, "trigger_x": 180.0, "trigger_model": "quadtailsitter_0" }},
+		{"test_id": "gust_lvl_y_09", "description": "Gust Y-L9: |V|=10.70 m/s (mean=0, Y-dir)", "wind_config": {"model": "one_minus_cos_simp", "mean": [0,0,0], "direction": [-0.939,0.342,0], "A0": 10.70, "T": 10, "phase": 0.0, "trigger_x": 180.0, "trigger_model": "quadtailsitter_0" }},
+		{"test_id": "gust_lvl_y_10", "description": "Gust Y-L10: |V|=13.80 m/s (mean=0, Y-dir)", "wind_config": {"model": "one_minus_cos_simp", "mean": [0,0,0], "direction": [-0.939,0.342,0], "A0": 13.80, "T": 10, "phase": 0.0, "trigger_x": 180.0, "trigger_model": "quadtailsitter_0" }},
+		{"test_id": "gust_lvl_y_11", "description": "Gust Y-L11: |V|=17.10 m/s (mean=0, Y-dir)", "wind_config": {"model": "one_minus_cos_simp", "mean": [0,0,0], "direction": [-0.939,0.342,0], "A0": 17.10, "T": 10, "phase": 0.0, "trigger_x": 180.0, "trigger_model": "quadtailsitter_0" }},
+		{"test_id": "gust_lvl_y_12", "description": "Gust Y-L12: |V|=20.70 m/s (mean=0, Y-dir)", "wind_config": {"model": "one_minus_cos_simp", "mean": [0,0,0], "direction": [-0.939,0.342,0], "A0": 20.70, "T": 10, "phase": 0.0, "trigger_x": 180.0, "trigger_model": "quadtailsitter_0" }}
+	],
+	"output_config": {
+	  "log_directory": "logs/levels",
+	  "save_flight_data": true
+	}
+      }
