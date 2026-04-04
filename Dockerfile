@@ -31,7 +31,7 @@ ENV TASKS_JSON=tasks/beaufort_levels_tests.json \
     UPLOAD_LOG_DATA=1
 
 # Expose common MAVLink UDP ports (map with -p or use --network host)
-EXPOSE 18570/udp 14540/udp
+EXPOSE 18570/udp 14540/udp 8080/tcp
 
 # Single entrypoint: build, then run task
 ENTRYPOINT ["bash", "-lc", "set -euo pipefail; \

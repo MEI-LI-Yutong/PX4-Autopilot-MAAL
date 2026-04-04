@@ -114,3 +114,5 @@ wandb/
 logs/
 cache/
 plots/
+.waylog/
+.serena/

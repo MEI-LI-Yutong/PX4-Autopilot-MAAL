@@ -112,16 +112,22 @@
     }
 
      // one_minus_cos_simp parameters (optional): A0 and T
-     if (_sdf->HasElement("A0")) {
-         _simp_A0 = _sdf->Get<double>("A0", _simp_A0).first;
-     } else if (_sdf->HasElement("a0")) {
-         _simp_A0 = _sdf->Get<double>("a0", _simp_A0).first;
-     }
-     if (_sdf->HasElement("T")) {
-         _simp_T = _sdf->Get<double>("T", _simp_T).first;
-     } else if (_sdf->HasElement("t")) {
-         _simp_T = _sdf->Get<double>("t", _simp_T).first;
-     }
+    if (_sdf->HasElement("A0")) {
+        _simp_A0 = _sdf->Get<double>("A0", _simp_A0).first;
+    } else if (_sdf->HasElement("a0")) {
+        _simp_A0 = _sdf->Get<double>("a0", _simp_A0).first;
+    }
+    if (_sdf->HasElement("T")) {
+        _simp_T = _sdf->Get<double>("T", _simp_T).first;
+    } else if (_sdf->HasElement("t")) {
+        _simp_T = _sdf->Get<double>("t", _simp_T).first;
+    }
+    if (_sdf->HasElement("trigger_x")) {
+        _simp_trigger_x = _sdf->Get<double>("trigger_x", _simp_trigger_x).first;
+    }
+    if (_sdf->HasElement("trigger_model")) {
+        _simp_trigger_model = _sdf->Get<std::string>("trigger_model", _simp_trigger_model).first;
+    }
 
    // ======== Spatial wind parameters (NEW) ========
    if (_sdf->HasElement("spatial_model")) {
@@ -217,6 +223,25 @@
 
    } else if (_model == "one_minus_cos_simp") {
      // Simple 1-cos single gust based on explicit A0 and T
+     bool gust_active = true;
+     if (!std::isnan(_simp_trigger_x)) {
+         if (!_simp_triggered) {
+             const std::string &model_name =
+                 !_simp_trigger_model.empty() ? _simp_trigger_model : _tracked_model;
+             Vector3d pos;
+             if (GetModelPosition(_ecm, model_name, _simp_trigger_entity, _warnedMissingTriggerModel, pos)) {
+                 if (pos.X() >= _simp_trigger_x) {
+                     _simp_triggered = true;
+                     _simp_trigger_time_s = t;
+                 }
+             }
+         }
+         if (!_simp_triggered) {
+             // Not triggered yet: keep gust at zero
+             gust_active = false;
+         }
+     }
+
      Vector3d dir = _direction;
      if (dir.Length() < 1e-6) {
          dir.Set(1, 0, 0);
@@ -224,11 +249,13 @@
          dir.Normalize();
      }
      const double T = _simp_T;
-     const double t0 = 26.0; // gust start time (s)
      double wg = 0.0;
-     if (T > 1e-6 && t >= t0 && t <= t0 + T) {
-         const double tau = t - t0;
-         wg = 0.5 * _simp_A0 * (1.0 - std::cos(2.0 * GZ_PI * tau / T));
+     if (gust_active) {
+         const double t0 = _simp_triggered ? _simp_trigger_time_s : 26.0; // gust start time (s)
+         if (T > 1e-6 && t >= t0 && t <= t0 + T) {
+             const double tau = t - t0;
+             wg = 0.5 * _simp_A0 * (1.0 - std::cos(2.0 * GZ_PI * tau / T));
+         }
      }
      wind += dir * wg;
 
@@ -349,35 +376,48 @@
 
 bool WindGustSystem::GetTrackedPosition(EntityComponentManager &_ecm, Vector3d &pos)
 {
-    // Try to find tracked model if not already found
-    if (_tracked_entity == kNullEntity && !_tracked_model.empty()) {
-        _tracked_entity = _ecm.EntityByComponents(
-            components::Name(_tracked_model),
+    return GetModelPosition(_ecm, _tracked_model, _tracked_entity, _warnedMissingModel, pos);
+}
+
+bool WindGustSystem::GetModelPosition(EntityComponentManager &_ecm,
+                                      const std::string &model_name,
+                                      gz::sim::Entity &entity_cache,
+                                      bool &warned,
+                                      Vector3d &pos)
+{
+    if (model_name.empty()) {
+        return false;
+    }
+
+    // Try to find model if not already found
+    if (entity_cache == kNullEntity) {
+        entity_cache = _ecm.EntityByComponents(
+            components::Name(model_name),
             components::Model());
 
-        if (_tracked_entity == kNullEntity && !_warnedMissingModel) {
-            gzdbg << "WindGustSystem: Model '" << _tracked_model
-                  << "' not found for spatial wind tracking" << std::endl;
-            _warnedMissingModel = true;
+        if (entity_cache == kNullEntity && !warned) {
+            gzdbg << "WindGustSystem: Model '" << model_name
+                  << "' not found for wind tracking" << std::endl;
+            warned = true;
             return false;
         }
     }
 
-    if (_tracked_entity == kNullEntity) {
+    if (entity_cache == kNullEntity) {
         return false;
     }
 
     // Get world pose of the model
-    auto worldPoseComp = _ecm.Component<components::WorldPose>(_tracked_entity);
+    auto worldPoseComp = _ecm.Component<components::WorldPose>(entity_cache);
     if (worldPoseComp) {
         pos = worldPoseComp->Data().Pos();
         return true;
     }
 
     // Fallback: try Pose component and use worldPose() helper
-    auto poseComp = _ecm.Component<components::Pose>(_tracked_entity);
+    auto poseComp = _ecm.Component<components::Pose>(entity_cache);
     if (poseComp) {
-        pos = worldPose(_tracked_entity, _ecm).Pos();
+        pos = worldPose(entity_cache, _ecm).Pos();
         return true;
     }
 
