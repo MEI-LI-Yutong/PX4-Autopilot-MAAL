@@ -76,6 +76,12 @@
     // one_minus_cos_simp parameters: v = (A0/2) * [1 - cos(2*pi*t/T)]
     double _simp_A0{0.0};            // peak gust magnitude (m/s)
     double _simp_T{10.0};            // period (s)
+    // one_minus_cos_simp trigger (world X)
+    double _simp_trigger_x{NAN};     // trigger when tracked model x >= this
+    std::string _simp_trigger_model{""}; // model name for trigger (empty = use _tracked_model)
+    gz::sim::Entity _simp_trigger_entity{gz::sim::kNullEntity};
+    bool _simp_triggered{false};
+    double _simp_trigger_time_s{-1.0};
 
     // Dryden model parameters
     gz::math::Vector3d _dryden_sigma{1.0, 1.0, 1.0};   // (sigma_u, sigma_v, sigma_w) [m/s]
@@ -108,8 +114,9 @@
      gz::sim::Entity _worldEntity{gz::sim::kNullEntity};
      gz::sim::Entity _windEntity{gz::sim::kNullEntity};
      bool _configured{false};
-     bool _warnedMissingWind{false};
-     bool _warnedMissingModel{false};
+    bool _warnedMissingWind{false};
+    bool _warnedMissingModel{false};
+    bool _warnedMissingTriggerModel{false};
     gz::transport::Node _node;
     gz::transport::Node::Publisher _pub;
     std::string _topic;
@@ -117,6 +124,11 @@
     // ======== Spatial wind helper functions ========
     gz::math::Vector3d ComputeSpatialWind(const gz::math::Vector3d &pos);
     bool GetTrackedPosition(gz::sim::EntityComponentManager &_ecm, gz::math::Vector3d &pos);
+    bool GetModelPosition(gz::sim::EntityComponentManager &_ecm,
+                          const std::string &model_name,
+                          gz::sim::Entity &entity_cache,
+                          bool &warned,
+                          gz::math::Vector3d &pos);
     // Compute simple 1-cos gust at time t (seconds)
     inline double one_minus_cos_simp(double t) const {
         const double T = _simp_T;

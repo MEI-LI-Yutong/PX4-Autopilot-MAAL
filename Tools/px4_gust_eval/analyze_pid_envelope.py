@@ -410,6 +410,20 @@ def compute_displacement_summary(df: pd.DataFrame) -> pd.DataFrame:
     return agg
 
 
+def compute_run_level_displacement(df: pd.DataFrame) -> pd.DataFrame:
+    """按单次实验(run_id)汇总平均位移误差，用于 PID 三维散点。"""
+    required = {"h_max_dev", "v_max_dev", "record_id", "run_id", "variant"}
+    if not required.issubset(df.columns):
+        return pd.DataFrame()
+    temp = df.copy()
+    temp["disp_level"] = temp["h_max_dev"] + temp["v_max_dev"]
+    grouped = (
+        temp.groupby(["record_id", "run_id", "variant"])["disp_level"].mean().reset_index()
+    )
+    grouped = grouped.rename(columns={"disp_level": "avg_displacement_run"})
+    return grouped
+
+
 def _is_unstable(grade: Any) -> bool:
     if not isinstance(grade, str):
         return False
@@ -666,6 +680,106 @@ def _family_heatmaps(summary: pd.DataFrame, value_col: str, title_prefix: str, c
     return outputs[0] if outputs else None
 
 
+def _extract_pid_base(param_name: Optional[str]) -> Optional[str]:
+    if not param_name or not isinstance(param_name, str):
+        return None
+    m = re.match(r"^(.*)_(P|I|D)$", param_name.strip())
+    if not m:
+        return None
+    return m.group(1)
+
+
+def _discover_pid_bases(records: List[Dict[str, Any]]) -> List[str]:
+    bases: set[str] = set()
+    for rec in records:
+        for key in rec.keys():
+            m = re.match(r"^(.*)_(P|I|D)$", key or "")
+            if not m:
+                continue
+            base = m.group(1)
+            bases.add(base)
+    return sorted(bases)
+
+
+def _collect_pid_axes(records: List[Dict[str, Any]], pid_base: str) -> pd.DataFrame:
+    if not pid_base:
+        return pd.DataFrame()
+    terms = ["P", "I", "D"]
+    rows: List[Dict[str, Any]] = []
+    # 记录各轴的默认值，用于缺失时回填（例如只做 P 扫描时将 I/D 设为全局默认）
+    defaults: Dict[str, Optional[float]] = {t: None for t in terms}
+    for rec in records:
+        for term in terms:
+            key = f"{pid_base}_{term}"
+            if key not in rec:
+                continue
+            val = rec.get(key)
+            try:
+                num = float(val)
+            except (TypeError, ValueError):
+                continue
+            if defaults[term] is None:
+                defaults[term] = num
+
+    for rec in records:
+        record_id = rec.get("Id")
+        if record_id is None:
+            continue
+        entry: Dict[str, Any] = {"record_id": record_id}
+        has_any = False
+        for term in terms:
+            key = f"{pid_base}_{term}"
+            val = rec.get(key)
+            try:
+                parsed = float(val)
+                has_any = True
+            except (TypeError, ValueError):
+                parsed = defaults.get(term)
+            if parsed is None:
+                parsed = 0.0
+            entry[f"pid_{term.lower()}"] = parsed
+        if not has_any:
+            continue
+        entry["variant"] = str(rec.get("Title") or "").strip() or f"record_{record_id}"
+        rows.append(entry)
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows)
+
+
+def _plot_pid_term_cube(run_summary: pd.DataFrame, pid_axes: pd.DataFrame, pid_base: Optional[str], output_dir: Path, dpi: int) -> Optional[Path]:
+    if pid_axes.empty or run_summary.empty or not pid_base:
+        return None
+    merged = pd.merge(run_summary, pid_axes, on=["record_id", "variant"], how="inner")
+    merged = merged.dropna(subset=["pid_p", "pid_i", "pid_d", "avg_displacement_run"])
+    if merged.empty:
+        return None
+    ensure_dirs(output_dir)
+    fig = plt.figure(figsize=(7, 6))
+    ax = fig.add_subplot(111, projection="3d")
+    scatter = ax.scatter(
+        merged["pid_p"],
+        merged["pid_i"],
+        merged["pid_d"],
+        c=merged["avg_displacement_run"],
+        cmap=plt.cm.inferno,
+        s=70,
+        depthshade=True,
+    )
+    ax.set_xlabel(f"{pid_base}_P")
+    ax.set_ylabel(f"{pid_base}_I")
+    ax.set_zlabel(f"{pid_base}_D")
+    # 保持画面简洁，避免在 3D cube 上加标题
+    cbar = fig.colorbar(scatter, ax=ax, pad=0.15)
+    cbar.set_label("Avg displacement (h_max_dev + v_max_dev)")
+    fig.tight_layout()
+    safe_base = pid_base.replace("/", "_")
+    out_path = output_dir / f"{safe_base}_pid_cube.png"
+    fig.savefig(out_path, dpi=dpi, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
+
+
 def _scatter3d_by_family(merged: pd.DataFrame, output_dir: Path, dpi: int) -> List[Path]:
     """
     3D scatter: x=scale, y=failure_level, z=avg_displacement, color by term, per family.
@@ -699,7 +813,7 @@ def _scatter3d_by_family(merged: pd.DataFrame, output_dir: Path, dpi: int) -> Li
         ax.set_xlabel("Scale")
         ax.set_ylabel("Failure level")
         ax.set_zlabel("Avg displacement")
-        ax.set_title(f"{fam} 3D scatter")
+        # 3D 家族散点专注于数据本身，不再设置标题
         legend_handles = [plt.Line2D([0], [0], marker="o", color=c, linestyle="", label=t) for t, c in color_map.items()]
         ax.legend(handles=legend_handles, loc="best")
         fig.tight_layout()
@@ -760,6 +874,7 @@ def main() -> None:
     failure_summary = compute_failure_levels(df)
     failure_csv = args.output_dir / "failure_levels.csv"
     failure_summary.to_csv(failure_csv, index=False)
+    run_level_summary = compute_run_level_displacement(df)
     merged = pd.merge(
         disp_summary,
         failure_summary,
@@ -767,6 +882,11 @@ def main() -> None:
         how="inner",
         suffixes=("_disp", "_fail"),
     )
+    pid_bases = set(_discover_pid_bases(records))
+    cli_base = _extract_pid_base(args.param_name)
+    if cli_base:
+        pid_bases.add(cli_base)
+    pid_bases = sorted(b for b in pid_bases if b)
 
     saved_imgs = plot_displacement_bars(disp_summary, args.output_dir, args.dpi)
     overview_fail = plot_overview_grid(failure_summary, args.output_dir, args.dpi)
@@ -774,6 +894,12 @@ def main() -> None:
     heatmap_fail = _family_heatmaps(failure_summary, "failure_level", "Failure level", "First unstable wind level (12 if none)", args.output_dir, args.dpi, annotate=True)
     heatmap_disp = _family_heatmaps(disp_summary, "avg_displacement", "Average displacement", "Avg displacement (h_max_dev + v_max_dev)", args.output_dir, args.dpi, annotate=False)
     scatter_imgs = _scatter3d_by_family(merged, args.output_dir, args.dpi)
+    pid_cubes = []
+    for base in pid_bases:
+        axes_df = _collect_pid_axes(records, base)
+        cube = _plot_pid_term_cube(run_level_summary, axes_df, base, args.output_dir, args.dpi)
+        if cube:
+            pid_cubes.append(cube)
 
     print(f"Aggregated {len(df)} rows from {df['run_id'].nunique()} runs across {df['variant'].nunique()} variants.")
     print(f"Saved raw CSV to {agg_csv}")
@@ -791,6 +917,8 @@ def main() -> None:
         print(f"Saved displacement family heatmaps: {heatmap_disp}")
     for img in scatter_imgs:
         print(f"Saved 3D scatter: {img}")
+    for cube in pid_cubes:
+        print(f"Saved PID cube scatter: {cube}")
 
 
 if __name__ == "__main__":
