@@ -36,14 +36,26 @@ param set-default CA_ROTOR3_PX -0.594
 param set-default CA_ROTOR3_PY 0.4
 param set-default CA_ROTOR3_KM -0.05
 # 倾转组
-param set-default CA_ROTOR0_TILT 0
-param set-default CA_ROTOR1_TILT 0
-param set-default CA_ROTOR2_TILT 0
-param set-default CA_ROTOR3_TILT 0
-param set-default CA_SV_TL0_MAXA 90
-param set-default CA_SV_TL0_MINA 0
+param set-default CA_ROTOR0_TILT 1
+param set-default CA_ROTOR1_TILT 2
+param set-default CA_ROTOR2_TILT 3
+param set-default CA_ROTOR3_TILT 4
+param set-default CA_SV_TL0_MAXA 45
+param set-default CA_SV_TL0_MINA -45
 param set-default CA_SV_TL0_TD 0
 param set-default CA_SV_TL0_CT 1
+param set-default CA_SV_TL1_MAXA 45
+param set-default CA_SV_TL1_MINA -45
+param set-default CA_SV_TL1_TD 0
+param set-default CA_SV_TL1_CT 1
+param set-default CA_SV_TL2_MAXA 45
+param set-default CA_SV_TL2_MINA -45
+param set-default CA_SV_TL2_TD 0
+param set-default CA_SV_TL2_CT 1
+param set-default CA_SV_TL3_MAXA 45
+param set-default CA_SV_TL3_MINA -45
+param set-default CA_SV_TL3_TD 0
+param set-default CA_SV_TL3_CT 1
 # 控制面组
 param set-default CA_SV_CS0_TRQ_R -0.5
 param set-default CA_SV_CS0_TYPE 1
@@ -51,8 +63,10 @@ param set-default CA_SV_CS1_TRQ_R 0.5
 param set-default CA_SV_CS1_TYPE 2
 param set-default CA_SV_CS2_TRQ_P 1
 param set-default CA_SV_CS2_TYPE 3
-param set-default CA_SV_CS_COUNT 3
-param set-default CA_SV_TL_COUNT 1
+param set-default CA_SV_CS3_TRQ_Y 1
+param set-default CA_SV_CS3_TYPE 4
+param set-default CA_SV_CS_COUNT 4
+param set-default CA_SV_TL_COUNT 4
 
 # PX4 Motor 端口映射
 param set-default SIM_GZ_EC_FUNC1 101
@@ -71,37 +85,35 @@ param set-default SIM_GZ_EC_MAX3 1100 #1100
 param set-default SIM_GZ_EC_MAX4 1100 #1100
 
 # PX4 Servo 端口映射
-param set-default SIM_GZ_SV_FUNC1 201 #左外副翼
-param set-default SIM_GZ_SV_FUNC2 202 #右外副翼
-param set-default SIM_GZ_SV_FUNC3 203 #左内副翼
-param set-default SIM_GZ_SV_FUNC4 204 #右内副翼
-param set-default SIM_GZ_SV_FUNC5 205 #襟翼左/右
-param set-default SIM_GZ_SV_FUNC6 206 #升降舵
-param set-default SIM_GZ_SV_FUNC7 207 #方向舵
-param set-default SIM_GZ_SV_FUNC8 208 #倾转机构
+param set-default SIM_GZ_SV_FUNC1 201 #左副翼组(外/内副翼镜像)
+param set-default SIM_GZ_SV_FUNC2 202 #右副翼组(外/内副翼镜像)
+param set-default SIM_GZ_SV_FUNC3 203 #升降舵
+param set-default SIM_GZ_SV_FUNC4 204 #方向舵
+param set-default SIM_GZ_SV_FUNC5 205 #左前倾转
+param set-default SIM_GZ_SV_FUNC6 206 #右前倾转
+param set-default SIM_GZ_SV_FUNC7 207 #左后倾转
+param set-default SIM_GZ_SV_FUNC8 208 #右后倾转
 
-# 外副翼最大20度，最小-20度
+# 左右副翼组最大20度，最小-20度
 param set-default SIM_GZ_SV_MAXA1 20
 param set-default SIM_GZ_SV_MINA1 -20
 param set-default SIM_GZ_SV_MAXA2 20
 param set-default SIM_GZ_SV_MINA2 -20
-# 内副翼最大20度，最小-20度
+# 升降舵最大20度，最小-20度
 param set-default SIM_GZ_SV_MAXA3 20
 param set-default SIM_GZ_SV_MINA3 -20
+# 方向舵最大20度，最小-20度
 param set-default SIM_GZ_SV_MAXA4 20
 param set-default SIM_GZ_SV_MINA4 -20
-# 襟翼最大20度，最小0度
-param set-default SIM_GZ_SV_MAXA5 20
-param set-default SIM_GZ_SV_MINA5 0
-# 升降舵最大20度，最小-20度
-param set-default SIM_GZ_SV_MAXA6 20
-param set-default SIM_GZ_SV_MINA6 -20
-# 方向舵最大20度，最小-20度
-param set-default SIM_GZ_SV_MAXA7 20
-param set-default SIM_GZ_SV_MINA7 -20
-# 倾转机构最大90度，最小0度
-param set-default SIM_GZ_SV_MAXA8 90
-param set-default SIM_GZ_SV_MINA8 -90
+# 四个独立倾转机构最大45度，最小-45度
+param set-default SIM_GZ_SV_MAXA5 45
+param set-default SIM_GZ_SV_MINA5 -45
+param set-default SIM_GZ_SV_MAXA6 45
+param set-default SIM_GZ_SV_MINA6 -45
+param set-default SIM_GZ_SV_MAXA7 45
+param set-default SIM_GZ_SV_MINA7 -45
+param set-default SIM_GZ_SV_MAXA8 45
+param set-default SIM_GZ_SV_MINA8 -45
 
 # 导航
 param set-default NPFG_PERIOD 12
@@ -155,8 +167,9 @@ param set-default MPC_Z_VEL_D_ACC 0.05 #0 #stable 0.05
 param set-default MIS_TAKEOFF_ALT 15
 
 # 倾转翼控制参数
-param set-default VT_FWD_THRUST_EN 0 ###
-param set-default VT_FWD_THRUST_SC 0 ###
-param set-default VT_TILT_TRANS 0.6
+param set-default VT_FWD_THRUST_EN 4
+param set-default VT_FWD_THRUST_SC 0.6
+param set-default VT_TILT_MC 0.5
+param set-default VT_TILT_TRANS 0.8
+param set-default VT_TILT_FW 1.0
 param set-default VT_TYPE 1
-
