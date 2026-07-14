@@ -92,3 +92,6 @@
 [submodule "Tools/px4_gust_eval"]
 	path = Tools/px4_gust_eval
 	url = https://github.com/MEI-LI-Yutong/px4_gust_eval.git
+[submodule "Tools/WindRejEval"]
+	path = Tools/WindRejEval
+	url = https://github.com/raiots/WindRejEval.git

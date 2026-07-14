@@ -74,6 +74,12 @@ void BodyAeroWrenchSystem::Configure(
     _rho = sdf->Get<double>("air_density", _rho).first;
     _force_scale = sdf->Get<double>("force_scale", _force_scale).first;
     _moment_scale = sdf->Get<double>("moment_scale", _moment_scale).first;
+    _force_axis_scale =
+        sdf->Get<gz::math::Vector3d>("force_axis_scale", _force_axis_scale)
+            .first;
+    _moment_axis_scale =
+        sdf->Get<gz::math::Vector3d>("moment_axis_scale", _moment_axis_scale)
+            .first;
     _minimum_airspeed =
         sdf->Get<double>("minimum_airspeed", _minimum_airspeed).first;
     _neighbor_count =
@@ -295,6 +301,12 @@ void BodyAeroWrenchSystem::PreUpdate(const gz::sim::UpdateInfo &info,
       coefficients.force_per_q * (dynamic_pressure * _force_scale);
   gz::math::Vector3d moment_body =
       coefficients.moment_per_q * (dynamic_pressure * _moment_scale);
+  force_body.X(force_body.X() * _force_axis_scale.X());
+  force_body.Y(force_body.Y() * _force_axis_scale.Y());
+  force_body.Z(force_body.Z() * _force_axis_scale.Z());
+  moment_body.X(moment_body.X() * _moment_axis_scale.X());
+  moment_body.Y(moment_body.Y() * _moment_axis_scale.Y());
+  moment_body.Z(moment_body.Z() * _moment_axis_scale.Z());
 
   if (reverse_flow) {
     force_body.X(-force_body.X());

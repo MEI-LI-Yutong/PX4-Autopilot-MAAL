@@ -81,6 +81,8 @@ private:
   double _rho{1.225};
   double _force_scale{1.0};
   double _moment_scale{1.0};
+  gz::math::Vector3d _force_axis_scale{1.0, 1.0, 1.0};
+  gz::math::Vector3d _moment_axis_scale{1.0, 1.0, 1.0};
   double _minimum_airspeed{0.1};
   double _alpha_min_deg{-26.0};
   double _alpha_max_deg{26.0};
