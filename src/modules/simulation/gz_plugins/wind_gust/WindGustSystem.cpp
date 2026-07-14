@@ -128,6 +128,9 @@
     if (_sdf->HasElement("trigger_model")) {
         _simp_trigger_model = _sdf->Get<std::string>("trigger_model", _simp_trigger_model).first;
     }
+    if (_sdf->HasElement("external_trigger")) {
+        _simp_external_trigger = _sdf->Get<bool>("external_trigger", false).first;
+    }
 
    // ======== Spatial wind parameters (NEW) ========
    if (_sdf->HasElement("spatial_model")) {
@@ -167,6 +170,11 @@
      }
      _topic = std::string("/world/") + worldName + "/wind_gust";
      _pub = _node.Advertise<gz::msgs::Vector3d>(_topic);
+     _trigger_topic = _topic + "/trigger";
+     if (_simp_external_trigger &&
+         !_node.Subscribe(_trigger_topic, &WindGustSystem::OnTrigger, this)) {
+         gzerr << "WindGustSystem: failed to subscribe to " << _trigger_topic << std::endl;
+     }
 
      // Initialize with current mean + amplitude (if frequency==0, constant)
      if (_windEntity != kNullEntity) {
@@ -224,7 +232,13 @@
    } else if (_model == "one_minus_cos_simp") {
      // Simple 1-cos single gust based on explicit A0 and T
      bool gust_active = true;
-     if (!std::isnan(_simp_trigger_x)) {
+     if (_simp_external_trigger) {
+         if (!_simp_triggered && _simp_trigger_requested.exchange(false)) {
+             _simp_triggered = true;
+             _simp_trigger_time_s = t;
+         }
+         gust_active = _simp_triggered;
+     } else if (!std::isnan(_simp_trigger_x)) {
          if (!_simp_triggered) {
              const std::string &model_name =
                  !_simp_trigger_model.empty() ? _simp_trigger_model : _tracked_model;
@@ -369,6 +383,14 @@
      gz::msgs::Set(&msg, wind);
      _pub.Publish(msg);
  }
+
+/////////////////////////////////////////////////
+void WindGustSystem::OnTrigger(const gz::msgs::Int32 &_msg)
+{
+    if (_msg.data() != 0) {
+        _simp_trigger_requested.store(true);
+    }
+}
 
 /////////////////////////////////////////////////
 // ======== Spatial Wind Helper Functions (NEW) ========

@@ -37,6 +37,8 @@
  #include <gz/sim/Entity.hh>
  #include <gz/math/Vector3.hh>
  #include <gz/transport/Node.hh>
+ #include <gz/msgs/int32.pb.h>
+ #include <atomic>
  #include <chrono>
  #include <string>
  #include <sdf/sdf.hh>
@@ -80,6 +82,8 @@
     double _simp_trigger_x{NAN};     // trigger when tracked model x >= this
     std::string _simp_trigger_model{""}; // model name for trigger (empty = use _tracked_model)
     gz::sim::Entity _simp_trigger_entity{gz::sim::kNullEntity};
+    bool _simp_external_trigger{false};
+    std::atomic<bool> _simp_trigger_requested{false};
     bool _simp_triggered{false};
     double _simp_trigger_time_s{-1.0};
 
@@ -120,6 +124,7 @@
     gz::transport::Node _node;
     gz::transport::Node::Publisher _pub;
     std::string _topic;
+    std::string _trigger_topic;
 
     // ======== Spatial wind helper functions ========
     gz::math::Vector3d ComputeSpatialWind(const gz::math::Vector3d &pos);
@@ -129,6 +134,7 @@
                           gz::sim::Entity &entity_cache,
                           bool &warned,
                           gz::math::Vector3d &pos);
+    void OnTrigger(const gz::msgs::Int32 &_msg);
     // Compute simple 1-cos gust at time t (seconds)
     inline double one_minus_cos_simp(double t) const {
         const double T = _simp_T;
